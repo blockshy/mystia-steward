@@ -612,11 +612,12 @@ internal sealed class StewardOverlayController
         GUILayout.Label($"{L("点单料理 Tag", "Required food tag")}: {selectedOrder.FoodTag} ({selectedOrder.FoodTagId})");
         GUILayout.Label($"{L("点单酒水 Tag", "Required beverage tag")}: {selectedOrder.BeverageTag} ({selectedOrder.BeverageTagId})");
 
-        if (!selectedOrder.GuestId.HasValue || !_repository.RareCustomersById.TryGetValue(selectedOrder.GuestId.Value, out var customer))
+        var customer = ResolveRareCustomerForOrder(selectedOrder);
+        if (customer == null)
         {
             GUILayout.Label(L(
-                "无法把该游戏稀客 ID 映射到本地数据，请更新 customer_rare.json。",
-                "Cannot map this game rare-customer ID to local data. Update customer_rare.json."));
+                "无法把该游戏稀客映射到本地或运行时稀客数据。",
+                "Cannot map this game rare customer to local or runtime rare-customer data."));
             return;
         }
 
@@ -630,6 +631,17 @@ internal sealed class StewardOverlayController
         }
 
         DrawRareRecommendations(customer, selectedOrder.FoodTag, selectedOrder.BeverageTag, state);
+    }
+
+    private RareCustomer? ResolveRareCustomerForOrder(NightBusinessOrder order)
+    {
+        if (_repository == null) return null;
+        if (order.GuestId.HasValue && _repository.RareCustomersById.TryGetValue(order.GuestId.Value, out var localCustomer))
+        {
+            return localCustomer;
+        }
+
+        return new RuntimeMappedGuestCatalog(_repository).ResolveCustomer(order.GuestId, order.GuestName);
     }
 
     private void DrawRareRecommendations(
@@ -1173,6 +1185,9 @@ internal sealed class StewardOverlayController
                 DataDirectory = _repository?.DataDirectory ?? "",
                 RecommendationState = publishedState == null ? null : RecommendationStateSnapshot.From(publishedState),
                 NightBusiness = _businessContext,
+                RuntimeRareCustomers = _repository == null
+                    ? new List<RuntimeRareCustomer>()
+                    : new RuntimeMappedGuestCatalog(_repository).Snapshot().RuntimeRareCustomers.ToList(),
             };
             _localApiServer.SetSnapshotJson(JsonSerializer.Serialize(snapshot, LocalApiJsonOptions));
             _localApiSnapshotErrorLogged = false;

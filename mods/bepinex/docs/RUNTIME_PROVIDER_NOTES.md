@@ -24,12 +24,12 @@
 4. 从 `NightScene.UI.GuestManagementUtility.WorkSceneServePannel` 的 `OpenContext`、`operatingOrder` 和 `currentGuestController` 读取当前上菜服务面板。
 5. 从 `NightScene.GuestManagementUtility.GuestsManager` 读取稀客控制器集合，包括 `AllPresentedGuestGroupController`、`AllGuestInDeskController`、`AllGuestsControllersInDesk`、`CanPlayerRepellGuest` 和 `ManualDesksDic`。
 6. 从 `NightScene.GuestManagementUtility.GuestGroupController.QueuedGuestControllers` 补充读取排队中的稀客。
-7. 对稀客控制器读取 `SpecialGuest` 或 `OrderingGuest`，并用本地 `customer_rare.json` 校验稀客 ID。
+7. 对稀客控制器读取 `SpecialGuest` 或 `OrderingGuest`，优先用本地 `customer_rare.json` 校验稀客 ID；若本地数据缺失但运行时稀客表提供有效名称与喜好 Tag，则合成为临时运行时稀客继续参与推荐。
 8. 对 `SpecialOrder` 读取 `RequestFoodTag`、`RequestBeverageTag`、`DeskCode` 和 `SpecialGuests`。
 9. 如果 `GuestGroupController.AllOrders` 读不到订单，则继续读取 `AllOrdersData`，并用 `PeekOrders()` 读取栈顶订单兜底。
 10. 默认不依赖 BepInEx/Unity 日志识别点单。运行时捕获会将 IL2CPP 暴露的 `OrderBase` 通过 `TryCast<SpecialOrder>()` 重新包装为真实特殊订单，再读取 `SpecialOrder.ToString()`、`RequestFoodTag` / `RequestBeverageTag`、必要的 `SpecialGuestsController.GetOrderBevText(...)` 和当前桌位稀客补齐信息。`0` 是有效料理 tag（`肉`），但只有确认属性读取成功时才能按 0 映射；酒水 tag 不要复用料理 tag 映射，负数酒水 tag id 视为未识别而不是显示为 `#-1`。特殊订单文本可能返回稀客台词而不是标准标签，因此 provider 会优先用料理 tag id 映射，并从本地料理/酒水候选标签中抽取标准词条。同一订单被多个 hook 捕获时会合并保留更完整的料理/酒水 tag，避免 `OrderAdd` 用缺失字段覆盖 `PostGenerateOrder` 的有效文本。不要用基类 `foodRequest` / `beverageRequest` 作为特殊订单兜底，这两个字段在 `SpecialOrder` 上可能对应普通食物或酒水请求，容易把 `肉/高酒精` 读成 `素` 等错误词条。
 11. 订单删除不再根据 `OrderController.GetShowInUIOrders()` 的空列表全量清空；HUD 订单列表会在点单、服务或刷新期间短暂为空。运行时捕获只在 `RemoveFromOrder`、`PartnerManager` 的 `OrderRemove`，或 `FoodDelivered` / `BeverageDelivered` 后订单已 `IsFullfilled` 时删除对应订单。
-12. 运行时稀客身份会归一化到本地 `customer_rare.json`。Provider 会同时读取 `GameData.Core.Collections.CharacterUtility.DataBaseCharacter.GetAllMappedGuests()` 和 `GetSpecialGuestsAndMappedGuests()`：固定映射优先使用 `MappedSpecialGuest.ID` / `StrID` 落到 `SourceGuestID`，完整运行时稀客表会按游戏语言名称与本地唯一同名稀客建立别名。读取不到时再回退到 `StringId` / 名称别名和少量手工兜底。归一化后订单和活跃稀客都使用本地 ID，伴随窗口才能复用本地喜好与推荐规则。
+12. 运行时稀客身份会优先归一化到本地 `customer_rare.json`。Provider 会同时读取 `GameData.Core.Collections.CharacterUtility.DataBaseCharacter.GetAllMappedGuests()` 和 `GetSpecialGuestsAndMappedGuests()`：固定映射优先使用 `MappedSpecialGuest.ID` / `StrID` 落到 `SourceGuestID`，完整运行时稀客表会按游戏语言名称与本地唯一同名稀客建立别名。读取不到时再回退到 `StringId` / 名称别名和少量手工兜底。若仍无法归一化，但运行时对象有可用的 `LikeFoodTag`、`HateFoodTag` 或 `LikeBevTag`，会生成临时运行时稀客并随本地 API 快照发布给伴随窗口；剧情 Intro/Parallel/Current、问号占位、隐藏图鉴、NeverCome、无喜好数据的角色不合成。
 13. 带具体桌号的运行时捕获订单只能匹配同一桌活跃稀客；未入座或排队状态的 `desk=-1` 稀客不能保活旧订单，避免同一稀客再次出现时复活上一次经营的历史点单。
 14. 从 `GameData.RunTime.NightSceneUtility.IzakayaConfigure.IzakayaData` 尝试识别当前经营场景。
 15. 游戏内部 `DeskCode` 从 0 开始；数据层保留原值用于去重，UI 显示时统一加 1。

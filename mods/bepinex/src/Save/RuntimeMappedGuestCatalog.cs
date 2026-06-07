@@ -38,9 +38,41 @@ internal sealed class RuntimeMappedGuestCatalog
         }
     }
 
+    public RareCustomer? ResolveCustomer(int? runtimeId, string? runtimeNameOrStringId)
+    {
+        var snapshot = Snapshot();
+        var entry = FindEntry(snapshot, runtimeId, runtimeNameOrStringId);
+        if (entry == null) return null;
+
+        if (entry.LocalRareCustomerId.HasValue
+            && _localRareCustomersById.TryGetValue(entry.LocalRareCustomerId.Value, out var localCustomer))
+        {
+            return localCustomer;
+        }
+
+        return entry.RuntimeCustomer?.ToRareCustomer();
+    }
+
     public RareCustomerIdentity? Resolve(int? runtimeId, string? runtimeNameOrStringId)
     {
         var snapshot = Snapshot();
+        var entry = FindEntry(snapshot, runtimeId, runtimeNameOrStringId);
+
+        if (entry == null || !entry.LocalRareCustomerId.HasValue || string.IsNullOrWhiteSpace(entry.LocalRareCustomerName))
+        {
+            return entry?.RuntimeCustomer == null
+                ? null
+                : new RareCustomerIdentity(entry.RuntimeCustomer.Id, entry.RuntimeCustomer.Name);
+        }
+
+        return new RareCustomerIdentity(entry.LocalRareCustomerId.Value, entry.LocalRareCustomerName);
+    }
+
+    private static RuntimeMappedGuestEntry? FindEntry(
+        RuntimeMappedGuestCatalogSnapshot snapshot,
+        int? runtimeId,
+        string? runtimeNameOrStringId)
+    {
         RuntimeMappedGuestEntry? entry = null;
 
         if (runtimeId.HasValue)
@@ -53,12 +85,7 @@ internal sealed class RuntimeMappedGuestCatalog
             snapshot.ByRuntimeStringId.TryGetValue(runtimeNameOrStringId.Trim(), out entry);
         }
 
-        if (entry == null || !entry.LocalRareCustomerId.HasValue || string.IsNullOrWhiteSpace(entry.LocalRareCustomerName))
-        {
-            return null;
-        }
-
-        return new RareCustomerIdentity(entry.LocalRareCustomerId.Value, entry.LocalRareCustomerName);
+        return entry;
     }
 
     private void EnsureLoaded()
@@ -86,6 +113,8 @@ internal sealed class RuntimeMappedGuestCatalog
             return RuntimeMappedGuestCatalogSnapshot.Empty("DataBaseCharacter type not found");
         }
         var languageType = FindType(DataBaseLanguageTypeName);
+        var foodTags = ReadTagDictionary(languageType, "GetAllFoodTags", "GetAllFoodTagsID", "GetFoodTag");
+        var beverageTags = ReadTagDictionary(languageType, "GetAllBeverageTags", null, "GetBeverageTag");
 
         var mappedGuests = InvokeStaticMethod(dataBaseCharacterType, "GetAllMappedGuests");
         var entries = new List<RuntimeMappedGuestEntry>();
@@ -142,6 +171,9 @@ internal sealed class RuntimeMappedGuestCatalog
                 ?? GetMemberValue(runtimeGuest, "CharacterName")?.ToString();
             var runtimeDisplayName = ResolveLanguageName(languageType, "GetSpecialGuestLang", runtimeId, memberDisplayName);
             var resolved = ResolveRuntimeIdentity(runtimeId, runtimeStringId, runtimeDisplayName);
+            var runtimeCustomer = resolved.Identity == null
+                ? BuildRuntimeRareCustomer(runtimeGuest, runtimeId, runtimeStringId, runtimeDisplayName, foodTags, beverageTags)
+                : null;
 
             entries.Add(new RuntimeMappedGuestEntry
             {
@@ -152,8 +184,11 @@ internal sealed class RuntimeMappedGuestCatalog
                 SourceDisplayName = runtimeDisplayName.Trim(),
                 LocalRareCustomerId = resolved.Identity?.Id,
                 LocalRareCustomerName = resolved.Identity?.Name ?? "",
+                RuntimeCustomer = runtimeCustomer,
                 OverrideDestination = "",
-                AliasSource = resolved.Source == "unresolved" ? "runtime-unresolved" : $"runtime-{resolved.Source}",
+                AliasSource = resolved.Source == "unresolved"
+                    ? runtimeCustomer == null ? "runtime-unresolved" : "runtime-synthetic"
+                    : $"runtime-{resolved.Source}",
                 RuntimeTypeName = runtimeGuest.GetType().FullName ?? runtimeGuest.GetType().Name,
             });
         }
@@ -170,7 +205,56 @@ internal sealed class RuntimeMappedGuestCatalog
         return new RuntimeMappedGuestCatalogSnapshot(
             DateTime.UtcNow,
             orderedEntries,
-            $"loaded: entries={orderedEntries.Count}; mapped={mappedCount}; runtimeGuests={runtimeGuestCount}; resolved={orderedEntries.Count(entry => entry.LocalRareCustomerId.HasValue)}");
+            $"loaded: entries={orderedEntries.Count}; mapped={mappedCount}; runtimeGuests={runtimeGuestCount}; localResolved={orderedEntries.Count(entry => entry.LocalRareCustomerId.HasValue)}; runtimeSynthetic={orderedEntries.Count(entry => entry.RuntimeCustomer != null)}");
+    }
+
+    private RuntimeRareCustomer? BuildRuntimeRareCustomer(
+        object runtimeGuest,
+        int? runtimeId,
+        string runtimeStringId,
+        string runtimeDisplayName,
+        IReadOnlyDictionary<int, string> foodTags,
+        IReadOnlyDictionary<int, string> beverageTags)
+    {
+        if (!runtimeId.HasValue) return null;
+        if (!IsUsableRuntimeCustomerName(runtimeDisplayName)) return null;
+        if (IsSuppressedRuntimeStringId(runtimeStringId)) return null;
+        if (ToBool(GetMemberValue(runtimeGuest, "DoNotShowInNotebook"))) return null;
+
+        var spawnType = GetMemberValue(runtimeGuest, "SpawnType")?.ToString() ?? "";
+        if (string.Equals(spawnType, "NeverCome", StringComparison.OrdinalIgnoreCase)) return null;
+
+        var positiveTags = ReadRuntimeTagNames(
+            GetMemberValue(runtimeGuest, "LikeFoodTag")
+                ?? GetMemberValue(runtimeGuest, "LikeFoodTagUnfolded")
+                ?? GetMemberValue(runtimeGuest, "LikeFoodTagOriginal"),
+            foodTags,
+            includeFoodTags: true);
+        var negativeTags = ReadRuntimeTagNames(
+            GetMemberValue(runtimeGuest, "HateFoodTag")
+                ?? GetMemberValue(runtimeGuest, "HateFoodTagOriginal"),
+            foodTags,
+            includeFoodTags: true);
+        var beverageTagNames = ReadRuntimeTagNames(
+            GetMemberValue(runtimeGuest, "LikeBevTag")
+                ?? GetMemberValue(runtimeGuest, "LikeBevTagUnfolded")
+                ?? GetMemberValue(runtimeGuest, "LikeBevTagOriginal"),
+            beverageTags,
+            includeFoodTags: false);
+
+        if (positiveTags.Count == 0 && beverageTagNames.Count == 0) return null;
+
+        return new RuntimeRareCustomer
+        {
+            Id = runtimeId.Value,
+            RuntimeStringId = runtimeStringId.Trim(),
+            Name = runtimeDisplayName.Trim(),
+            Places = PlaceNames.All.ToList(),
+            PositiveTags = positiveTags,
+            NegativeTags = negativeTags,
+            BeverageTags = beverageTagNames,
+            Source = "runtime-special-guest",
+        };
     }
 
     private ResolvedRuntimeIdentity ResolveRuntimeIdentity(int? runtimeId, string? runtimeStringId, string? runtimeDisplayName)
@@ -209,6 +293,85 @@ internal sealed class RuntimeMappedGuestCatalog
         return true;
     }
 
+    private static bool IsUsableRuntimeCustomerName(string? value)
+    {
+        if (!IsUsableAliasName(value)) return false;
+        var name = value!.Trim();
+        return !name.Equals("??????", StringComparison.Ordinal);
+    }
+
+    private static bool IsSuppressedRuntimeStringId(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        var text = value.Trim();
+        return text.EndsWith("_Intro", StringComparison.OrdinalIgnoreCase)
+            || text.EndsWith("_Parallel", StringComparison.OrdinalIgnoreCase)
+            || text.EndsWith("_Current", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("_Angry", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("_Sad", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("_Happy", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static List<string> ReadRuntimeTagNames(
+        object? value,
+        IReadOnlyDictionary<int, string> tagNames,
+        bool includeFoodTags)
+    {
+        var result = new List<string>();
+
+        void AddTagName(string? tagName)
+        {
+            var normalized = NormalizeRuntimeTagName(tagName, includeFoodTags);
+            if (string.IsNullOrWhiteSpace(normalized)) return;
+            result.Add(normalized);
+        }
+
+        foreach (var item in EnumerateObjects(value))
+        {
+            var id = ToNullableInt(item)
+                ?? ToNullableInt(GetMemberValue(item, "tagId"))
+                ?? ToNullableInt(GetMemberValue(item, "TagId"))
+                ?? ToNullableInt(GetMemberValue(item, "ID"))
+                ?? ToNullableInt(GetMemberValue(item, "Id"));
+            if (id.HasValue && tagNames.TryGetValue(id.Value, out var mapped))
+            {
+                AddTagName(mapped);
+            }
+            else if (item != null)
+            {
+                AddTagName(CleanText(item));
+            }
+        }
+
+        if (result.Count == 0)
+        {
+            var id = ToNullableInt(value);
+            if (id.HasValue && tagNames.TryGetValue(id.Value, out var mapped))
+            {
+                AddTagName(mapped);
+            }
+        }
+
+        return result
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+    }
+
+    private static string? NormalizeRuntimeTagName(string? value, bool includeFoodTags)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var text = value.Trim();
+        if (text.Length == 0) return null;
+        if (text.StartsWith("#", StringComparison.Ordinal)) return null;
+        if (string.Equals(text, "Null", StringComparison.OrdinalIgnoreCase)) return null;
+        if (text.StartsWith("厨具", StringComparison.Ordinal)) return null;
+        if (string.Equals(text, "黑暗物质", StringComparison.Ordinal)) return null;
+
+        var normalized = FoodTags.NormalizeName(text) ?? text;
+        if (includeFoodTags || !FoodTags.All.Contains(normalized)) return normalized;
+        return normalized;
+    }
+
     private static string BuildEntryKey(RuntimeMappedGuestEntry entry)
     {
         if (entry.RuntimeId.HasValue) return $"id:{entry.RuntimeId.Value}";
@@ -226,8 +389,9 @@ internal sealed class RuntimeMappedGuestCatalog
             "runtime-name" => 3,
             "mapped-manual-alias" => 4,
             "runtime-manual-alias" => 5,
-            "mapped-unresolved" => 6,
-            "runtime-unresolved" => 7,
+            "runtime-synthetic" => 6,
+            "mapped-unresolved" => 7,
+            "runtime-unresolved" => 8,
             _ => 10,
         };
     }
@@ -269,6 +433,35 @@ internal sealed class RuntimeMappedGuestCatalog
         {
             return null;
         }
+    }
+
+    private static IReadOnlyDictionary<int, string> ReadTagDictionary(
+        Type? languageType,
+        string dictionaryMethod,
+        string? idMethod,
+        string refMethod)
+    {
+        var result = new Dictionary<int, string>();
+        if (languageType == null) return result;
+
+        foreach (var pair in EnumerateKeyValuePairs(InvokeStaticMethod(languageType, dictionaryMethod)))
+        {
+            var id = ToNullableInt(pair.Key);
+            if (!id.HasValue) continue;
+            result[id.Value] = CleanText(pair.Value);
+        }
+
+        if (result.Count > 0 || string.IsNullOrWhiteSpace(idMethod)) return result;
+
+        foreach (var id in EnumerateObjects(InvokeStaticMethod(languageType, idMethod))
+                     .Select(ToNullableInt)
+                     .Where(id => id.HasValue)
+                     .Select(id => id!.Value))
+        {
+            result[id] = CleanText(InvokeStaticMethod(languageType, refMethod, id));
+        }
+
+        return result;
     }
 
     private static string ResolveLanguageName(Type? languageType, string methodName, int? id, string? fallback)
@@ -316,6 +509,32 @@ internal sealed class RuntimeMappedGuestCatalog
         catch
         {
             return "";
+        }
+    }
+
+    private static IEnumerable<(object? Key, object? Value)> EnumerateKeyValuePairs(object? value)
+    {
+        if (value == null) yield break;
+
+        if (value is IDictionary dictionary)
+        {
+            foreach (DictionaryEntry entry in dictionary)
+            {
+                yield return (entry.Key, entry.Value);
+            }
+
+            yield break;
+        }
+
+        foreach (var item in EnumerateObjects(value))
+        {
+            var key = GetMemberValue(item, "Key")
+                ?? GetMemberValue(item, "key")
+                ?? GetMemberValue(item, "Item1");
+            var itemValue = GetMemberValue(item, "Value")
+                ?? GetMemberValue(item, "value")
+                ?? GetMemberValue(item, "Item2");
+            if (key != null || itemValue != null) yield return (key, itemValue);
         }
     }
 
@@ -451,6 +670,13 @@ internal sealed class RuntimeMappedGuestCatalog
         if (value is short shortValue) return shortValue;
         return int.TryParse(value.ToString(), out var parsed) ? parsed : null;
     }
+
+    private static bool ToBool(object? value)
+    {
+        if (value == null) return false;
+        if (value is bool boolValue) return boolValue;
+        return bool.TryParse(value.ToString(), out var parsed) && parsed;
+    }
 }
 
 internal sealed class RuntimeMappedGuestCatalogSnapshot
@@ -468,6 +694,14 @@ internal sealed class RuntimeMappedGuestCatalogSnapshot
             .Where(entry => !string.IsNullOrWhiteSpace(entry.RuntimeStringId))
             .GroupBy(entry => entry.RuntimeStringId, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+        RuntimeRareCustomers = entries
+            .Select(entry => entry.RuntimeCustomer)
+            .Where(customer => customer != null)
+            .Cast<RuntimeRareCustomer>()
+            .GroupBy(customer => customer.Id)
+            .Select(group => group.First())
+            .OrderBy(customer => customer.Id)
+            .ToList();
     }
 
     public DateTime CapturedAtUtc { get; }
@@ -475,7 +709,10 @@ internal sealed class RuntimeMappedGuestCatalogSnapshot
     public string Status { get; }
     public IReadOnlyDictionary<int, RuntimeMappedGuestEntry> ByRuntimeId { get; }
     public IReadOnlyDictionary<string, RuntimeMappedGuestEntry> ByRuntimeStringId { get; }
-    public int ResolvedCount => Entries.Count(entry => entry.LocalRareCustomerId.HasValue);
+    public IReadOnlyList<RuntimeRareCustomer> RuntimeRareCustomers { get; }
+    public int LocalResolvedCount => Entries.Count(entry => entry.LocalRareCustomerId.HasValue);
+    public int RuntimeSyntheticCount => RuntimeRareCustomers.Count;
+    public int ResolvedCount => LocalResolvedCount + RuntimeSyntheticCount;
 
     public static RuntimeMappedGuestCatalogSnapshot Empty(string status)
     {
@@ -492,6 +729,7 @@ internal sealed class RuntimeMappedGuestEntry
     public string SourceDisplayName { get; init; } = "";
     public int? LocalRareCustomerId { get; init; }
     public string LocalRareCustomerName { get; init; } = "";
+    public RuntimeRareCustomer? RuntimeCustomer { get; init; }
     public string OverrideDestination { get; init; } = "";
     public string AliasSource { get; init; } = "";
     public string RuntimeTypeName { get; init; } = "";

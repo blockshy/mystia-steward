@@ -59,6 +59,31 @@ public sealed class RareCustomer
     public List<string> BeverageTags { get; set; } = new();
 }
 
+public sealed class RuntimeRareCustomer
+{
+    public int Id { get; init; }
+    public string RuntimeStringId { get; init; } = "";
+    public string Name { get; init; } = "";
+    public List<string> Places { get; init; } = new();
+    public List<string> PositiveTags { get; init; } = new();
+    public List<string> NegativeTags { get; init; } = new();
+    public List<string> BeverageTags { get; init; } = new();
+    public string Source { get; init; } = "";
+
+    public RareCustomer ToRareCustomer()
+    {
+        return new RareCustomer
+        {
+            Id = Id,
+            Name = Name,
+            Places = Places.ToList(),
+            PositiveTags = PositiveTags.ToList(),
+            NegativeTags = NegativeTags.ToList(),
+            BeverageTags = BeverageTags.ToList(),
+        };
+    }
+}
+
 public enum Rating
 {
     ExGood,

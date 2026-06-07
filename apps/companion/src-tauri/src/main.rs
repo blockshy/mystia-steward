@@ -23,7 +23,11 @@ fn fetch_snapshot(endpoint: String, token: String) -> Result<String, String> {
     request_local_api(&endpoint, None, &token)
 }
 
-fn request_local_api(endpoint: &str, path_override: Option<&str>, token: &str) -> Result<String, String> {
+fn request_local_api(
+    endpoint: &str,
+    path_override: Option<&str>,
+    token: &str,
+) -> Result<String, String> {
     request_local_api_with_timeout(
         endpoint,
         path_override,
@@ -81,14 +85,12 @@ fn request_local_api_with_timeout(
 
 #[tauri::command]
 fn launch_api_endpoint() -> Option<String> {
-    std::env::args()
-        .find_map(|arg| arg.strip_prefix("--api=").map(|value| value.to_string()))
+    std::env::args().find_map(|arg| arg.strip_prefix("--api=").map(|value| value.to_string()))
 }
 
 #[tauri::command]
 fn launch_api_token() -> Option<String> {
-    std::env::args()
-        .find_map(|arg| arg.strip_prefix("--token=").map(|value| value.to_string()))
+    std::env::args().find_map(|arg| arg.strip_prefix("--token=").map(|value| value.to_string()))
 }
 
 #[tauri::command]
@@ -259,13 +261,25 @@ fn start_instance_control_server(
     });
 }
 
-fn start_game_shutdown_monitor(app: tauri::AppHandle, endpoint: String) {
+fn start_game_shutdown_monitor(
+    app: tauri::AppHandle,
+    endpoint: String,
+    game_pid: Arc<Mutex<Option<u32>>>,
+) {
     thread::spawn(move || {
         let mut connected_once = false;
         let mut missing_since: Option<Instant> = None;
 
         loop {
-            thread::sleep(Duration::from_millis(750));
+            thread::sleep(Duration::from_millis(500));
+
+            if let Some(pid) = current_game_pid(&game_pid) {
+                if !is_process_running(pid) {
+                    app.exit(0);
+                    break;
+                }
+            }
+
             if request_local_api_with_timeout(
                 &endpoint,
                 Some("/health"),
@@ -286,7 +300,7 @@ fn start_game_shutdown_monitor(app: tauri::AppHandle, endpoint: String) {
             }
 
             let missing_at = missing_since.get_or_insert_with(Instant::now);
-            if missing_at.elapsed() >= Duration::from_secs(2) {
+            if missing_at.elapsed() >= Duration::from_millis(1500) {
                 app.exit(0);
                 break;
             }
@@ -295,7 +309,13 @@ fn start_game_shutdown_monitor(app: tauri::AppHandle, endpoint: String) {
 }
 
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show", "显示 mystia-steward-companion", true, None::<&str>)?;
+    let show = MenuItem::with_id(
+        app,
+        "show",
+        "显示 mystia-steward-companion",
+        true,
+        None::<&str>,
+    )?;
     let reconnect = MenuItem::with_id(app, "reconnect", "重连游戏", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &reconnect, &quit])?;
@@ -365,6 +385,7 @@ fn main() {
             start_game_shutdown_monitor(
                 app_handle,
                 launch_api_endpoint().unwrap_or_else(|| DEFAULT_API_ENDPOINT.to_string()),
+                app.state::<GamePidState>().0.clone(),
             );
             Ok(())
         })
@@ -391,6 +412,49 @@ fn focus_game_window(game_pid: Option<u32>) {
 
 #[cfg(not(target_os = "windows"))]
 fn focus_game_window(_game_pid: Option<u32>) {}
+
+#[cfg(target_os = "windows")]
+fn is_process_running(pid: u32) -> bool {
+    windows_process::is_process_running(pid)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_process_running(pid: u32) -> bool {
+    std::path::PathBuf::from(format!("/proc/{pid}")).exists()
+}
+
+#[cfg(target_os = "windows")]
+mod windows_process {
+    use std::ffi::c_void;
+
+    type Bool = i32;
+    type Dword = u32;
+    type Handle = *mut c_void;
+
+    const PROCESS_QUERY_LIMITED_INFORMATION: Dword = 0x1000;
+    const STILL_ACTIVE: Dword = 259;
+
+    pub fn is_process_running(pid: u32) -> bool {
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return false;
+            }
+
+            let mut exit_code: Dword = 0;
+            let ok = GetExitCodeProcess(handle, &mut exit_code as *mut Dword);
+            CloseHandle(handle);
+            ok != 0 && exit_code == STILL_ACTIVE
+        }
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn OpenProcess(dwDesiredAccess: Dword, bInheritHandle: Bool, dwProcessId: Dword) -> Handle;
+        fn GetExitCodeProcess(hProcess: Handle, lpExitCode: *mut Dword) -> Bool;
+        fn CloseHandle(hObject: Handle) -> Bool;
+    }
+}
 
 #[cfg(target_os = "windows")]
 mod windows_focus {
@@ -448,7 +512,10 @@ mod windows_focus {
 
     #[link(name = "user32")]
     extern "system" {
-        fn EnumWindows(lpEnumFunc: unsafe extern "system" fn(Hwnd, Lparam) -> Bool, lParam: Lparam) -> Bool;
+        fn EnumWindows(
+            lpEnumFunc: unsafe extern "system" fn(Hwnd, Lparam) -> Bool,
+            lParam: Lparam,
+        ) -> Bool;
         fn GetWindowThreadProcessId(hWnd: Hwnd, lpdwProcessId: *mut Dword) -> Dword;
         fn IsWindowVisible(hWnd: Hwnd) -> Bool;
         fn SetForegroundWindow(hWnd: Hwnd) -> Bool;

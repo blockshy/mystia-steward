@@ -13,6 +13,7 @@ internal sealed class LocalApiSnapshot
     public string DataDirectory { get; init; } = "";
     public RecommendationStateSnapshot? RecommendationState { get; init; }
     public NightBusinessContext? NightBusiness { get; init; }
+    public List<RuntimeRareCustomer> RuntimeRareCustomers { get; init; } = new();
 }
 
 internal sealed class RecommendationStateSnapshot

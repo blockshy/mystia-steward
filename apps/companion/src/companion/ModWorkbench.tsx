@@ -112,6 +112,17 @@ interface NightBusinessContext {
   error: string | null;
 }
 
+interface RuntimeRareCustomer {
+  id: number;
+  runtimeStringId: string;
+  name: string;
+  places: string[];
+  positiveTags: string[];
+  negativeTags: string[];
+  beverageTags: string[];
+  source: string;
+}
+
 interface LocalApiSnapshot {
   pluginVersion: string;
   capturedAtUtc: string;
@@ -122,6 +133,7 @@ interface LocalApiSnapshot {
   dataDirectory: string;
   recommendationState: RecommendationStateSnapshot | null;
   nightBusiness: NightBusinessContext | null;
+  runtimeRareCustomers?: RuntimeRareCustomer[];
 }
 
 interface RuntimeSets {
@@ -206,13 +218,21 @@ export function ModWorkbench() {
   const [requiredFoodTag, setRequiredFoodTag] = useState('');
   const [requiredBeverageTag, setRequiredBeverageTag] = useState('');
   const recommendationCacheRef = useRef(new Map<string, CachedRecommendation>());
+  const refreshInFlightRef = useRef(false);
 
   const normalizedEndpoint = useMemo(() => normalizeEndpoint(endpoint), [endpoint]);
   const runtime = snapshot?.recommendationState ?? null;
   const night = snapshot?.nightBusiness ?? null;
   const detectedPlace = normalizePlace(night?.place);
   const selectedPlace = manualPlace ?? detectedPlace;
-  const rareCustomersById = useMemo(() => new Map(getAllRareCustomers().map((customer) => [customer.id, customer])), []);
+  const runtimeRareCustomers = useMemo(
+    () => (snapshot?.runtimeRareCustomers ?? []).map(toRuntimeRareCustomer),
+    [snapshot?.runtimeRareCustomers],
+  );
+  const rareCustomersById = useMemo(
+    () => buildRareCustomerMap(runtimeRareCustomers),
+    [runtimeRareCustomers],
+  );
 
   const runtimeSets = useMemo(() => buildRuntimeSets(runtime), [runtime]);
   const orderRecommendations = useMemo(
@@ -222,6 +242,8 @@ export function ModWorkbench() {
   const snapshotRefreshIntervalMs = tab === 'service' || serviceFocusMode ? 750 : 2000;
 
   const refresh = useCallback(async () => {
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
     setLoading(true);
     const abortController = new AbortController();
     const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
@@ -235,6 +257,7 @@ export function ModWorkbench() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       window.clearTimeout(timeoutId);
+      refreshInFlightRef.current = false;
       setLoading(false);
     }
   }, [apiToken, normalizedEndpoint]);
@@ -452,6 +475,7 @@ export function ModWorkbench() {
           <ModRarePanel
             runtime={runtime}
             runtimeSets={runtimeSets}
+            runtimeRareCustomers={runtimeRareCustomers}
             selectedPlace={selectedPlace}
             detectedPlace={detectedPlace}
             rareCustomerId={rareCustomerId}
@@ -693,6 +717,7 @@ function ModNormalPanel({
 function ModRarePanel({
   runtime,
   runtimeSets,
+  runtimeRareCustomers,
   selectedPlace,
   detectedPlace,
   rareCustomerId,
@@ -706,6 +731,7 @@ function ModRarePanel({
 }: {
   runtime: RecommendationStateSnapshot | null;
   runtimeSets: RuntimeSets | null;
+  runtimeRareCustomers: ICustomerRare[];
   selectedPlace: TPlace | null;
   detectedPlace: TPlace | null;
   rareCustomerId: number | null;
@@ -717,10 +743,13 @@ function ModRarePanel({
   onFoodTagChange: (tag: string) => void;
   onBeverageTagChange: (tag: string) => void;
 }) {
-  const customers = useMemo(
-    () => (selectedPlace ? getRareCustomersByPlace(selectedPlace) : []),
-    [selectedPlace],
-  );
+  const customers = useMemo(() => {
+    if (!selectedPlace) return [];
+    return mergeRareCustomers(
+      getRareCustomersByPlace(selectedPlace),
+      runtimeRareCustomers.filter((customer) => customer.places.includes(selectedPlace)),
+    );
+  }, [runtimeRareCustomers, selectedPlace]);
   const selectedCustomer = customers.find((customer) => customer.id === rareCustomerId) ?? customers[0] ?? null;
   const foodTag = requiredFoodTag || selectedCustomer?.positiveTags.find(isOrderableRareFoodTag) || '';
   const beverageTag = requiredBeverageTag || selectedCustomer?.beverageTags[0] || '';
@@ -1795,6 +1824,59 @@ function buildRuntimeSets(runtime: RecommendationStateSnapshot | null): RuntimeS
     ownedIngredientQty: normalizeOwnedIngredientQty(runtime.ownedIngredientQty),
     ownedBeverageQty: normalizeOwnedIngredientQty(runtime.ownedBeverageQty ?? {}),
   };
+}
+
+function toRuntimeRareCustomer(customer: RuntimeRareCustomer): ICustomerRare {
+  return {
+    id: customer.id,
+    name: customer.name || customer.runtimeStringId || `运行时稀客 ${customer.id}`,
+    description: `运行时稀客数据: ${customer.runtimeStringId || customer.source || customer.id}`,
+    dlc: 0,
+    places: normalizeRuntimePlaces(customer.places),
+    price: [0, 0],
+    enduranceLimit: 1,
+    positiveTags: dedupeStrings(customer.positiveTags).filter(isOrderableRareFoodTag),
+    negativeTags: dedupeStrings(customer.negativeTags),
+    beverageTags: dedupeStrings(customer.beverageTags),
+    positiveTagMapping: {},
+    beverageTagMapping: {},
+    collection: false,
+    evaluation: {},
+    spellCards: {
+      positive: [],
+      negative: [],
+    },
+  };
+}
+
+function normalizeRuntimePlaces(places: string[]): TPlace[] {
+  const normalized = places
+    .map((place) => normalizePlace(place))
+    .filter((place): place is TPlace => Boolean(place));
+  return normalized.length > 0 ? [...new Set(normalized)] : [...ALL_PLACES];
+}
+
+function dedupeStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function buildRareCustomerMap(runtimeRareCustomers: ICustomerRare[]): Map<number, ICustomerRare> {
+  const map = new Map(getAllRareCustomers().map((customer) => [customer.id, customer]));
+  for (const customer of runtimeRareCustomers) {
+    if (!map.has(customer.id)) map.set(customer.id, customer);
+  }
+  return map;
+}
+
+function mergeRareCustomers(localCustomers: ICustomerRare[], runtimeRareCustomers: ICustomerRare[]): ICustomerRare[] {
+  const seen = new Set<number>();
+  const result: ICustomerRare[] = [];
+  for (const customer of [...localCustomers, ...runtimeRareCustomers]) {
+    if (seen.has(customer.id)) continue;
+    seen.add(customer.id);
+    result.push(customer);
+  }
+  return result;
 }
 
 function sortNightOrders(orders: NightBusinessOrder[]): NightBusinessOrder[] {
