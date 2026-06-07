@@ -104,10 +104,16 @@ public sealed class RareRecommendationService
             }
             else if (extraSlots > 0)
             {
-                var fallbackCombo = new List<Ingredient>();
-                var fallbackEval = baseEval;
-                var fallbackReason = IngredientTagReasonResult.Empty;
-                var fallbackCost = 0;
+                var requiredFallbackCombo = baseEval.MeetsRequiredFood ? new List<Ingredient>() : null;
+                ComboEvaluation? requiredFallbackEval = baseEval.MeetsRequiredFood ? baseEval : null;
+                IngredientTagReasonResult? requiredFallbackReason = baseEval.MeetsRequiredFood
+                    ? IngredientTagReasonResult.Empty
+                    : null;
+                var requiredFallbackCost = 0;
+                var requiredFallbackEasterEffect =
+                    baseEasterEffect.Effect == RareEasterEffect.PriorityExGood && baseEval.MeetsRequiredFood
+                        ? baseEasterEffect
+                        : ResolvedRareEasterEffect.Empty;
 
                 for (var k = 1; k <= Math.Min(extraSlots, candidates.Count); k++)
                 {
@@ -140,23 +146,33 @@ public sealed class RareRecommendationService
                         var comboEasterEffect = ResolveRareEasterEffect(customer.Id, recipe.Id, comboIngredientIds);
                         if (comboEasterEffect.Effect == RareEasterEffect.Ban) continue;
 
-                        if (ShouldReplaceFallback(
-                            fallbackEval,
-                            fallbackCombo,
-                            fallbackReason,
-                            fallbackCost,
-                            eval,
-                            combo,
-                            reason,
-                            cost))
+                        if (eval.MeetsRequiredFood
+                            && (requiredFallbackCombo == null
+                                || requiredFallbackEval == null
+                                || requiredFallbackReason == null
+                                || ShouldReplaceRequiredFallback(
+                                    requiredFallbackEval,
+                                    requiredFallbackCombo,
+                                    requiredFallbackReason,
+                                    requiredFallbackCost,
+                                    eval,
+                                    combo,
+                                    reason,
+                                    cost)))
                         {
-                            fallbackCombo = combo;
-                            fallbackEval = eval;
-                            fallbackReason = reason;
-                            fallbackCost = cost;
+                            requiredFallbackCombo = combo;
+                            requiredFallbackEval = eval;
+                            requiredFallbackReason = reason;
+                            requiredFallbackCost = cost;
+                            requiredFallbackEasterEffect = comboEasterEffect.Effect == RareEasterEffect.PriorityExGood
+                                ? comboEasterEffect
+                                : baseEasterEffect.Effect == RareEasterEffect.PriorityExGood
+                                    ? baseEasterEffect
+                                    : ResolvedRareEasterEffect.Empty;
                         }
 
                         if (comboEasterEffect.Effect == RareEasterEffect.PriorityExGood
+                            && eval.MeetsRequiredFood
                             && (bestPriorityComboForK == null
                                 || IsReasonDataPreferred(reason, bestPriorityReasonForK, cost, bestPriorityCostForK)))
                         {
@@ -198,11 +214,12 @@ public sealed class RareRecommendationService
                     }
                 }
 
-                if (bestCombo == null && fallbackCombo.Count > 0)
+                if (bestCombo == null && requiredFallbackCombo != null && requiredFallbackEval != null)
                 {
-                    bestCombo = fallbackCombo;
-                    bestEval = fallbackEval;
-                    bestReason = fallbackReason;
+                    bestCombo = requiredFallbackCombo;
+                    bestEval = requiredFallbackEval;
+                    bestReason = requiredFallbackReason ?? IngredientTagReasonResult.Empty;
+                    bestEasterEffect = requiredFallbackEasterEffect;
                 }
             }
 
@@ -388,7 +405,7 @@ public sealed class RareRecommendationService
         return nextCost < previousCost;
     }
 
-    private static bool ShouldReplaceFallback(
+    private static bool ShouldReplaceRequiredFallback(
         ComboEvaluation previousEval,
         List<Ingredient> previousCombo,
         IngredientTagReasonResult previousReason,
@@ -399,7 +416,6 @@ public sealed class RareRecommendationService
         int nextCost)
     {
         if (nextEval.FoodScore != previousEval.FoodScore) return nextEval.FoodScore > previousEval.FoodScore;
-        if (nextEval.MeetsRequiredFood != previousEval.MeetsRequiredFood) return nextEval.MeetsRequiredFood;
         if (nextCombo.Count != previousCombo.Count) return nextCombo.Count < previousCombo.Count;
         if (nextReason.AssignedBaseReuseScore != previousReason.AssignedBaseReuseScore)
         {

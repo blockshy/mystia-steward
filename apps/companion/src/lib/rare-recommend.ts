@@ -502,17 +502,24 @@ export function rankRecipesForRare(
       bestCombo = [];
     } else if (extraSlots > 0) {
       const n = candidates.length;
-      let bestFallbackCombo: IIngredient[] = [];
-      let bestFallbackEval = baseEval;
-      let bestFallbackReasonData: IngredientTagReasonResult = {
-        reasonTagsByIngredient: {},
-        assignedBaseReuseScore: 0,
-        assignedQtyScore: 0,
-        assignedPriceScore: 0,
-      };
-      let bestFallbackCost = 0;
+      let bestRequiredFallbackCombo: IIngredient[] | null = baseEval.meetsRequiredFood ? [] : null;
+      let bestRequiredFallbackEval: ReturnType<typeof evaluateCombo> | null =
+        baseEval.meetsRequiredFood ? baseEval : null;
+      let bestRequiredFallbackReasonData: IngredientTagReasonResult | null = baseEval.meetsRequiredFood
+        ? {
+            reasonTagsByIngredient: {},
+            assignedBaseReuseScore: 0,
+            assignedQtyScore: 0,
+            assignedPriceScore: 0,
+          }
+        : null;
+      let bestRequiredFallbackCost = 0;
+      let bestRequiredFallbackEasterEffect =
+        baseEasterEffect.effect === 'priority-exgood' && baseEval.meetsRequiredFood
+          ? baseEasterEffect
+          : EMPTY_EASTER_EFFECT;
 
-      const shouldReplaceFallback = (
+      const shouldReplaceRequiredFallback = (
         prevEval: ReturnType<typeof evaluateCombo>,
         prevCombo: IIngredient[],
         prevReason: IngredientTagReasonResult,
@@ -522,12 +529,7 @@ export function rankRecipesForRare(
         nextReason: IngredientTagReasonResult,
         nextCost: number,
       ) => {
-        const prevScore = prevEval.foodScore;
-        const nextScore = nextEval.foodScore;
-        if (nextScore !== prevScore) return nextScore > prevScore;
-        if (nextEval.meetsRequiredFood !== prevEval.meetsRequiredFood) {
-          return nextEval.meetsRequiredFood;
-        }
+        if (nextEval.foodScore !== prevEval.foodScore) return nextEval.foodScore > prevEval.foodScore;
         if (nextCombo.length !== prevCombo.length) return nextCombo.length < prevCombo.length;
         if (nextReason.assignedBaseReuseScore !== prevReason.assignedBaseReuseScore) {
           return nextReason.assignedBaseReuseScore > prevReason.assignedBaseReuseScore;
@@ -539,6 +541,13 @@ export function rankRecipesForRare(
           return nextReason.assignedPriceScore < prevReason.assignedPriceScore;
         }
         return nextCost < prevCost;
+      };
+
+      const emptyReasonData: IngredientTagReasonResult = {
+        reasonTagsByIngredient: {},
+        assignedBaseReuseScore: 0,
+        assignedQtyScore: 0,
+        assignedPriceScore: 0,
       };
 
       outer: for (let k = 1; k <= Math.min(extraSlots, n); k++) {
@@ -582,24 +591,36 @@ export function rankRecipesForRare(
 
           if (comboEasterEffect.effect !== 'ban') {
             if (
-              shouldReplaceFallback(
-                bestFallbackEval,
-                bestFallbackCombo,
-                bestFallbackReasonData,
-                bestFallbackCost,
-                ev,
-                combo,
-                reasonData,
-                cost,
+              ev.meetsRequiredFood &&
+              (
+                bestRequiredFallbackCombo === null ||
+                bestRequiredFallbackEval === null ||
+                bestRequiredFallbackReasonData === null ||
+                shouldReplaceRequiredFallback(
+                  bestRequiredFallbackEval,
+                  bestRequiredFallbackCombo,
+                  bestRequiredFallbackReasonData,
+                  bestRequiredFallbackCost,
+                  ev,
+                  combo,
+                  reasonData,
+                  cost,
+                )
               )
             ) {
-              bestFallbackCombo = combo;
-              bestFallbackEval = ev;
-              bestFallbackReasonData = reasonData;
-              bestFallbackCost = cost;
+              bestRequiredFallbackCombo = combo;
+              bestRequiredFallbackEval = ev;
+              bestRequiredFallbackReasonData = reasonData;
+              bestRequiredFallbackCost = cost;
+              bestRequiredFallbackEasterEffect =
+                comboEasterEffect.effect === 'priority-exgood'
+                  ? comboEasterEffect
+                  : baseEasterEffect.effect === 'priority-exgood'
+                    ? baseEasterEffect
+                    : EMPTY_EASTER_EFFECT;
             }
 
-            if (comboEasterEffect.effect === 'priority-exgood') {
+            if (comboEasterEffect.effect === 'priority-exgood' && ev.meetsRequiredFood) {
               const shouldReplacePriority =
                 bestPriorityComboForK === null ||
                 isReasonDataPreferred(reasonData, bestPriorityReasonForK, cost, bestPriorityCostForK);
@@ -664,10 +685,15 @@ export function rankRecipesForRare(
         }
       }
 
-      if (bestCombo === null && bestFallbackCombo.length > 0) {
-        bestCombo = bestFallbackCombo;
-        bestEval = bestFallbackEval;
-        bestReasonData = bestFallbackReasonData;
+      if (
+        bestCombo === null &&
+        bestRequiredFallbackCombo !== null &&
+        bestRequiredFallbackEval !== null
+      ) {
+        bestCombo = bestRequiredFallbackCombo;
+        bestEval = bestRequiredFallbackEval;
+        bestReasonData = bestRequiredFallbackReasonData ?? emptyReasonData;
+        bestEasterEffect = bestRequiredFallbackEasterEffect;
       }
     }
 
