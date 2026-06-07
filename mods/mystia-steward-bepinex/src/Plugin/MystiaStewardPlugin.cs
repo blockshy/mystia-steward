@@ -13,7 +13,7 @@ public sealed class MystiaStewardPlugin : BasePlugin
 {
     public const string PluginGuid = "com.tyukki.mystia-steward";
     public const string PluginName = "Mystia Steward";
-    public const string PluginVersion = "0.1.25";
+    public const string PluginVersion = "0.1.26";
 
     public override void Load()
     {
@@ -37,8 +37,6 @@ public sealed class MystiaStewardPlugin : BasePlugin
         gameObject.hideFlags = HideFlags.HideAndDontSave;
 
         gameObject.AddComponent<StewardOverlayBehaviour>();
-
-        CompanionProcessLauncher.TryAutoLaunch(settings, Log);
 
         Log.LogInfo($"{PluginName} {PluginVersion} loaded. Press {settings.ToggleKey.Value} to open or focus the companion window.");
     }

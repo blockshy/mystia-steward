@@ -1,4 +1,6 @@
 using BepInEx.Logging;
+using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text.Json;
 using MystiaSteward.Core;
 using MystiaSteward.LocalApi;
@@ -54,6 +56,7 @@ internal sealed class StewardOverlayController
     private string _runtimeStateSignature = "";
     private string _requiredFoodTag = "";
     private string _requiredBeverageTag = "";
+    private string _localApiToken = "";
     private int _previousRareCustomerId = -1;
     private DateTime _lastRuntimeReadUtc = DateTime.MinValue;
     private float _nextAutoRefreshAt;
@@ -92,10 +95,15 @@ internal sealed class StewardOverlayController
         _activeSceneName = GetActiveSceneName();
         EnsureWindowInsideScreen();
         LoadRepository();
+        _localApiToken = EnsureLocalApiToken(config);
         StartLocalApi();
         RefreshRuntimeState(false);
         RefreshBusinessContext(false);
         PublishLocalApiSnapshot();
+        if (_localApiServer != null)
+        {
+            CompanionProcessLauncher.TryAutoLaunch(config, log, _localApiToken);
+        }
     }
 
     public void Update()
@@ -110,7 +118,7 @@ internal sealed class StewardOverlayController
             }
             else if (_log != null)
             {
-                CompanionProcessLauncher.TryLaunchOrFocus(_config, _log);
+                CompanionProcessLauncher.TryLaunchOrFocus(_config, _log, _localApiToken);
             }
         }
 
@@ -1031,6 +1039,10 @@ internal sealed class StewardOverlayController
                 _config.LocalApiHost.Value,
                 _config.LocalApiPort.Value,
                 MystiaStewardPlugin.PluginVersion,
+                _localApiToken,
+                GetLocalApiLogSettings,
+                UpdateLocalApiLogSettings,
+                OpenLocalApiLogFolder,
                 _log);
             _localApiServer.Start();
         }
@@ -1092,6 +1104,50 @@ internal sealed class StewardOverlayController
             TimeSpan.FromSeconds(Math.Max(1f, _config.NightBusinessDiagnosticsIntervalSeconds.Value)));
     }
 
+    private LocalApiLogSettings GetLocalApiLogSettings()
+    {
+        if (_config == null)
+        {
+            return new LocalApiLogSettings
+            {
+                LogOutputPath = LocalApiServer.ResolveLogOutputPath(),
+                NightBusinessDiagnosticsPath = NightBusinessDiagnosticSink.ResolvePath(""),
+            };
+        }
+
+        return new LocalApiLogSettings
+        {
+            LogAccessEnabled = _config.ExposeLocalApiLogs.Value,
+            LogOutputPath = LocalApiServer.ResolveLogOutputPath(),
+            NightBusinessDiagnosticsEnabled = _config.EnableNightBusinessDiagnostics.Value,
+            NightBusinessDiagnosticsPath = NightBusinessDiagnosticSink.ResolvePath(_config.NightBusinessDiagnosticsPath.Value),
+        };
+    }
+
+    private void UpdateLocalApiLogSettings(bool? exposeLogs, bool? diagnostics)
+    {
+        if (_config == null) return;
+        if (exposeLogs.HasValue) _config.ExposeLocalApiLogs.Value = exposeLogs.Value;
+        if (diagnostics.HasValue) _config.EnableNightBusinessDiagnostics.Value = diagnostics.Value;
+    }
+
+    private string OpenLocalApiLogFolder(string target)
+    {
+        var settings = GetLocalApiLogSettings();
+        var path = string.Equals(target, "diagnostics", StringComparison.OrdinalIgnoreCase)
+            ? settings.NightBusinessDiagnosticsPath
+            : settings.LogOutputPath;
+        var directory = Path.GetDirectoryName(path);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            throw new InvalidOperationException("Log directory is not available.");
+        }
+
+        Directory.CreateDirectory(directory);
+        OpenDirectory(directory);
+        return directory;
+    }
+
     private void DrawNightBusinessDiagnosticsSettings()
     {
         if (_config == null) return;
@@ -1102,11 +1158,26 @@ internal sealed class StewardOverlayController
         GUILayout.Label(
             $"{L("点单日志兜底", "Order log fallback")}: {(_config.EnableSpecialOrderLogFallback.Value ? L("开启", "on") : L("关闭", "off"))}");
         GUILayout.Label(
+            $"{L("伴随窗口日志读取", "Companion log access")}: {(_config.ExposeLocalApiLogs.Value ? L("开启", "on") : L("关闭", "off"))}");
+        GUILayout.Label(
             $"{L("诊断日志路径", "Diagnostics path")}: {NightBusinessDiagnosticSink.ResolvePath(_config.NightBusinessDiagnosticsPath.Value)}",
+            _mutedStyle ?? GUI.skin.label);
+        GUILayout.Label(
+            $"{L("BepInEx 日志路径", "BepInEx log path")}: {LocalApiServer.ResolveLogOutputPath()}",
             _mutedStyle ?? GUI.skin.label);
         GUILayout.BeginHorizontal();
         try
         {
+            if (GUILayout.Button(_config.ExposeLocalApiLogs.Value
+                    ? L("关闭日志读取", "Disable log access")
+                    : L("开启日志读取", "Enable log access")))
+            {
+                _config.ExposeLocalApiLogs.Value = !_config.ExposeLocalApiLogs.Value;
+                _status = _config.ExposeLocalApiLogs.Value
+                    ? L("伴随窗口日志读取已开启。", "Companion log access enabled.")
+                    : L("伴随窗口日志读取已关闭。", "Companion log access disabled.");
+            }
+
             if (GUILayout.Button(_config.EnableNightBusinessDiagnostics.Value
                     ? L("关闭诊断", "Disable diagnostics")
                     : L("开启诊断", "Enable diagnostics")))
@@ -1122,6 +1193,31 @@ internal sealed class StewardOverlayController
                 NightBusinessDiagnosticSink.Clear(_config.NightBusinessDiagnosticsPath.Value);
                 _status = L("经营诊断日志已清空。", "Night business diagnostics log cleared.");
             }
+        }
+        finally
+        {
+            GUILayout.EndHorizontal();
+        }
+
+        GUILayout.BeginHorizontal();
+        try
+        {
+            if (GUILayout.Button(L("打开日志目录", "Open log folder")))
+            {
+                var directory = OpenLocalApiLogFolder("log");
+                _status = L($"已打开日志目录：{directory}", $"Log folder opened: {directory}");
+            }
+
+            if (GUILayout.Button(L("打开诊断目录", "Open diagnostics folder")))
+            {
+                var directory = OpenLocalApiLogFolder("diagnostics");
+                _status = L($"已打开诊断目录：{directory}", $"Diagnostics folder opened: {directory}");
+            }
+        }
+        catch (Exception ex)
+        {
+            _status = L($"打开目录失败：{ex.Message}", $"Failed to open folder: {ex.Message}");
+            _log?.LogWarning($"Open log folder failed: {ex.Message}");
         }
         finally
         {
@@ -1249,6 +1345,42 @@ internal sealed class StewardOverlayController
         {
             state.FamousShopEnabled = true;
         }
+    }
+
+    private static string EnsureLocalApiToken(StewardPluginConfig config)
+    {
+        var token = config.LocalApiToken.Value.Trim();
+        if (IsUsableLocalApiToken(token)) return token;
+
+        token = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+        config.LocalApiToken.Value = token;
+        return token;
+    }
+
+    private static bool IsUsableLocalApiToken(string token)
+    {
+        return token.Length >= 32 && token.All(character => !char.IsControl(character) && !char.IsWhiteSpace(character));
+    }
+
+    private static void OpenDirectory(string directory)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = directory,
+                UseShellExecute = true,
+            });
+            return;
+        }
+
+        var opener = OperatingSystem.IsMacOS() ? "open" : "xdg-open";
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = opener,
+            ArgumentList = { directory },
+            UseShellExecute = false,
+        });
     }
 
     private void SetPanelOpacity(float value)

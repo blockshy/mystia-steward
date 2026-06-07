@@ -13,13 +13,16 @@ const CONTROL_PORT: u16 = 32146;
 const CONTROL_MESSAGE: &[u8] = b"mystia-steward-companion:show\n";
 
 #[tauri::command]
-fn fetch_snapshot(endpoint: String) -> Result<String, String> {
-    request_local_api(&endpoint, None)
+fn fetch_snapshot(endpoint: String, token: String) -> Result<String, String> {
+    request_local_api(&endpoint, None, &token)
 }
 
-fn request_local_api(endpoint: &str, path_override: Option<&str>) -> Result<String, String> {
+fn request_local_api(endpoint: &str, path_override: Option<&str>, token: &str) -> Result<String, String> {
     let target = LocalApiTarget::parse(&endpoint)?;
     let path = path_override.unwrap_or(&target.path);
+    validate_http_fragment(path, "path")?;
+    validate_http_fragment(token, "token")?;
+
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, target.port));
     let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(1800))
         .map_err(|error| format!("connect failed: {error}"))?;
@@ -31,9 +34,14 @@ fn request_local_api(endpoint: &str, path_override: Option<&str>) -> Result<Stri
         .set_write_timeout(Some(Duration::from_millis(1200)))
         .map_err(|error| format!("set write timeout failed: {error}"))?;
 
+    let auth_header = if token.trim().is_empty() {
+        String::new()
+    } else {
+        format!("X-Mystia-Steward-Token: {}\r\n", token.trim())
+    };
     let request = format!(
-        "GET {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n",
-        path, target.port
+        "GET {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n{}Connection: close\r\nCache-Control: no-store\r\n\r\n",
+        path, target.port, auth_header
     );
     stream
         .write_all(request.as_bytes())
@@ -51,6 +59,12 @@ fn request_local_api(endpoint: &str, path_override: Option<&str>) -> Result<Stri
 fn launch_api_endpoint() -> Option<String> {
     std::env::args()
         .find_map(|arg| arg.strip_prefix("--api=").map(|value| value.to_string()))
+}
+
+#[tauri::command]
+fn launch_api_token() -> Option<String> {
+    std::env::args()
+        .find_map(|arg| arg.strip_prefix("--token=").map(|value| value.to_string()))
 }
 
 struct LocalApiTarget {
@@ -100,6 +114,14 @@ fn parse_authority(authority: &str) -> Result<(&str, u16), String> {
         .parse::<u16>()
         .map_err(|_| "invalid local API port".to_string())?;
     Ok((host, port))
+}
+
+fn validate_http_fragment(value: &str, label: &str) -> Result<(), String> {
+    if value.contains('\r') || value.contains('\n') {
+        return Err(format!("invalid {label}"));
+    }
+
+    Ok(())
 }
 
 fn parse_http_body(response: &str) -> Result<String, String> {
@@ -152,7 +174,7 @@ fn start_game_shutdown_monitor(app: tauri::AppHandle, endpoint: String) {
 
         loop {
             thread::sleep(Duration::from_secs(3));
-            if request_local_api(&endpoint, Some("/health")).is_ok() {
+            if request_local_api(&endpoint, Some("/health"), "").is_ok() {
                 connected_once = true;
                 missing_since = None;
                 continue;
@@ -235,7 +257,7 @@ fn main() {
                 let _ = window.hide();
             }
         })
-        .invoke_handler(tauri::generate_handler![fetch_snapshot, launch_api_endpoint])
+        .invoke_handler(tauri::generate_handler![fetch_snapshot, launch_api_endpoint, launch_api_token])
         .run(tauri::generate_context!())
         .expect("failed to run Mystia Steward companion");
 }

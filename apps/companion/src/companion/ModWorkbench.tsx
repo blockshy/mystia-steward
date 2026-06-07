@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { RefreshCw } from 'lucide-react';
+import { FolderOpen, Power, RefreshCw } from 'lucide-react';
 import { CustomerScoreBadges } from '@/components/ScoreBadge';
 import { RegionSelector } from '@/components/RegionSelector';
 import { TagBadge } from '@/components/TagBadge';
@@ -45,6 +45,7 @@ import allBeverages from '@/data/beverages.json';
 
 const DEFAULT_ENDPOINT = 'http://127.0.0.1:32145';
 const ENDPOINT_STORAGE_KEY = 'mystia-steward-mod-api-endpoint';
+const TOKEN_STORAGE_KEY = 'mystia-steward-mod-api-token';
 const TAB_STORAGE_KEY = 'mystia-steward-mod-tab';
 const MAX_RECOMMENDATION_ROWS = 8;
 const NON_ORDERABLE_RARE_FOOD_TAGS = new Set(['流行喜爱', '流行厌恶']);
@@ -142,12 +143,29 @@ interface LocalApiLogs {
   capturedAtUtc: string;
   path: string;
   exists: boolean;
+  enabled: boolean;
   lines: string[];
+  error: string | null;
+}
+
+interface LocalApiLogSettings {
+  logAccessEnabled: boolean;
+  logOutputPath: string;
+  logOutputDirectory: string;
+  nightBusinessDiagnosticsEnabled: boolean;
+  nightBusinessDiagnosticsPath: string;
+  nightBusinessDiagnosticsDirectory: string;
+}
+
+interface LocalApiFolderResponse {
+  ok: boolean;
+  directory: string;
   error: string | null;
 }
 
 export function ModWorkbench() {
   const [endpoint, setEndpoint] = useState(() => localStorage.getItem(ENDPOINT_STORAGE_KEY) ?? DEFAULT_ENDPOINT);
+  const [apiToken, setApiToken] = useState(() => localStorage.getItem(TOKEN_STORAGE_KEY) ?? '');
   const [tab, setTab] = useState<ModTab>(() => readStoredTab());
   const [serviceFocusMode, setServiceFocusMode] = useState(false);
   const [snapshot, setSnapshot] = useState<LocalApiSnapshot | null>(null);
@@ -179,7 +197,7 @@ export function ModWorkbench() {
     const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
 
     try {
-      const data = await readSnapshot(normalizedEndpoint, abortController.signal);
+      const data = await readSnapshot(normalizedEndpoint, apiToken, abortController.signal);
       setSnapshot(data);
       setError('');
       setLastConnectedAt(new Date());
@@ -189,11 +207,15 @@ export function ModWorkbench() {
       window.clearTimeout(timeoutId);
       setLoading(false);
     }
-  }, [normalizedEndpoint]);
+  }, [apiToken, normalizedEndpoint]);
 
   useEffect(() => {
     localStorage.setItem(ENDPOINT_STORAGE_KEY, normalizedEndpoint);
   }, [normalizedEndpoint]);
+
+  useEffect(() => {
+    if (apiToken) localStorage.setItem(TOKEN_STORAGE_KEY, apiToken);
+  }, [apiToken]);
 
   useEffect(() => {
     localStorage.setItem(TAB_STORAGE_KEY, tab);
@@ -204,9 +226,16 @@ export function ModWorkbench() {
 
     let disposed = false;
     import('@tauri-apps/api/core')
-      .then(({ invoke }) => invoke<string | null>('launch_api_endpoint'))
-      .then((launchEndpoint) => {
+      .then(async ({ invoke }) => {
+        const [launchEndpoint, launchToken] = await Promise.all([
+          invoke<string | null>('launch_api_endpoint'),
+          invoke<string | null>('launch_api_token'),
+        ]);
+        return { launchEndpoint, launchToken };
+      })
+      .then(({ launchEndpoint, launchToken }) => {
         if (!disposed && launchEndpoint) setEndpoint(launchEndpoint);
+        if (!disposed && launchToken) setApiToken(launchToken);
       })
       .catch(() => {
         // Browser mode does not expose launch arguments.
@@ -363,7 +392,7 @@ export function ModWorkbench() {
         </TabsContent>
 
         <TabsContent value="logs">
-          <ModLogsPanel endpoint={normalizedEndpoint} />
+          <ModLogsPanel endpoint={normalizedEndpoint} apiToken={apiToken} />
         </TabsContent>
       </Tabs>
     </div>
@@ -872,10 +901,12 @@ function CurrentOrderRecommendations({
   );
 }
 
-function ModLogsPanel({ endpoint }: { endpoint: string }) {
+function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: string }) {
+  const [settings, setSettings] = useState<LocalApiLogSettings | null>(null);
   const [logs, setLogs] = useState<LocalApiLogs | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
 
   const refreshLogs = useCallback(async () => {
     const abortController = new AbortController();
@@ -883,8 +914,9 @@ function ModLogsPanel({ endpoint }: { endpoint: string }) {
     setLoading(true);
 
     try {
-      const nextLogs = await readLogs(endpoint, abortController.signal);
-      setLogs(nextLogs);
+      const nextSettings = await readLogSettings(endpoint, apiToken, abortController.signal);
+      setSettings(nextSettings);
+      setLogs(nextSettings.logAccessEnabled ? await readLogs(endpoint, apiToken, abortController.signal) : null);
       setError('');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -892,7 +924,46 @@ function ModLogsPanel({ endpoint }: { endpoint: string }) {
       window.clearTimeout(timeoutId);
       setLoading(false);
     }
-  }, [endpoint]);
+  }, [apiToken, endpoint]);
+
+  const updateSettings = useCallback(async (next: { logAccess?: boolean; diagnostics?: boolean }) => {
+    const abortController = new AbortController();
+    const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
+    setActionLoading(true);
+
+    try {
+      const nextSettings = await writeLogSettings(endpoint, apiToken, next, abortController.signal);
+      setSettings(nextSettings);
+      if (!nextSettings.logAccessEnabled) setLogs(null);
+      setError('');
+      if (nextSettings.logAccessEnabled) {
+        const nextLogs = await readLogs(endpoint, apiToken, abortController.signal);
+        setLogs(nextLogs);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      window.clearTimeout(timeoutId);
+      setActionLoading(false);
+    }
+  }, [apiToken, endpoint]);
+
+  const openFolder = useCallback(async (target: 'log' | 'diagnostics') => {
+    const abortController = new AbortController();
+    const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
+    setActionLoading(true);
+
+    try {
+      const result = await openLogFolder(endpoint, apiToken, target, abortController.signal);
+      if (!result.ok) throw new Error(result.error || '打开文件夹失败');
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      window.clearTimeout(timeoutId);
+      setActionLoading(false);
+    }
+  }, [apiToken, endpoint]);
 
   useEffect(() => {
     refreshLogs();
@@ -903,17 +974,54 @@ function ModLogsPanel({ endpoint }: { endpoint: string }) {
   return (
     <div className="space-y-4">
       <Card>
-        <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
+        <CardContent className="space-y-3 p-4">
           <div className="min-w-0">
             <div className="text-sm font-semibold">Mod 实时日志</div>
-            <div className="mt-1 truncate text-xs text-muted-foreground" title={logs?.path || endpoint}>
-              {error || logs?.path || '等待日志响应'}
+            <div className="mt-1 truncate text-xs text-muted-foreground" title={logs?.path || settings?.logOutputPath || endpoint}>
+              {error || logs?.path || settings?.logOutputPath || '等待日志响应'}
             </div>
           </div>
-          <Button size="sm" variant="outline" onClick={refreshLogs} disabled={loading}>
-            <RefreshCw className={loading ? 'size-4 animate-spin' : 'size-4'} />
-            刷新
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              variant={settings?.logAccessEnabled ? 'default' : 'outline'}
+              onClick={() => updateSettings({ logAccess: !settings?.logAccessEnabled })}
+              disabled={!apiToken || actionLoading}
+            >
+              <Power className="size-4" />
+              {settings?.logAccessEnabled ? '关闭日志读取' : '开启日志读取'}
+            </Button>
+            <Button
+              size="sm"
+              variant={settings?.nightBusinessDiagnosticsEnabled ? 'default' : 'outline'}
+              onClick={() => updateSettings({ diagnostics: !settings?.nightBusinessDiagnosticsEnabled })}
+              disabled={!apiToken || actionLoading}
+            >
+              <Power className="size-4" />
+              {settings?.nightBusinessDiagnosticsEnabled ? '关闭经营诊断' : '开启经营诊断'}
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => openFolder('log')} disabled={!apiToken || actionLoading}>
+              <FolderOpen className="size-4" />
+              打开日志文件夹
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => openFolder('diagnostics')} disabled={!apiToken || actionLoading}>
+              <FolderOpen className="size-4" />
+              打开诊断文件夹
+            </Button>
+            <Button size="sm" variant="outline" onClick={refreshLogs} disabled={loading}>
+              <RefreshCw className={loading ? 'size-4 animate-spin' : 'size-4'} />
+              刷新
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="grid gap-3 p-4 text-sm md:grid-cols-2">
+          <InfoLine label="本地 API 授权" value={apiToken ? '已通过启动参数接收' : '未收到 token，请从游戏内按 F8 重新唤起窗口'} />
+          <InfoLine label="日志读取" value={settings?.logAccessEnabled ? '开启' : '关闭'} />
+          <InfoLine label="经营诊断" value={settings?.nightBusinessDiagnosticsEnabled ? '开启' : '关闭'} />
+          <InfoLine label="诊断日志目录" value={settings?.nightBusinessDiagnosticsDirectory || '未知'} mono />
         </CardContent>
       </Card>
 
@@ -922,6 +1030,7 @@ function ModLogsPanel({ endpoint }: { endpoint: string }) {
           <pre className="max-h-[62vh] overflow-auto whitespace-pre-wrap break-words p-4 font-mono text-xs leading-relaxed text-foreground">
             {error
               || logs?.error
+              || (!settings?.logAccessEnabled ? '日志读取已关闭。需要排查时点击“开启日志读取”，结束后建议关闭。' : null)
               || (logs?.exists === false ? '未找到 BepInEx/LogOutput.log。' : null)
               || (logs?.lines.length ? logs.lines.join('\n') : '暂无日志内容。')}
           </pre>
@@ -1245,37 +1354,57 @@ function BeverageRecommendationRow({
   );
 }
 
-async function readSnapshot(endpoint: string, signal: AbortSignal): Promise<LocalApiSnapshot> {
-  if (isTauriRuntime()) {
-    const { invoke } = await import('@tauri-apps/api/core');
-    const payload = await invoke<string>('fetch_snapshot', { endpoint });
-    return JSON.parse(payload) as LocalApiSnapshot;
-  }
-
-  const response = await fetch(`${endpoint}/snapshot`, {
-    cache: 'no-store',
-    signal,
-  });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-  return await response.json() as LocalApiSnapshot;
+async function readSnapshot(endpoint: string, apiToken: string, signal: AbortSignal): Promise<LocalApiSnapshot> {
+  return readLocalApiJson<LocalApiSnapshot>(endpoint, apiToken, '/snapshot', signal);
 }
 
-async function readLogs(endpoint: string, signal: AbortSignal): Promise<LocalApiLogs> {
-  const logsEndpoint = `${endpoint}/logs`;
+async function readLogs(endpoint: string, apiToken: string, signal: AbortSignal): Promise<LocalApiLogs> {
+  return readLocalApiJson<LocalApiLogs>(endpoint, apiToken, '/logs', signal);
+}
+
+async function readLogSettings(endpoint: string, apiToken: string, signal: AbortSignal): Promise<LocalApiLogSettings> {
+  return readLocalApiJson<LocalApiLogSettings>(endpoint, apiToken, '/logs/settings', signal);
+}
+
+async function writeLogSettings(
+  endpoint: string,
+  apiToken: string,
+  next: { logAccess?: boolean; diagnostics?: boolean },
+  signal: AbortSignal,
+): Promise<LocalApiLogSettings> {
+  const params = new URLSearchParams();
+  if (typeof next.logAccess === 'boolean') params.set('logAccess', String(next.logAccess));
+  if (typeof next.diagnostics === 'boolean') params.set('diagnostics', String(next.diagnostics));
+  return readLocalApiJson<LocalApiLogSettings>(endpoint, apiToken, `/logs/config?${params.toString()}`, signal);
+}
+
+async function openLogFolder(
+  endpoint: string,
+  apiToken: string,
+  target: 'log' | 'diagnostics',
+  signal: AbortSignal,
+): Promise<LocalApiFolderResponse> {
+  return readLocalApiJson<LocalApiFolderResponse>(endpoint, apiToken, `/logs/open-folder?target=${target}`, signal);
+}
+
+async function readLocalApiJson<T>(endpoint: string, apiToken: string, path: string, signal: AbortSignal): Promise<T> {
+  const targetEndpoint = `${endpoint}${path}`;
   if (isTauriRuntime()) {
     const { invoke } = await import('@tauri-apps/api/core');
-    const payload = await invoke<string>('fetch_snapshot', { endpoint: logsEndpoint });
-    return JSON.parse(payload) as LocalApiLogs;
+    const payload = await invoke<string>('fetch_snapshot', { endpoint: targetEndpoint, token: apiToken });
+    return JSON.parse(payload) as T;
   }
 
-  const response = await fetch(logsEndpoint, {
+  const headers = new Headers();
+  if (apiToken) headers.set('X-Mystia-Steward-Token', apiToken);
+  const response = await fetch(targetEndpoint, {
     cache: 'no-store',
+    headers,
     signal,
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-  return await response.json() as LocalApiLogs;
+  return await response.json() as T;
 }
 
 function buildRuntimeSets(runtime: RecommendationStateSnapshot | null): RuntimeSets | null {

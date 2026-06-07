@@ -12,20 +12,36 @@ internal sealed class LocalApiServer : IDisposable
 
     private readonly ManualLogSource _log;
     private readonly object _snapshotLock = new();
+    private readonly string _token;
     private readonly string _healthJson;
     private readonly string _logOutputPath;
+    private readonly Func<LocalApiLogSettings> _getLogSettings;
+    private readonly Action<bool?, bool?> _updateLogSettings;
+    private readonly Func<string, string> _openLogFolder;
     private TcpListener? _listener;
     private Thread? _thread;
     private bool _running;
     private string _snapshotJson = "{\"runtimeLoaded\":false,\"status\":\"Snapshot is not ready.\"}";
 
-    public LocalApiServer(string configuredHost, int port, string pluginVersion, ManualLogSource log)
+    public LocalApiServer(
+        string configuredHost,
+        int port,
+        string pluginVersion,
+        string token,
+        Func<LocalApiLogSettings> getLogSettings,
+        Action<bool?, bool?> updateLogSettings,
+        Func<string, string> openLogFolder,
+        ManualLogSource log)
     {
         BindAddress = ResolveLoopbackAddress(configuredHost, log);
         Port = Math.Clamp(port, 1024, 65535);
         _log = log;
+        _token = token.Trim();
+        _getLogSettings = getLogSettings;
+        _updateLogSettings = updateLogSettings;
+        _openLogFolder = openLogFolder;
         _logOutputPath = ResolveLogOutputPath();
-        _healthJson = $"{{\"ok\":true,\"pluginVersion\":\"{EscapeJson(pluginVersion)}\",\"bindAddress\":\"{BindAddress}\",\"port\":{Port}}}";
+        _healthJson = $"{{\"ok\":true,\"pluginVersion\":\"{EscapeJson(pluginVersion)}\",\"bindAddress\":\"{BindAddress}\",\"port\":{Port},\"authRequired\":true}}";
     }
 
     public IPAddress BindAddress { get; }
@@ -117,7 +133,8 @@ internal sealed class LocalApiServer : IDisposable
                 }
 
                 var method = parts[0];
-                var path = parts[1].Split('?')[0];
+                var (path, query) = SplitRequestTarget(parts[1]);
+                path = NormalizeApiPath(path);
                 if (string.Equals(method, "OPTIONS", StringComparison.OrdinalIgnoreCase))
                 {
                     WriteResponse(stream, 204, "No Content", "");
@@ -130,19 +147,32 @@ internal sealed class LocalApiServer : IDisposable
                     return;
                 }
 
+                if (RequiresAuthorization(path) && !IsAuthorized(request))
+                {
+                    WriteResponse(stream, 401, "Unauthorized", "{\"error\":\"unauthorized\"}");
+                    return;
+                }
+
                 switch (path)
                 {
                     case "/health":
-                    case "/api/health":
                         WriteResponse(stream, 200, "OK", _healthJson);
                         break;
                     case "/snapshot":
-                    case "/api/snapshot":
                         WriteResponse(stream, 200, "OK", GetSnapshotJson());
                         break;
                     case "/logs":
-                    case "/api/logs":
                         WriteResponse(stream, 200, "OK", BuildLogsJson());
+                        break;
+                    case "/logs/settings":
+                        WriteResponse(stream, 200, "OK", BuildLogSettingsJson());
+                        break;
+                    case "/logs/config":
+                        _updateLogSettings(ReadBoolQuery(query, "logAccess"), ReadBoolQuery(query, "diagnostics"));
+                        WriteResponse(stream, 200, "OK", BuildLogSettingsJson());
+                        break;
+                    case "/logs/open-folder":
+                        WriteResponse(stream, 200, "OK", OpenLogFolderJson(ReadStringQuery(query, "target")));
                         break;
                     default:
                         WriteResponse(stream, 404, "Not Found", "{\"error\":\"not found\"}");
@@ -166,15 +196,27 @@ internal sealed class LocalApiServer : IDisposable
 
     private string BuildLogsJson()
     {
+        var settings = _getLogSettings();
+        var logPath = string.IsNullOrWhiteSpace(settings.LogOutputPath) ? _logOutputPath : settings.LogOutputPath;
+        if (!settings.LogAccessEnabled)
+        {
+            return "{\"capturedAtUtc\":\""
+                + DateTime.UtcNow.ToString("O")
+                + "\",\"path\":\""
+                + EscapeJson(logPath)
+                + "\",\"exists\":false,\"enabled\":false,\"lines\":[],\"error\":\"log access is disabled\"}";
+        }
+
         try
         {
-            var exists = File.Exists(_logOutputPath);
-            var lines = exists ? ReadLogTail(_logOutputPath) : new List<string>();
+            var exists = File.Exists(logPath);
+            var lines = exists ? ReadLogTail(logPath) : new List<string>();
             var builder = new StringBuilder();
             builder.Append('{');
             builder.Append("\"capturedAtUtc\":\"").Append(DateTime.UtcNow.ToString("O")).Append("\",");
-            builder.Append("\"path\":\"").Append(EscapeJson(_logOutputPath)).Append("\",");
+            builder.Append("\"path\":\"").Append(EscapeJson(logPath)).Append("\",");
             builder.Append("\"exists\":").Append(exists ? "true" : "false").Append(',');
+            builder.Append("\"enabled\":true,");
             builder.Append("\"lines\":[");
             for (var i = 0; i < lines.Count; i++)
             {
@@ -189,10 +231,38 @@ internal sealed class LocalApiServer : IDisposable
             return "{\"capturedAtUtc\":\""
                 + DateTime.UtcNow.ToString("O")
                 + "\",\"path\":\""
-                + EscapeJson(_logOutputPath)
-                + "\",\"exists\":false,\"lines\":[],\"error\":\""
+                + EscapeJson(logPath)
+                + "\",\"exists\":false,\"enabled\":true,\"lines\":[],\"error\":\""
                 + EscapeJson(ex.Message)
                 + "\"}";
+        }
+    }
+
+    private string BuildLogSettingsJson()
+    {
+        var settings = _getLogSettings();
+        return new StringBuilder()
+            .Append('{')
+            .Append("\"logAccessEnabled\":").Append(settings.LogAccessEnabled ? "true" : "false").Append(',')
+            .Append("\"logOutputPath\":\"").Append(EscapeJson(settings.LogOutputPath)).Append("\",")
+            .Append("\"logOutputDirectory\":\"").Append(EscapeJson(GetDirectory(settings.LogOutputPath))).Append("\",")
+            .Append("\"nightBusinessDiagnosticsEnabled\":").Append(settings.NightBusinessDiagnosticsEnabled ? "true" : "false").Append(',')
+            .Append("\"nightBusinessDiagnosticsPath\":\"").Append(EscapeJson(settings.NightBusinessDiagnosticsPath)).Append("\",")
+            .Append("\"nightBusinessDiagnosticsDirectory\":\"").Append(EscapeJson(GetDirectory(settings.NightBusinessDiagnosticsPath))).Append("\"")
+            .Append('}')
+            .ToString();
+    }
+
+    private string OpenLogFolderJson(string target)
+    {
+        try
+        {
+            var directory = _openLogFolder(target);
+            return "{\"ok\":true,\"directory\":\"" + EscapeJson(directory) + "\",\"error\":null}";
+        }
+        catch (Exception ex)
+        {
+            return "{\"ok\":false,\"directory\":\"\",\"error\":\"" + EscapeJson(ex.Message) + "\"}";
         }
     }
 
@@ -247,9 +317,6 @@ internal sealed class LocalApiServer : IDisposable
         headers.Append("HTTP/1.1 ").Append(status).Append(' ').Append(reason).Append("\r\n");
         headers.Append("Content-Type: application/json; charset=utf-8\r\n");
         headers.Append("Content-Length: ").Append(bodyBytes.Length).Append("\r\n");
-        headers.Append("Access-Control-Allow-Origin: *\r\n");
-        headers.Append("Access-Control-Allow-Methods: GET, OPTIONS\r\n");
-        headers.Append("Access-Control-Allow-Headers: Content-Type, X-Mystia-Steward-Token\r\n");
         headers.Append("Cache-Control: no-store\r\n");
         headers.Append("Connection: close\r\n");
         headers.Append("\r\n");
@@ -281,7 +348,7 @@ internal sealed class LocalApiServer : IDisposable
 
     private static string EscapeJson(string value)
     {
-        return value
+        return (value ?? "")
             .Replace("\\", "\\\\", StringComparison.Ordinal)
             .Replace("\r", "\\r", StringComparison.Ordinal)
             .Replace("\n", "\\n", StringComparison.Ordinal)
@@ -289,7 +356,7 @@ internal sealed class LocalApiServer : IDisposable
             .Replace("\"", "\\\"", StringComparison.Ordinal);
     }
 
-    private static string ResolveLogOutputPath()
+    public static string ResolveLogOutputPath()
     {
         try
         {
@@ -307,4 +374,90 @@ internal sealed class LocalApiServer : IDisposable
             ? $"[{address}]"
             : address.ToString();
     }
+
+    private bool IsAuthorized(string request)
+    {
+        if (string.IsNullOrWhiteSpace(_token)) return false;
+        return string.Equals(ReadHeader(request, "X-Mystia-Steward-Token"), _token, StringComparison.Ordinal);
+    }
+
+    private static bool RequiresAuthorization(string path)
+    {
+        return !string.Equals(path, "/health", StringComparison.Ordinal);
+    }
+
+    private static string? ReadHeader(string request, string headerName)
+    {
+        foreach (var line in request.Split('\n').Skip(1))
+        {
+            var trimmed = line.TrimEnd('\r');
+            if (trimmed.Length == 0) break;
+            var separator = trimmed.IndexOf(':');
+            if (separator <= 0) continue;
+            var name = trimmed[..separator].Trim();
+            if (!string.Equals(name, headerName, StringComparison.OrdinalIgnoreCase)) continue;
+            return trimmed[(separator + 1)..].Trim();
+        }
+
+        return null;
+    }
+
+    private static (string Path, string Query) SplitRequestTarget(string target)
+    {
+        if (target.IndexOf('\r') >= 0 || target.IndexOf('\n') >= 0)
+        {
+            return ("/", "");
+        }
+
+        var queryStart = target.IndexOf('?');
+        return queryStart < 0
+            ? (target, "")
+            : (target[..queryStart], target[(queryStart + 1)..]);
+    }
+
+    private static string NormalizeApiPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || path == "/") return "/snapshot";
+        if (path.StartsWith("/api/", StringComparison.Ordinal)) return path[4..];
+        return path;
+    }
+
+    private static bool? ReadBoolQuery(string query, string key)
+    {
+        var value = ReadStringQuery(query, key);
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        if (string.Equals(value, "true", StringComparison.OrdinalIgnoreCase) || value == "1") return true;
+        if (string.Equals(value, "false", StringComparison.OrdinalIgnoreCase) || value == "0") return false;
+        return null;
+    }
+
+    private static string ReadStringQuery(string query, string key)
+    {
+        if (string.IsNullOrWhiteSpace(query)) return "";
+        foreach (var pair in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var parts = pair.Split('=', 2);
+            if (parts.Length == 0) continue;
+            var name = Uri.UnescapeDataString(parts[0].Replace("+", " ", StringComparison.Ordinal));
+            if (!string.Equals(name, key, StringComparison.OrdinalIgnoreCase)) continue;
+            return parts.Length == 1
+                ? ""
+                : Uri.UnescapeDataString(parts[1].Replace("+", " ", StringComparison.Ordinal));
+        }
+
+        return "";
+    }
+
+    private static string GetDirectory(string path)
+    {
+        return Path.GetDirectoryName(path) ?? "";
+    }
+}
+
+internal sealed class LocalApiLogSettings
+{
+    public bool LogAccessEnabled { get; init; }
+    public string LogOutputPath { get; init; } = "";
+    public bool NightBusinessDiagnosticsEnabled { get; init; }
+    public string NightBusinessDiagnosticsPath { get; init; } = "";
 }

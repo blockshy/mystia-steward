@@ -162,17 +162,21 @@ http://127.0.0.1:32145
 
 端点：
 
-- `GET /health`：检查本地 API 是否启动。
+- `GET /health`：检查本地 API 是否启动，不需要 token。
 - `GET /snapshot`：读取最新运行态快照。快照由 Unity 主线程按自动刷新节奏生成，网络线程只返回缓存 JSON。
-- `GET /logs`：读取 `BepInEx/LogOutput.log` 尾部日志，供独立窗口日志页显示。
+- `GET /logs/settings`：读取日志读取和经营诊断开关状态。
+- `GET /logs/config?logAccess=true|false&diagnostics=true|false`：由伴随窗口回写日志和诊断开关。
+- `GET /logs/open-folder?target=log|diagnostics`：打开对应日志目录。
+- `GET /logs`：在 `LocalApi.ExposeLogs=true` 时读取 `BepInEx/LogOutput.log` 尾部日志。
 
-Tauri 伴随窗口会显示实时 Mod 工作台，包含 `设置`、`普客`、`稀客`、`经营中`、`日志` 五个页签。它通过原生后端读取本地 API，不依赖浏览器或前端开发服务器。
+除 `/health` 外，端点都需要 `X-Mystia-Steward-Token`。Token 由插件生成并保存在 BepInEx 配置中，启动伴随窗口时通过 `--token=` 参数传入 Tauri 后端。Tauri 伴随窗口会显示实时 Mod 工作台，包含 `概览`、`普客`、`稀客`、`经营中`、`日志` 五个页签。它通过原生后端读取本地 API，不依赖浏览器或前端开发服务器。
 
 代理工具注意事项：
 
 - 默认使用 `127.0.0.1`，不要改成 `localhost`。
 - 若代理扩展或系统代理拦截本地请求，将 `127.0.0.1`、`localhost` 和回环地址加入直连/绕过列表。
 - 若伴随窗口无法连接，先确认日志中出现 `Local API listening at http://127.0.0.1:32145`，再检查端口占用。
+- 由于接口使用 token 且不再开放通配 CORS，不建议直接用浏览器访问受保护端点；调试伴随窗口时使用 Tauri 运行环境。
 
 ## 输入处理
 

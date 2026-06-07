@@ -25,6 +25,8 @@ public sealed class StewardPluginConfig
         ConfigEntry<bool> localApiEnabled,
         ConfigEntry<string> localApiHost,
         ConfigEntry<int> localApiPort,
+        ConfigEntry<string> localApiToken,
+        ConfigEntry<bool> exposeLocalApiLogs,
         ConfigEntry<bool> companionAutoLaunch,
         ConfigEntry<string> companionExecutablePath,
         ConfigEntry<bool> setConsoleUtf8,
@@ -58,6 +60,8 @@ public sealed class StewardPluginConfig
         LocalApiEnabled = localApiEnabled;
         LocalApiHost = localApiHost;
         LocalApiPort = localApiPort;
+        LocalApiToken = localApiToken;
+        ExposeLocalApiLogs = exposeLocalApiLogs;
         CompanionAutoLaunch = companionAutoLaunch;
         CompanionExecutablePath = companionExecutablePath;
         SetConsoleUtf8 = setConsoleUtf8;
@@ -92,6 +96,8 @@ public sealed class StewardPluginConfig
     public ConfigEntry<bool> LocalApiEnabled { get; }
     public ConfigEntry<string> LocalApiHost { get; }
     public ConfigEntry<int> LocalApiPort { get; }
+    public ConfigEntry<string> LocalApiToken { get; }
+    public ConfigEntry<bool> ExposeLocalApiLogs { get; }
     public ConfigEntry<bool> CompanionAutoLaunch { get; }
     public ConfigEntry<string> CompanionExecutablePath { get; }
     public ConfigEntry<bool> SetConsoleUtf8 { get; }
@@ -129,10 +135,12 @@ public sealed class StewardPluginConfig
             config.Bind("LocalApi", "Enabled", true, "Expose live runtime data to an external companion window over a loopback-only local API."),
             config.Bind("LocalApi", "Host", "127.0.0.1", "Loopback bind host. Keep 127.0.0.1 to avoid proxy, localhost, and IPv6 issues."),
             config.Bind("LocalApi", "Port", 32145, "Loopback local API port for the external companion UI."),
+            config.Bind("LocalApi", "Token", "", "Internal local API token. Empty lets the plugin generate one on next launch."),
+            config.Bind("LocalApi", "ExposeLogs", false, "Allow the companion window to read BepInEx/LogOutput.log through the token-protected local API."),
             config.Bind("Companion", "AutoLaunch", true, "Launch the external companion window when the plugin loads if the executable exists."),
             config.Bind("Companion", "ExecutablePath", "", "Optional companion executable path. Empty searches beside the plugin DLL."),
             config.Bind("Ui", "SetConsoleUtf8", true, "Set the Windows console code page and .NET console encoding to UTF-8 after the plugin loads."),
-            config.Bind("Diagnostics", "EnableNightBusinessDiagnostics", true, "Write night-business detection snapshots to an external file for debugging."),
+            config.Bind("Diagnostics", "EnableNightBusinessDiagnostics", false, "Write night-business detection snapshots to an external file for debugging."),
             config.Bind("Diagnostics", "NightBusinessDiagnosticsPath", "", "Optional diagnostics log path. Empty uses BepInEx/config/MystiaSteward/night-business-diagnostics.log."),
             config.Bind("Diagnostics", "NightBusinessDiagnosticsIntervalSeconds", 2f, "Minimum seconds between diagnostics snapshots."),
             config.Bind("Diagnostics", "EnableSpecialOrderLogFallback", false, "Fallback to parsing game console order logs if runtime order capture does not detect orders."),

@@ -5,13 +5,13 @@ namespace MystiaSteward.Plugin;
 
 internal static class CompanionProcessLauncher
 {
-    public static void TryAutoLaunch(StewardPluginConfig config, ManualLogSource log)
+    public static void TryAutoLaunch(StewardPluginConfig config, ManualLogSource log, string localApiToken)
     {
         if (!config.CompanionAutoLaunch.Value) return;
-        TryLaunchOrFocus(config, log);
+        TryLaunchOrFocus(config, log, localApiToken);
     }
 
-    public static void TryLaunchOrFocus(StewardPluginConfig config, ManualLogSource log)
+    public static void TryLaunchOrFocus(StewardPluginConfig config, ManualLogSource log, string localApiToken)
     {
         try
         {
@@ -25,10 +25,14 @@ internal static class CompanionProcessLauncher
             var startInfo = new ProcessStartInfo
             {
                 FileName = executablePath,
-                Arguments = $"--api=http://127.0.0.1:{Math.Clamp(config.LocalApiPort.Value, 1024, 65535)}",
                 WorkingDirectory = Path.GetDirectoryName(executablePath) ?? "",
                 UseShellExecute = false,
             };
+            startInfo.ArgumentList.Add($"--api=http://127.0.0.1:{Math.Clamp(config.LocalApiPort.Value, 1024, 65535)}");
+            if (!string.IsNullOrWhiteSpace(localApiToken))
+            {
+                startInfo.ArgumentList.Add($"--token={localApiToken}");
+            }
 
             Process.Start(startInfo);
             log.LogInfo($"Companion launch/focus requested: {executablePath}");

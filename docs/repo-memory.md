@@ -15,7 +15,8 @@
 - Mod 不编译引用 `Assembly-CSharp.dll`，运行时通过反射读取游戏已加载的 IL2CPP interop 类型。
 - `References/` 只放本机编译 DLL，不提交仓库。
 - `tools/sync-data.sh` 和 `build-release.ps1` 会把 `apps/companion/src/data` 同步到 Mod `Data/`。
-- 独立伴随窗口通过 `127.0.0.1:32145` 读取 `/snapshot` 和 `/logs`。
+- 独立伴随窗口通过 `127.0.0.1:32145` 读取运行态；除 `/health` 外，本地 API 使用 `X-Mystia-Steward-Token` 授权。
+- `BepInEx/LogOutput.log` 读取和夜间经营诊断默认关闭，由伴随窗口 `日志` 页按需开启。
 - 旧游戏内 IMGUI 面板默认关闭，仅作为回退方案。
 
 ## 推荐排序口径
