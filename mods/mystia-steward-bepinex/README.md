@@ -57,8 +57,8 @@ MystiaSteward-BepInEx.zip
 
 ## 使用方式
 
-- `F8`：打开或唤起独立伴随窗口。
-- `RS Click`：手柄默认打开或唤起独立伴随窗口。
+- `F8`：在游戏与独立伴随窗口之间切换焦点；窗口隐藏或关闭到托盘时会重新显示。
+- `RS Click`：手柄默认在游戏与独立伴随窗口之间切换焦点。
 - `F9`：手动刷新当前运行时数据检测。
 - `普客`：按当前地区显示料理和酒水推荐。
 - `稀客`：按候选稀客和点单词条显示推荐。
@@ -81,7 +81,7 @@ MystiaSteward-BepInEx.zip
 - 使用系统托盘菜单 `显示夜雀掌柜`。
 - 再次双击 `mystia-steward-companion.exe`。
 
-如果游戏关闭、Mod 卸载或本地 API 连续断开，伴随窗口会自动退出，避免游戏结束后残留后台窗口。
+如果独立窗口当前获得焦点，再按 `F8` 或 `RS Click` 会隐藏伴随窗口并尝试切回游戏窗口。游戏关闭或 Mod 卸载时，插件会立即通知伴随窗口退出；本地 API 断开检测仍作为兜底，避免游戏结束后残留后台窗口。
 
 ## 常用配置
 
@@ -94,8 +94,8 @@ BepInEx/config/com.tyukki.mystia-steward.cfg
 常用项：
 
 - `Language`：显示语言，支持 `zh-CN` 和 `en`。
-- `ToggleKey`：独立窗口唤起热键，默认 `F8`。
-- `ControllerToggleKey`：手柄唤起热键，默认 `JoystickButton9`，常见映射为 `RS Click`。
+- `ToggleKey`：游戏与独立窗口焦点切换热键，默认 `F8`。
+- `ControllerToggleKey`：手柄焦点切换热键，默认 `JoystickButton9`，常见映射为 `RS Click`。
 - `ReloadKey`：实时数据刷新热键，默认 `F9`。
 - `Companion.AutoLaunch`：是否自动启动独立伴随窗口，默认开启。
 - `Companion.ExecutablePath`：伴随窗口可执行文件路径；留空时自动从 Mod 目录和 `companion/` 子目录查找。
@@ -111,7 +111,7 @@ BepInEx/config/com.tyukki.mystia-steward.cfg
 
 ## 故障排查
 
-- `F8` 无法打开独立窗口：确认 `mystia-steward-companion.exe` 位于 `BepInEx/plugins/MystiaSteward/companion/`，或在 `Companion.ExecutablePath` 中填写绝对路径。
+- `F8` 无法打开独立窗口：确认 `mystia-steward-companion.exe` 位于 `BepInEx/plugins/MystiaSteward/companion/`，或在 `Companion.ExecutablePath` 中填写绝对路径。若窗口已打开，`F8` 会在游戏和独立窗口之间切换。
 - 一直显示运行时数据不可用：先确认已经进入游戏并加载进度；再到 `日志` 页临时开启日志读取。
 - `经营中` 没有稀客或稀客点单：进入 `日志` 页开启经营诊断并查看扫描状态，确认游戏内确实处于夜间经营流程。
 - 启动时仍短暂出现控制台：Mod 加载时控制台已经由 BepInEx 创建，本次启动只能尝试隐藏；`BepInEx.DisableConsoleLogWindow=true` 写入的配置会在下一次启动生效。

@@ -1,20 +1,53 @@
 using System.Diagnostics;
+using System.Net.Sockets;
+using System.Text;
 using BepInEx.Logging;
 
 namespace MystiaSteward.Plugin;
 
 internal static class CompanionProcessLauncher
 {
+    private const int ControlPort = 32146;
+    private const string ControlShow = "mystia-steward-companion:show";
+    private const string ControlToggle = "mystia-steward-companion:toggle";
+    private const string ControlExit = "mystia-steward-companion:exit";
+    private static readonly object RequestLock = new();
+    private static DateTime _lastRequestUtc = DateTime.MinValue;
+
     public static void TryAutoLaunch(StewardPluginConfig config, ManualLogSource log, string localApiToken)
     {
         if (!config.CompanionAutoLaunch.Value) return;
-        TryLaunchOrFocus(config, log, localApiToken);
+        TryShowOrLaunch(config, log, localApiToken);
     }
 
     public static void TryLaunchOrFocus(StewardPluginConfig config, ManualLogSource log, string localApiToken)
     {
+        TryShowOrLaunch(config, log, localApiToken);
+    }
+
+    public static void TryShowOrLaunch(StewardPluginConfig config, ManualLogSource log, string localApiToken)
+    {
+        if (SendControlMessage(ControlShow)) return;
+        TryLaunch(config, log, localApiToken);
+    }
+
+    public static void TryToggleOrLaunch(StewardPluginConfig config, ManualLogSource log, string localApiToken)
+    {
+        if (IsRequestThrottled()) return;
+        if (SendControlMessage(ControlToggle)) return;
+        TryLaunch(config, log, localApiToken);
+    }
+
+    public static void TryNotifyExit()
+    {
+        SendControlMessage(ControlExit);
+    }
+
+    private static void TryLaunch(StewardPluginConfig config, ManualLogSource log, string localApiToken)
+    {
         try
         {
+            RecordRequestTime();
             var executablePath = ResolveExecutablePath(config.CompanionExecutablePath.Value);
             if (string.IsNullOrWhiteSpace(executablePath))
             {
@@ -29,6 +62,7 @@ internal static class CompanionProcessLauncher
                 UseShellExecute = false,
             };
             startInfo.ArgumentList.Add($"--api=http://127.0.0.1:{Math.Clamp(config.LocalApiPort.Value, 1024, 65535)}");
+            startInfo.ArgumentList.Add($"--game-pid={Process.GetCurrentProcess().Id}");
             if (!string.IsNullOrWhiteSpace(localApiToken))
             {
                 startInfo.ArgumentList.Add($"--token={localApiToken}");
@@ -40,6 +74,56 @@ internal static class CompanionProcessLauncher
         catch (Exception ex)
         {
             log.LogWarning($"Companion launch failed: {ex.Message}");
+        }
+    }
+
+    private static bool SendControlMessage(string message)
+    {
+        try
+        {
+            using var client = new TcpClient();
+            if (!client.ConnectAsync("127.0.0.1", ControlPort).Wait(TimeSpan.FromMilliseconds(180)))
+            {
+                return false;
+            }
+
+            var bytes = Encoding.UTF8.GetBytes(BuildControlMessage(message));
+            using var stream = client.GetStream();
+            stream.Write(bytes, 0, bytes.Length);
+            stream.Flush();
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string BuildControlMessage(string message)
+    {
+        return $"{message}\n--game-pid={Process.GetCurrentProcess().Id}\n";
+    }
+
+    private static bool IsRequestThrottled()
+    {
+        lock (RequestLock)
+        {
+            var now = DateTime.UtcNow;
+            if (now - _lastRequestUtc < TimeSpan.FromMilliseconds(800))
+            {
+                return true;
+            }
+
+            _lastRequestUtc = now;
+            return false;
+        }
+    }
+
+    private static void RecordRequestTime()
+    {
+        lock (RequestLock)
+        {
+            _lastRequestUtc = DateTime.UtcNow;
         }
     }
 

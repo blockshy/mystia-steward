@@ -66,6 +66,7 @@ internal sealed class StewardOverlayController
     private float _nextBusinessRefreshAt;
     private bool _stylesInitialized;
     private bool _localApiSnapshotErrorLogged;
+    private bool _disposed;
     private GUIStyle? _titleStyle;
     private GUIStyle? _labelStyle;
     private GUIStyle? _mutedStyle;
@@ -122,7 +123,7 @@ internal sealed class StewardOverlayController
 
     public void Update()
     {
-        if (_config == null) return;
+        if (_disposed || _config == null) return;
         ProcessPendingInventoryEdits();
 
         if (IsTogglePressed())
@@ -133,7 +134,7 @@ internal sealed class StewardOverlayController
             }
             else if (_log != null)
             {
-                CompanionProcessLauncher.TryLaunchOrFocus(_config, _log, _localApiToken);
+                CompanionProcessLauncher.TryToggleOrLaunch(_config, _log, _localApiToken);
             }
         }
 
@@ -194,6 +195,10 @@ internal sealed class StewardOverlayController
 
     public void Dispose()
     {
+        if (_disposed) return;
+
+        _disposed = true;
+        CompanionProcessLauncher.TryNotifyExit();
         _localApiServer?.Dispose();
         _localApiServer = null;
         RestoreCursorState();

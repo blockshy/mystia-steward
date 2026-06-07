@@ -55,6 +55,7 @@ const INGREDIENT_ID_BY_NAME = new Map(INGREDIENTS.map((ingredient) => [ingredien
 const INGREDIENT_NAME_BY_ID = new Map(INGREDIENTS.map((ingredient) => [ingredient.id, ingredient.name]));
 const BEVERAGES = allBeverages as IBeverage[];
 const BEVERAGE_NAME_BY_ID = new Map(BEVERAGES.map((beverage) => [beverage.id, beverage.name]));
+const RIGHT_STICK_GAMEPAD_BUTTON_INDEX = 11;
 
 type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'inventory' | 'logs';
 
@@ -262,6 +263,52 @@ export function ModWorkbench() {
 
     return () => {
       disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+
+    let disposed = false;
+    let animationFrame = 0;
+    let rightStickPressed = false;
+    let lastToggleAt = 0;
+
+    const requestToggle = () => {
+      const now = Date.now();
+      if (now - lastToggleAt < 800) return;
+      lastToggleAt = now;
+      void toggleCompanionFocus();
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'F8' || event.repeat) return;
+      event.preventDefault();
+      requestToggle();
+    };
+
+    const watchGamepads = () => {
+      if (disposed) return;
+
+      const gamepads = navigator.getGamepads?.() ?? [];
+      const nextRightStickPressed = Array.from(gamepads).some(
+        (gamepad) => gamepad?.connected && gamepad.buttons[RIGHT_STICK_GAMEPAD_BUTTON_INDEX]?.pressed,
+      );
+
+      if (nextRightStickPressed && !rightStickPressed) {
+        requestToggle();
+      }
+      rightStickPressed = nextRightStickPressed;
+      animationFrame = window.requestAnimationFrame(watchGamepads);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    animationFrame = window.requestAnimationFrame(watchGamepads);
+
+    return () => {
+      disposed = true;
+      window.removeEventListener('keydown', handleKeyDown);
+      if (animationFrame) window.cancelAnimationFrame(animationFrame);
     };
   }, []);
 
@@ -484,8 +531,8 @@ function ModOverviewPanel({
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <ListPanel title="快捷键">
           <div className="grid gap-2 text-sm">
-            <InfoLine label="F8" value="打开或唤起独立窗口；若启用旧游戏内面板，则打开或关闭游戏内面板" />
-            <InfoLine label="RS Click" value="手柄默认打开或唤起独立窗口" />
+            <InfoLine label="F8" value="在游戏与独立窗口之间切换；若启用旧游戏内面板，则打开或关闭游戏内面板" />
+            <InfoLine label="RS Click" value="手柄默认在游戏与独立窗口之间切换" />
             <InfoLine label="F9" value="刷新游戏运行时数据检测" />
             <InfoLine label="窗口关闭" value="关闭按钮会隐藏到托盘；托盘菜单可重新显示或退出" />
           </div>
@@ -1279,7 +1326,7 @@ function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: stri
 
       <Card>
         <CardContent className="grid gap-3 p-4 text-sm md:grid-cols-2">
-          <InfoLine label="本地 API 授权" value={apiToken ? '已通过启动参数接收' : '未收到 token，请从游戏内按 F8 重新唤起窗口'} />
+          <InfoLine label="本地 API 授权" value={apiToken ? '已通过启动参数接收' : '未收到 token，请从游戏内按 F8 重新显示窗口'} />
           <InfoLine label="日志读取" value={settings?.logAccessEnabled ? '开启' : '关闭'} />
           <InfoLine label="读取上限" value={responseLogLimit} />
           <InfoLine label="窗口缓存" value={`最多显示 ${MAX_LOG_LINES_IN_VIEW} 行`} />
@@ -1943,6 +1990,17 @@ function readStoredTab(): ModTab {
   return value === 'overview' || value === 'normal' || value === 'rare' || value === 'service' || value === 'inventory' || value === 'logs'
     ? value
     : 'service';
+}
+
+async function toggleCompanionFocus() {
+  if (!isTauriRuntime()) return;
+
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('toggle_companion_focus');
+  } catch {
+    // Browser mode and older companion builds do not expose this command.
+  }
 }
 
 function formatTime(date: Date) {

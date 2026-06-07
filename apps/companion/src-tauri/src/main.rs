@@ -2,6 +2,7 @@
 
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem};
@@ -10,7 +11,11 @@ use tauri::{Manager, WindowEvent};
 
 const DEFAULT_API_ENDPOINT: &str = "http://127.0.0.1:32145";
 const CONTROL_PORT: u16 = 32146;
-const CONTROL_MESSAGE: &[u8] = b"mystia-steward-companion:show\n";
+const CONTROL_SHOW: &[u8] = b"mystia-steward-companion:show";
+const CONTROL_TOGGLE: &[u8] = b"mystia-steward-companion:toggle";
+const CONTROL_EXIT: &[u8] = b"mystia-steward-companion:exit";
+
+struct GamePidState(Arc<Mutex<Option<u32>>>);
 
 #[tauri::command]
 fn fetch_snapshot(endpoint: String, token: String) -> Result<String, String> {
@@ -18,20 +23,38 @@ fn fetch_snapshot(endpoint: String, token: String) -> Result<String, String> {
 }
 
 fn request_local_api(endpoint: &str, path_override: Option<&str>, token: &str) -> Result<String, String> {
+    request_local_api_with_timeout(
+        endpoint,
+        path_override,
+        token,
+        Duration::from_millis(1800),
+        Duration::from_millis(1800),
+        Duration::from_millis(1200),
+    )
+}
+
+fn request_local_api_with_timeout(
+    endpoint: &str,
+    path_override: Option<&str>,
+    token: &str,
+    connect_timeout: Duration,
+    read_timeout: Duration,
+    write_timeout: Duration,
+) -> Result<String, String> {
     let target = LocalApiTarget::parse(&endpoint)?;
     let path = path_override.unwrap_or(&target.path);
     validate_http_fragment(path, "path")?;
     validate_http_fragment(token, "token")?;
 
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, target.port));
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(1800))
+    let mut stream = TcpStream::connect_timeout(&address, connect_timeout)
         .map_err(|error| format!("connect failed: {error}"))?;
 
     stream
-        .set_read_timeout(Some(Duration::from_millis(1800)))
+        .set_read_timeout(Some(read_timeout))
         .map_err(|error| format!("set read timeout failed: {error}"))?;
     stream
-        .set_write_timeout(Some(Duration::from_millis(1200)))
+        .set_write_timeout(Some(write_timeout))
         .map_err(|error| format!("set write timeout failed: {error}"))?;
 
     let auth_header = if token.trim().is_empty() {
@@ -65,6 +88,39 @@ fn launch_api_endpoint() -> Option<String> {
 fn launch_api_token() -> Option<String> {
     std::env::args()
         .find_map(|arg| arg.strip_prefix("--token=").map(|value| value.to_string()))
+}
+
+#[tauri::command]
+fn toggle_companion_focus(app: tauri::AppHandle, game_pid_state: tauri::State<'_, GamePidState>) {
+    toggle_main_window(&app, current_game_pid(&game_pid_state.0));
+}
+
+fn launch_game_pid() -> Option<u32> {
+    std::env::args().find_map(|arg| {
+        arg.strip_prefix("--game-pid=")
+            .and_then(|value| value.parse::<u32>().ok())
+    })
+}
+
+fn parse_control_game_pid(message: &[u8]) -> Option<u32> {
+    let text = std::str::from_utf8(message).ok()?;
+    text.split_whitespace().find_map(|part| {
+        part.strip_prefix("--game-pid=")
+            .and_then(|value| value.parse::<u32>().ok())
+    })
+}
+
+fn update_game_pid(game_pid: &Arc<Mutex<Option<u32>>>, next: Option<u32>) {
+    let Some(next) = next else {
+        return;
+    };
+    if let Ok(mut current) = game_pid.lock() {
+        *current = Some(next);
+    }
+}
+
+fn current_game_pid(game_pid: &Arc<Mutex<Option<u32>>>) -> Option<u32> {
+    game_pid.lock().ok().and_then(|current| *current)
 }
 
 struct LocalApiTarget {
@@ -142,10 +198,10 @@ fn notify_existing_instance() -> bool {
         return false;
     };
 
-    stream.write_all(CONTROL_MESSAGE).is_ok()
+    stream.write_all(CONTROL_SHOW).is_ok()
 }
 
-fn start_instance_control_server(app: tauri::AppHandle) {
+fn start_instance_control_server(app: tauri::AppHandle, game_pid: Arc<Mutex<Option<u32>>>) {
     thread::spawn(move || {
         let address = SocketAddr::from((Ipv4Addr::LOCALHOST, CONTROL_PORT));
         let Ok(listener) = TcpListener::bind(address) else {
@@ -160,8 +216,15 @@ fn start_instance_control_server(app: tauri::AppHandle) {
             let Ok(size) = stream.read(&mut buffer) else {
                 continue;
             };
-            if buffer[..size].starts_with(CONTROL_MESSAGE) {
+            let message = &buffer[..size];
+            update_game_pid(&game_pid, parse_control_game_pid(message));
+            if message.starts_with(CONTROL_SHOW) {
                 show_main_window(&app);
+            } else if message.starts_with(CONTROL_TOGGLE) {
+                toggle_main_window(&app, current_game_pid(&game_pid));
+            } else if message.starts_with(CONTROL_EXIT) {
+                app.exit(0);
+                break;
             }
         }
     });
@@ -173,8 +236,17 @@ fn start_game_shutdown_monitor(app: tauri::AppHandle, endpoint: String) {
         let mut missing_since: Option<Instant> = None;
 
         loop {
-            thread::sleep(Duration::from_secs(3));
-            if request_local_api(&endpoint, Some("/health"), "").is_ok() {
+            thread::sleep(Duration::from_millis(750));
+            if request_local_api_with_timeout(
+                &endpoint,
+                Some("/health"),
+                "",
+                Duration::from_millis(350),
+                Duration::from_millis(350),
+                Duration::from_millis(250),
+            )
+            .is_ok()
+            {
                 connected_once = true;
                 missing_since = None;
                 continue;
@@ -185,7 +257,7 @@ fn start_game_shutdown_monitor(app: tauri::AppHandle, endpoint: String) {
             }
 
             let missing_at = missing_since.get_or_insert_with(Instant::now);
-            if missing_at.elapsed() >= Duration::from_secs(8) {
+            if missing_at.elapsed() >= Duration::from_secs(2) {
                 app.exit(0);
                 break;
             }
@@ -235,16 +307,30 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
+fn toggle_main_window(app: &tauri::AppHandle, game_pid: Option<u32>) {
+    if let Some(window) = app.get_webview_window("main") {
+        if window.is_focused().unwrap_or(false) {
+            let _ = window.hide();
+            focus_game_window(game_pid);
+            return;
+        }
+    }
+
+    show_main_window(app);
+}
+
 fn main() {
     if notify_existing_instance() {
         return;
     }
 
     tauri::Builder::default()
+        .manage(GamePidState(Arc::new(Mutex::new(launch_game_pid()))))
         .setup(|app| {
             setup_tray(app)?;
             let app_handle = app.handle().clone();
-            start_instance_control_server(app_handle.clone());
+            let game_pid = app.state::<GamePidState>().0.clone();
+            start_instance_control_server(app_handle.clone(), game_pid);
             start_game_shutdown_monitor(
                 app_handle,
                 launch_api_endpoint().unwrap_or_else(|| DEFAULT_API_ENDPOINT.to_string()),
@@ -257,7 +343,84 @@ fn main() {
                 let _ = window.hide();
             }
         })
-        .invoke_handler(tauri::generate_handler![fetch_snapshot, launch_api_endpoint, launch_api_token])
+        .invoke_handler(tauri::generate_handler![
+            fetch_snapshot,
+            launch_api_endpoint,
+            launch_api_token,
+            toggle_companion_focus
+        ])
         .run(tauri::generate_context!())
         .expect("failed to run Mystia Steward companion");
+}
+
+#[cfg(target_os = "windows")]
+fn focus_game_window(game_pid: Option<u32>) {
+    windows_focus::focus_process_window(game_pid);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn focus_game_window(_game_pid: Option<u32>) {}
+
+#[cfg(target_os = "windows")]
+mod windows_focus {
+    use std::ffi::c_void;
+
+    type Bool = i32;
+    type Dword = u32;
+    type Hwnd = *mut c_void;
+    type Lparam = isize;
+
+    const SW_RESTORE: i32 = 9;
+
+    #[repr(C)]
+    struct EnumState {
+        pid: Dword,
+        hwnd: Hwnd,
+    }
+
+    pub fn focus_process_window(pid: Option<u32>) {
+        let Some(pid) = pid else {
+            return;
+        };
+
+        let mut state = EnumState {
+            pid,
+            hwnd: std::ptr::null_mut(),
+        };
+
+        unsafe {
+            EnumWindows(enum_windows_proc, &mut state as *mut EnumState as Lparam);
+            if state.hwnd.is_null() {
+                return;
+            }
+
+            ShowWindow(state.hwnd, SW_RESTORE);
+            SetForegroundWindow(state.hwnd);
+        }
+    }
+
+    unsafe extern "system" fn enum_windows_proc(hwnd: Hwnd, lparam: Lparam) -> Bool {
+        let state = &mut *(lparam as *mut EnumState);
+        if IsWindowVisible(hwnd) == 0 {
+            return 1;
+        }
+
+        let mut window_pid: Dword = 0;
+        GetWindowThreadProcessId(hwnd, &mut window_pid);
+        if window_pid == state.pid {
+            state.hwnd = hwnd;
+            return 0;
+        }
+
+        1
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn EnumWindows(lpEnumFunc: unsafe extern "system" fn(Hwnd, Lparam) -> Bool, lParam: Lparam) -> Bool;
+        fn GetWindowThreadProcessId(hWnd: Hwnd, lpdwProcessId: *mut Dword) -> Dword;
+        fn IsWindowVisible(hWnd: Hwnd) -> Bool;
+        fn SetForegroundWindow(hWnd: Hwnd) -> Bool;
+        fn ShowWindow(hWnd: Hwnd, nCmdShow: i32) -> Bool;
+    }
 }

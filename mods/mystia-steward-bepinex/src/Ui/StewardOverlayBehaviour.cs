@@ -37,6 +37,11 @@ public sealed class StewardOverlayBehaviour : MonoBehaviour
         _controller = null;
     }
 
+    private void OnApplicationQuit()
+    {
+        (_controller as StewardOverlayController)?.Dispose();
+    }
+
     private void EnsureController()
     {
         _controller ??= StewardOverlayRuntimeContext.CreateController();

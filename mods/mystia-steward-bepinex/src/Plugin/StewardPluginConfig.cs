@@ -127,8 +127,8 @@ public sealed class StewardPluginConfig
     public static StewardPluginConfig Bind(ConfigFile config)
     {
         return new StewardPluginConfig(
-            config.Bind("Hotkeys", "ToggleKey", KeyCode.F8, "Open or focus the Mystia Steward companion window. If Ui.EnableInGameOverlay is true, this toggles the in-game overlay instead."),
-            config.Bind("Hotkeys", "ControllerToggleKey", KeyCode.JoystickButton9, "Open or focus the companion window with a controller. Default JoystickButton9 is commonly RS Click."),
+            config.Bind("Hotkeys", "ToggleKey", KeyCode.F8, "Switch focus between the game and the Mystia Steward companion window. If Ui.EnableInGameOverlay is true, this toggles the in-game overlay instead."),
+            config.Bind("Hotkeys", "ControllerToggleKey", KeyCode.JoystickButton9, "Switch focus between the game and companion window with a controller. Default JoystickButton9 is commonly RS Click."),
             config.Bind("Hotkeys", "ReloadKey", KeyCode.F9, "Refresh runtime data detection."),
             config.Bind("Runtime", "AutoRefreshRuntime", true, "Refresh recommendations from live game runtime data."),
             config.Bind("Runtime", "AutoRefreshSeconds", 3f, "Seconds between live runtime-data refreshes."),
