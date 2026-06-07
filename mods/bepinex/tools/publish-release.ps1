@@ -44,28 +44,10 @@ function Get-GhCommand {
     return $Gh.Source
 }
 
-function New-StringList {
-    return ,(New-Object "System.Collections.Generic.List[string]")
-}
-
-function Add-StringListItems {
-    param(
-        [Parameter(Mandatory = $true)]
-        [System.Collections.Generic.List[string]]$List,
-        [Parameter(Mandatory = $true)]
-        [string[]]$Items
-    )
-
-    foreach ($Item in $Items) {
-        [void]$List.Add($Item)
-    }
-}
-
 Push-Location $RepoRoot
 try {
     if (-not $SkipBuild) {
-        $BuildArgs = New-StringList
-        Add-StringListItems -List $BuildArgs -Items @(
+        [string[]]$BuildArgs = @(
             "-ExecutionPolicy",
             "Bypass",
             "-File",
@@ -73,10 +55,11 @@ try {
         )
 
         if (-not [string]::IsNullOrWhiteSpace($ReferenceDir)) {
-            Add-StringListItems -List $BuildArgs -Items @("-ReferenceDir", $ReferenceDir)
+            $BuildArgs += "-ReferenceDir"
+            $BuildArgs += $ReferenceDir
         }
 
-        Invoke-Checked -FilePath "powershell" -Arguments $BuildArgs.ToArray()
+        Invoke-Checked -FilePath "powershell" -Arguments $BuildArgs
     }
 
     if (-not (Test-Path -LiteralPath $ModZip -PathType Leaf)) {
@@ -107,15 +90,17 @@ try {
     $ReleaseExists = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($ExistingRelease)
 
     if ($ReleaseExists) {
-        $UploadArgs = New-StringList
-        Add-StringListItems -List $UploadArgs -Items @("release", "upload", $Tag)
-        Add-StringListItems -List $UploadArgs -Items $AssetPaths
-        Add-StringListItems -List $UploadArgs -Items @("--repo", $Repo)
+        [string[]]$UploadArgs = @("release", "upload", $Tag)
+        foreach ($AssetPath in $AssetPaths) {
+            $UploadArgs += $AssetPath
+        }
+        $UploadArgs += "--repo"
+        $UploadArgs += $Repo
         if ($Clobber) {
-            [void]$UploadArgs.Add("--clobber")
+            $UploadArgs += "--clobber"
         }
 
-        Invoke-Checked -FilePath $Gh -Arguments $UploadArgs.ToArray()
+        Invoke-Checked -FilePath $Gh -Arguments $UploadArgs
     }
     else {
         if ([string]::IsNullOrWhiteSpace($Title)) {
@@ -125,16 +110,22 @@ try {
             $Notes = "Built locally and uploaded with GitHub CLI."
         }
 
-        $CreateArgs = New-StringList
-        Add-StringListItems -List $CreateArgs -Items @("release", "create", $Tag)
-        Add-StringListItems -List $CreateArgs -Items $AssetPaths
-        Add-StringListItems -List $CreateArgs -Items @("--repo", $Repo, "--title", $Title, "--notes", $Notes)
+        [string[]]$CreateArgs = @("release", "create", $Tag)
+        foreach ($AssetPath in $AssetPaths) {
+            $CreateArgs += $AssetPath
+        }
+        $CreateArgs += "--repo"
+        $CreateArgs += $Repo
+        $CreateArgs += "--title"
+        $CreateArgs += $Title
+        $CreateArgs += "--notes"
+        $CreateArgs += $Notes
 
         if ($Prerelease) {
-            [void]$CreateArgs.Add("--prerelease")
+            $CreateArgs += "--prerelease"
         }
 
-        Invoke-Checked -FilePath $Gh -Arguments $CreateArgs.ToArray()
+        Invoke-Checked -FilePath $Gh -Arguments $CreateArgs
     }
 }
 finally {
