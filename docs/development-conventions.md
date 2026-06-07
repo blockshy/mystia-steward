@@ -7,8 +7,15 @@
 - 仓库只维护 BepInEx Mod 与 Tauri 伴随窗口，不再维护独立网站和存档导入页面。
 - 伴随窗口入口为 `apps/companion/src/companion/ModWorkbench.tsx`，顶层挂载在 `apps/companion/src/App.tsx`。
 - 推荐算法集中在 `apps/companion/src/lib/normal-recommend.ts`、`apps/companion/src/lib/rare-recommend.ts` 和 `apps/companion/src/lib/tags.ts`。
-- 结构化数据以 `apps/companion/src/data/*.json` 为源头，构建时同步到 `mods/mystia-steward-bepinex/Data/`。
+- 结构化数据以 `apps/companion/src/data/*.json` 为源头，构建时同步到 `mods/bepinex/Data/`。
 - C# Mod 不引用 TypeScript 模块；共享数据只通过 JSON 同步。
+
+## 命名约束
+
+- 项目、产品名、安装目录、发布产物和用户可见项目引用统一使用 `mystia-steward-companion`。
+- C# 命名空间和类型可使用 `MystiaStewardCompanion`。
+- 旧名称只允许出现在明确的兼容迁移代码或上游来源说明中，例如旧 BepInEx 配置和旧 localStorage key 迁移。
+- 修改路径或项目名时，必须同步更新 README、AGENTS、构建脚本、GitHub Actions 和相关 docs。
 
 ## 编码规范
 
@@ -36,14 +43,23 @@ pnpm tauri:build
 BepInEx 插件：
 
 ```bash
-dotnet build mods/mystia-steward-bepinex/MystiaSteward.BepInEx.csproj -c Release
+dotnet build mods/bepinex/MystiaStewardCompanion.BepInEx.csproj -c Release
 ```
 
 一键发布包：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File mods\mystia-steward-bepinex\tools\build-release.ps1
+powershell -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 ```
+
+该命令会生成发布包；除非用户明确要求，不要运行。
+
+## GitHub Actions
+
+- `.github/workflows/ci.yml` 仅支持手动触发，用于前端 lint 和 build 检查。
+- `.github/workflows/release.yml` 仅在 `v*` tag 或手动 dispatch 时运行。
+- 不要主动创建 tag 或触发 Release workflow；版本构建必须等待用户明确指令。
+- Release workflow 依赖 self-hosted Windows runner 和 `MYSTIA_REFERENCE_DIR` 仓库变量，详细说明见 `docs/github-actions-release.md`。
 
 ## 运行时约束
 
@@ -62,6 +78,6 @@ powershell -ExecutionPolicy Bypass -File mods\mystia-steward-bepinex\tools\build
 
 ## 文档维护
 
-- 用户安装和使用写入 `mods/mystia-steward-bepinex/README.md`。
-- 开发和构建写入 `mods/mystia-steward-bepinex/README.dev.md`。
-- 机制或运行时读取路径变化时，同步更新 `docs/` 和 `mods/mystia-steward-bepinex/docs/`。
+- 用户安装和使用写入 `mods/bepinex/README.md`。
+- 开发和构建写入 `mods/bepinex/README.dev.md`。
+- 机制或运行时读取路径变化时，同步更新 `docs/` 和 `mods/bepinex/docs/`。

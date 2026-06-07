@@ -14,11 +14,10 @@ apps/companion/src-tauri/target/
 src-tauri/target/
 .game
 *.local
-/AGENTS.md
 dev/
 .playwright-cli/
-mods/mystia-steward-bepinex/References/*.dll
-mods/mystia-steward-bepinex/References/*.pdb
+mods/bepinex/References/*.dll
+mods/bepinex/References/*.pdb
 
 # Editor directories and files
 .vscode/*

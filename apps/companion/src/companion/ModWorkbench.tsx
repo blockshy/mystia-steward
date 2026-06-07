@@ -44,9 +44,14 @@ import allIngredients from '@/data/ingredients.json';
 import allBeverages from '@/data/beverages.json';
 
 const DEFAULT_ENDPOINT = 'http://127.0.0.1:32145';
-const ENDPOINT_STORAGE_KEY = 'mystia-steward-mod-api-endpoint';
-const TOKEN_STORAGE_KEY = 'mystia-steward-mod-api-token';
-const TAB_STORAGE_KEY = 'mystia-steward-mod-tab';
+const STORAGE_PREFIX = 'mystia-steward-companion';
+const LEGACY_STORAGE_PREFIX = 'mystia-steward';
+const ENDPOINT_STORAGE_KEY = `${STORAGE_PREFIX}-mod-api-endpoint`;
+const TOKEN_STORAGE_KEY = `${STORAGE_PREFIX}-mod-api-token`;
+const TAB_STORAGE_KEY = `${STORAGE_PREFIX}-mod-tab`;
+const LEGACY_ENDPOINT_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-endpoint`;
+const LEGACY_TOKEN_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-token`;
+const LEGACY_TAB_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-tab`;
 const MAX_RECOMMENDATION_ROWS = 8;
 const MAX_LOG_LINES_IN_VIEW = 400;
 const NON_ORDERABLE_RARE_FOOD_TAGS = new Set(['流行喜爱', '流行厌恶']);
@@ -183,8 +188,12 @@ interface InventoryEditResponse {
 }
 
 export function ModWorkbench() {
-  const [endpoint, setEndpoint] = useState(() => localStorage.getItem(ENDPOINT_STORAGE_KEY) ?? DEFAULT_ENDPOINT);
-  const [apiToken, setApiToken] = useState(() => localStorage.getItem(TOKEN_STORAGE_KEY) ?? '');
+  const [endpoint, setEndpoint] = useState(() =>
+    readMigratedStorage(ENDPOINT_STORAGE_KEY, LEGACY_ENDPOINT_STORAGE_KEY, DEFAULT_ENDPOINT),
+  );
+  const [apiToken, setApiToken] = useState(() =>
+    readMigratedStorage(TOKEN_STORAGE_KEY, LEGACY_TOKEN_STORAGE_KEY, ''),
+  );
   const [tab, setTab] = useState<ModTab>(() => readStoredTab());
   const [serviceFocusMode, setServiceFocusMode] = useState(false);
   const [serviceFocusCompact, setServiceFocusCompact] = useState(false);
@@ -356,7 +365,7 @@ export function ModWorkbench() {
         <div>
           <h1 className="text-2xl font-bold text-foreground">Mod 工作台</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            {snapshot ? `Mystia Steward ${snapshot.pluginVersion}` : '等待本地 API 响应'}
+            {snapshot ? `mystia-steward-companion ${snapshot.pluginVersion}` : '等待本地 API 响应'}
           </p>
         </div>
         <div className="flex w-full max-w-xl items-center gap-2">
@@ -1760,7 +1769,7 @@ async function readLocalApiJson<T>(endpoint: string, apiToken: string, path: str
   }
 
   const headers = new Headers();
-  if (apiToken) headers.set('X-Mystia-Steward-Token', apiToken);
+  if (apiToken) headers.set('X-Mystia-Steward-Companion-Token', apiToken);
   const response = await fetch(targetEndpoint, {
     cache: 'no-store',
     headers,
@@ -2006,11 +2015,23 @@ function isOrderableRareFoodTag(tag: string): boolean {
 }
 
 function readStoredTab(): ModTab {
-  const value = localStorage.getItem(TAB_STORAGE_KEY);
+  const value = readMigratedStorage(TAB_STORAGE_KEY, LEGACY_TAB_STORAGE_KEY, '');
   if (value === 'settings') return 'overview';
   return value === 'overview' || value === 'normal' || value === 'rare' || value === 'service' || value === 'inventory' || value === 'logs'
     ? value
     : 'service';
+}
+
+function readMigratedStorage(key: string, legacyKey: string, fallback: string) {
+  const value = localStorage.getItem(key);
+  if (value !== null) return value;
+
+  const legacyValue = localStorage.getItem(legacyKey);
+  if (legacyValue === null) return fallback;
+
+  localStorage.setItem(key, legacyValue);
+  localStorage.removeItem(legacyKey);
+  return legacyValue;
 }
 
 async function toggleCompanionFocus() {

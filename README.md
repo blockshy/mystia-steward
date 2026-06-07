@@ -1,6 +1,6 @@
-# 夜雀掌柜
+# mystia-steward-companion
 
-**夜雀掌柜 Mystia Steward** 现在是面向《东方夜雀食堂》的 BepInEx IL2CPP Mod。它读取游戏当前运行时数据，并通过独立桌面伴随窗口提供普客、稀客和夜间经营推荐。
+**mystia-steward-companion** 是面向《东方夜雀食堂》的 BepInEx IL2CPP Mod。它读取游戏当前运行时数据，并通过独立桌面伴随窗口提供普客、稀客和夜间经营推荐。
 
 本仓库不再维护独立网站、存档导入页面或浏览器版推荐工具。所有推荐入口都围绕游戏内 Mod 和本地回环 API 工作。
 
@@ -22,19 +22,20 @@
 apps/companion/                Tauri 伴随窗口应用
 apps/companion/src/            React 工作台、推荐算法、UI 组件和结构化数据
 apps/companion/src-tauri/      桌面伴随窗口壳
-mods/mystia-steward-bepinex/   BepInEx 插件、运行时读取、本地 API、打包脚本
+mods/bepinex/                  BepInEx 插件、运行时读取、本地 API、打包脚本
 docs/                          Mod 开发约定、机制知识库和运行时说明
 ```
 
 ## 使用与开发入口
 
-- 用户安装、快捷键和故障排查：[mods/mystia-steward-bepinex/README.md](mods/mystia-steward-bepinex/README.md)
-- 开发环境、构建和打包：[mods/mystia-steward-bepinex/README.dev.md](mods/mystia-steward-bepinex/README.dev.md)
+- 用户安装、快捷键和故障排查：[mods/bepinex/README.md](mods/bepinex/README.md)
+- 开发环境、构建和打包：[mods/bepinex/README.dev.md](mods/bepinex/README.dev.md)
 - 开发约定：[docs/development-conventions.md](docs/development-conventions.md)
+- GitHub Actions 发布方案：[docs/github-actions-release.md](docs/github-actions-release.md)
 - 仓库状态：[docs/repo-memory.md](docs/repo-memory.md)
 - 料理机制：[docs/tmi-cooking-mechanics-knowledge-base.md](docs/tmi-cooking-mechanics-knowledge-base.md)
 - Addressables 映射：[docs/addressables-tag-mapping-playbook.md](docs/addressables-tag-mapping-playbook.md)
-- 运行时读取：[mods/mystia-steward-bepinex/docs/RUNTIME_PROVIDER_NOTES.md](mods/mystia-steward-bepinex/docs/RUNTIME_PROVIDER_NOTES.md)
+- 运行时读取：[mods/bepinex/docs/RUNTIME_PROVIDER_NOTES.md](mods/bepinex/docs/RUNTIME_PROVIDER_NOTES.md)
 
 ## 许可证与来源
 

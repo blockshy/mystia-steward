@@ -61,7 +61,7 @@ fn request_local_api_with_timeout(
     let auth_header = if token.trim().is_empty() {
         String::new()
     } else {
-        format!("X-Mystia-Steward-Token: {}\r\n", token.trim())
+        format!("X-Mystia-Steward-Companion-Token: {}\r\n", token.trim())
     };
     let request = format!(
         "GET {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n{}Connection: close\r\nCache-Control: no-store\r\n\r\n",
@@ -295,13 +295,13 @@ fn start_game_shutdown_monitor(app: tauri::AppHandle, endpoint: String) {
 }
 
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show", "显示夜雀掌柜", true, None::<&str>)?;
+    let show = MenuItem::with_id(app, "show", "显示 mystia-steward-companion", true, None::<&str>)?;
     let reconnect = MenuItem::with_id(app, "reconnect", "重连游戏", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &reconnect, &quit])?;
 
     let mut tray = TrayIconBuilder::new()
-        .tooltip("夜雀掌柜")
+        .tooltip("mystia-steward-companion")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -381,7 +381,7 @@ fn main() {
             toggle_companion_focus
         ])
         .run(tauri::generate_context!())
-        .expect("failed to run Mystia Steward companion");
+        .expect("failed to run mystia-steward-companion");
 }
 
 #[cfg(target_os = "windows")]

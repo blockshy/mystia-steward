@@ -1,8 +1,8 @@
 [package]
 name = "mystia-steward-companion"
 version = "0.1.0"
-description = "Mystia Steward companion window"
-authors = ["Mystia Steward contributors"]
+description = "Desktop companion window for mystia-steward-companion"
+authors = ["mystia-steward-companion contributors"]
 edition = "2021"
 
 [[bin]]

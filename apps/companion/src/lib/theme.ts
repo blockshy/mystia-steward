@@ -3,9 +3,10 @@ import { useEffect, useState } from 'react';
 export type ThemeMode = 'light' | 'dark' | 'system';
 export type ResolvedTheme = 'light' | 'dark';
 
-export const THEME_STORAGE_KEY = 'mystia-steward-theme-mode';
+export const THEME_STORAGE_KEY = 'mystia-steward-companion-theme-mode';
 
-const THEME_CHANGE_EVENT = 'mystia-steward-theme-change';
+const LEGACY_THEME_STORAGE_KEY = 'mystia-steward-theme-mode';
+const THEME_CHANGE_EVENT = 'mystia-steward-companion-theme-change';
 const THEME_MODES = new Set<ThemeMode>(['light', 'dark', 'system']);
 
 function isBrowser() {
@@ -21,7 +22,17 @@ function normalizeThemeMode(value: unknown): ThemeMode {
 export function readThemeMode(): ThemeMode {
   if (!isBrowser()) return 'system';
   try {
-    return normalizeThemeMode(window.localStorage.getItem(THEME_STORAGE_KEY));
+    const value = window.localStorage.getItem(THEME_STORAGE_KEY);
+    if (value !== null) return normalizeThemeMode(value);
+
+    const legacyValue = window.localStorage.getItem(LEGACY_THEME_STORAGE_KEY);
+    if (legacyValue !== null) {
+      window.localStorage.setItem(THEME_STORAGE_KEY, legacyValue);
+      window.localStorage.removeItem(LEGACY_THEME_STORAGE_KEY);
+      return normalizeThemeMode(legacyValue);
+    }
+
+    return 'system';
   } catch {
     return 'system';
   }
