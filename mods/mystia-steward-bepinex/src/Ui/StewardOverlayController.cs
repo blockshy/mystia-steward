@@ -983,6 +983,16 @@ internal sealed class StewardOverlayController
                 return;
             }
 
+            if (!IsNightBusinessScene(_activeSceneName))
+            {
+                _businessContext = new NightBusinessContext
+                {
+                    Source = L("当前不在夜晚经营场景。", "Not in a night business scene."),
+                };
+                if (manual) _status = L("当前无经营场景。", "No active business scene.");
+                return;
+            }
+
             var provider = new NightBusinessReflectionProvider(
                 _repository,
                 CreateNightBusinessDiagnostics(),
@@ -1556,6 +1566,16 @@ internal sealed class StewardOverlayController
     {
         if (_config == null || string.IsNullOrWhiteSpace(sceneName)) return false;
         return ContainsConfiguredKeyword(sceneName, _config.NonGameplaySceneKeywords.Value);
+    }
+
+    private static bool IsNightBusinessScene(string sceneName)
+    {
+        if (string.IsNullOrWhiteSpace(sceneName)) return false;
+
+        var normalized = sceneName.Trim();
+        return string.Equals(normalized, "Work", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(normalized, "WorkScene", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("WorkScene", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string GetActiveSceneName()

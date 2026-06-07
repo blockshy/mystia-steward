@@ -29,6 +29,7 @@ import {
 } from '@/lib/rare-recommend';
 import { isTauriRuntime } from '@/lib/tauri-runtime';
 import type {
+  IBeverage,
   ICustomerRare,
   IIngredient,
   INormalBeverageResult,
@@ -40,6 +41,7 @@ import type {
 } from '@/lib/types';
 import { ALL_PLACES } from '@/lib/types';
 import allIngredients from '@/data/ingredients.json';
+import allBeverages from '@/data/beverages.json';
 
 const DEFAULT_ENDPOINT = 'http://127.0.0.1:32145';
 const ENDPOINT_STORAGE_KEY = 'mystia-steward-mod-api-endpoint';
@@ -48,8 +50,11 @@ const MAX_RECOMMENDATION_ROWS = 8;
 const NON_ORDERABLE_RARE_FOOD_TAGS = new Set(['流行喜爱', '流行厌恶']);
 const INGREDIENTS = allIngredients as IIngredient[];
 const INGREDIENT_ID_BY_NAME = new Map(INGREDIENTS.map((ingredient) => [ingredient.name, ingredient.id]));
+const INGREDIENT_NAME_BY_ID = new Map(INGREDIENTS.map((ingredient) => [ingredient.id, ingredient.name]));
+const BEVERAGES = allBeverages as IBeverage[];
+const BEVERAGE_NAME_BY_ID = new Map(BEVERAGES.map((beverage) => [beverage.id, beverage.name]));
 
-type ModTab = 'settings' | 'normal' | 'rare' | 'service' | 'logs';
+type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'logs';
 
 const RATING_LABELS: Record<TRating, string> = {
   ExGood: '完美',
@@ -268,15 +273,15 @@ export function ModWorkbench() {
         <StatusCard
           label="经营数据"
           value={`${night?.activeRareGuests.length ?? 0} 稀客 / ${night?.orders.length ?? 0} 点单`}
-          detail={night?.place || night?.placeLabel || '未检测到经营场景'}
+          detail={night?.place || night?.placeLabel || '无经营场景'}
           tone={(night?.orders.length ?? 0) > 0 ? 'good' : 'neutral'}
         />
       </div>
 
       <Tabs value={tab} onValueChange={(value) => setTab(value as ModTab)} className="space-y-4">
         <TabsList className="h-9 !w-full max-w-full justify-stretch overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          <TabsTrigger value="settings" className="min-w-0 flex-1">
-            设置
+          <TabsTrigger value="overview" className="min-w-0 flex-1">
+            概览
           </TabsTrigger>
           <TabsTrigger value="normal" className="min-w-0 flex-1">
             普客
@@ -292,8 +297,8 @@ export function ModWorkbench() {
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="settings">
-          <ModSettingsPanel
+        <TabsContent value="overview">
+          <ModOverviewPanel
             endpoint={normalizedEndpoint}
             snapshot={snapshot}
             runtime={runtime}
@@ -365,7 +370,7 @@ export function ModWorkbench() {
   );
 }
 
-function ModSettingsPanel({
+function ModOverviewPanel({
   endpoint,
   snapshot,
   runtime,
@@ -381,12 +386,12 @@ function ModSettingsPanel({
   lastConnectedAt: Date | null;
 }) {
   const ownedIngredientEntries = useMemo(
-    () => Object.entries(runtime?.ownedIngredientQty ?? {})
-      .map(([id, qty]) => ({ id: Number(id), qty }))
-      .filter((item) => Number.isFinite(item.id))
-      .sort((a, b) => a.qty - b.qty || a.id - b.id)
-      .slice(0, 8),
+    () => buildLowStockEntries(runtime?.ownedIngredientQty ?? {}, INGREDIENT_NAME_BY_ID),
     [runtime?.ownedIngredientQty],
+  );
+  const ownedBeverageEntries = useMemo(
+    () => buildLowStockEntries(runtime?.ownedBeverageQty ?? {}, BEVERAGE_NAME_BY_ID),
+    [runtime?.ownedBeverageQty],
   );
 
   return (
@@ -426,18 +431,15 @@ function ModSettingsPanel({
         <ListPanel title="实时标签">
           <InfoLine label="流行喜爱" value={runtime?.popularFoodTag || '无'} />
           <InfoLine label="流行厌恶" value={runtime?.popularHateFoodTag || '无'} />
-          <InfoLine label="当前经营场景" value={night?.place || night?.placeLabel || '未检测到'} />
+          <InfoLine label="当前经营场景" value={night?.place || night?.placeLabel || '无经营场景'} />
           <InfoLine label="经营扫描" value={night?.source || '暂无'} />
         </ListPanel>
 
         <ListPanel title="低库存概览">
-          {ownedIngredientEntries.length === 0 && <EmptyRow text="暂无库存数据" />}
-          {ownedIngredientEntries.map((item) => (
-            <div key={item.id} className="flex items-center justify-between border-b py-2 text-sm last:border-b-0">
-              <span>食材 #{item.id}</span>
-              <span className="text-muted-foreground">{item.qty}</span>
-            </div>
-          ))}
+          <div className="grid gap-4 md:grid-cols-2">
+            <LowStockColumn title="材料" entries={ownedIngredientEntries} />
+            <LowStockColumn title="酒水" entries={ownedBeverageEntries} />
+          </div>
         </ListPanel>
       </div>
     </div>
@@ -758,7 +760,7 @@ function ModServicePanel({
 
       <Card>
         <CardContent className="grid gap-3 p-4 text-sm md:grid-cols-3">
-          <InfoLine label="经营场景" value={detectedPlace ?? night?.placeLabel ?? '未检测到'} />
+          <InfoLine label="经营场景" value={detectedPlace ?? night?.placeLabel ?? '无经营场景'} />
           <InfoLine label="扫描状态" value={night?.source || '暂无'} />
           <InfoLine label="推荐数据" value={runtime ? '已就绪' : '暂不可用'} />
         </CardContent>
@@ -986,6 +988,48 @@ function ListPanel({ title, children }: { title: string; children: ReactNode }) 
   );
 }
 
+function LowStockColumn({
+  title,
+  entries,
+}: {
+  title: string;
+  entries: LowStockEntry[];
+}) {
+  return (
+    <div>
+      <h3 className="mb-1 text-sm font-medium">{title}</h3>
+      {entries.length === 0 && <EmptyRow text="暂无库存数据" />}
+      {entries.map((item) => (
+        <div key={item.id} className="flex items-center justify-between border-b py-2 text-sm last:border-b-0">
+          <span>{item.name}</span>
+          <span className="text-muted-foreground">{item.qty}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TagSummary({
+  tags,
+  cancelledTags,
+}: {
+  tags: string[];
+  cancelledTags: string[];
+}) {
+  if (tags.length === 0 && cancelledTags.length === 0) return null;
+
+  return (
+    <div className="mt-1 flex flex-wrap gap-1">
+      {tags.map((tag) => <TagBadge key={tag} tag={tag} variant="default" />)}
+      {cancelledTags.map((tag) => (
+        <Badge key={`cancelled-${tag}`} variant="outline" className="text-muted-foreground">
+          已抵消 {tag}
+        </Badge>
+      ))}
+    </div>
+  );
+}
+
 function EmptyRow({ text }: { text: string }) {
   return <div className="py-6 text-center text-sm text-muted-foreground">{text}</div>;
 }
@@ -1170,6 +1214,7 @@ function RecipeRecommendationRow({
       <div className="mt-1 text-xs text-muted-foreground">
         厨具: {recipe.recipe.cooker || '未知'} · 基础配方: {formatIngredientNamesWithQty(recipe.recipe.ingredients, ownedIngredientQty) || '无'}
       </div>
+      <TagSummary tags={recipe.allTags} cancelledTags={recipe.cancelledTags} />
     </div>
   );
 }
@@ -1359,6 +1404,31 @@ function normalizeOwnedIngredientQty(ownedIngredientQty: Record<string, number>)
   ) as Record<number, number>;
 }
 
+interface LowStockEntry {
+  id: number;
+  name: string;
+  qty: number;
+}
+
+function buildLowStockEntries(
+  qtyById: Record<string, number>,
+  nameById: Map<number, string>,
+  limit = 8,
+): LowStockEntry[] {
+  return Object.entries(qtyById)
+    .map(([id, qty]) => {
+      const numericId = Number(id);
+      return {
+        id: numericId,
+        name: nameById.get(numericId) ?? `#${id}`,
+        qty,
+      };
+    })
+    .filter((item) => Number.isFinite(item.id))
+    .sort((a, b) => a.qty - b.qty || a.id - b.id)
+    .slice(0, limit);
+}
+
 function buildRecommendationStateSignature(runtime: RecommendationStateSnapshot) {
   const ownedQty = Object.entries(runtime.ownedIngredientQty)
     .sort(([a], [b]) => Number(a) - Number(b))
@@ -1404,7 +1474,8 @@ function isOrderableRareFoodTag(tag: string): boolean {
 
 function readStoredTab(): ModTab {
   const value = localStorage.getItem(TAB_STORAGE_KEY);
-  return value === 'settings' || value === 'normal' || value === 'rare' || value === 'service' || value === 'logs'
+  if (value === 'settings') return 'overview';
+  return value === 'overview' || value === 'normal' || value === 'rare' || value === 'service' || value === 'logs'
     ? value
     : 'service';
 }
