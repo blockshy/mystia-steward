@@ -49,7 +49,7 @@ dotnet build mods/bepinex/MystiaStewardCompanion.BepInEx.csproj -c Release
 一键发布包：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 ```
 
 该命令会生成发布包；除非用户明确要求，不要运行。

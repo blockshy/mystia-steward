@@ -23,14 +23,14 @@
 复制引用后，在仓库根目录运行：
 
 ```bash
-powershell -ExecutionPolicy Bypass -File mods\bepinex\tools\preflight.ps1
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\preflight.ps1
 dotnet build mods/bepinex/MystiaStewardCompanion.BepInEx.csproj -c Release
 ```
 
 如果不想复制到 `mods\bepinex\References`，也可以把上述 DLL 放在同一个外部目录，并在构建或发布时传入：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 `
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 `
   -ReferenceDir "D:\path\to\mystia-steward-companion-references"
 ```
 

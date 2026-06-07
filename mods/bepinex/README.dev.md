@@ -21,6 +21,7 @@ Windows 上通常需要：
 
 - .NET 6 SDK 或更新版本。
 - Node.js 20+，并通过 Corepack 使用仓库固定的 `pnpm@10.10.0`。
+- PowerShell 7。
 - Rust stable、Microsoft C++ Build Tools 2022 或 Visual Studio “使用 C++ 的桌面开发”组件。
 - Microsoft Edge WebView2 Runtime。
 - 已安装并启动过一次 BepInEx Unity IL2CPP 的游戏目录。
@@ -64,7 +65,7 @@ mods/bepinex/
 复制完成后运行前置检查：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File mods\bepinex\tools\preflight.ps1
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\preflight.ps1
 ```
 
 Git Bash 可运行：
@@ -75,17 +76,17 @@ bash mods/bepinex/tools/preflight.sh
 
 ## 一键构建
 
-Windows PowerShell 从仓库根目录执行：
+PowerShell 7 从仓库根目录执行：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 ```
 
 该脚本会依次执行 `pnpm install --frozen-lockfile`、`preflight.ps1`、数据同步、伴随窗口前端构建、Tauri 伴随窗口构建、Mod DLL 构建和安装包生成。
 脚本开始时会先检查 `mods\bepinex\References` 中的 BepInEx/Unity 引用 DLL。若引用 DLL 放在其他目录，可显式传入：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 `
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 `
   -ReferenceDir "D:\path\to\mystia-steward-companion-references"
 ```
 
@@ -93,10 +94,10 @@ powershell -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 `
 
 ```powershell
 # 跳过依赖安装
-powershell -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 -SkipInstall
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 -SkipInstall
 
 # 只改 C# Mod，不重建伴随窗口前端和 Tauri 程序
-powershell -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 -SkipInstall -SkipFrontendBuild -SkipTauriBuild
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 -SkipInstall -SkipFrontendBuild -SkipTauriBuild
 ```
 
 如果修改了 `apps/companion/src/` 或 Tauri 窗口相关代码，不要使用 `-SkipTauriBuild`，否则安装包中的伴随窗口仍会使用旧产物。
@@ -115,7 +116,7 @@ dotnet build mods/bepinex/MystiaStewardCompanion.BepInEx.csproj -c Release
 仅重新生成安装包：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File mods\bepinex\tools\package-release.ps1
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\package-release.ps1
 ```
 
 Linux 或 Git Bash：
@@ -134,20 +135,20 @@ mods/bepinex/bin/Release/MystiaStewardCompanion.BepInEx.dll
 mods/bepinex/dist/mystia-steward-companion-bepinex.zip
 ```
 
-PowerShell 脚本固定生成 `.zip`；bash 脚本在系统没有 `zip` 时会改为生成 `.tar.gz`。打包脚本会在检测到 `apps/companion/src-tauri/target/release/mystia-steward-companion(.exe)` 时自动复制到安装包的 `companion/` 子目录。
+PowerShell 7 脚本固定生成 `.zip`；bash 脚本在系统没有 `zip` 时会改为生成 `.tar.gz`。打包脚本会在检测到 `apps/companion/src-tauri/target/release/mystia-steward-companion(.exe)` 时自动复制到安装包的 `companion/` 子目录。
 
 本地发布方案见仓库根目录的 `docs/local-release.md`。仓库不使用 GitHub Actions 自动构建 Release；版本发布需要在 Windows 本机构建完整产物后通过 GitHub CLI 上传。
 
 一键构建并发布：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 -Tag v1.0.0
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 -Tag v1.0.0
 ```
 
 如果引用 DLL 不在 `mods\bepinex\References`，发布时同样传入 `-ReferenceDir`：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
   -Tag v1.0.0 `
   -ReferenceDir "D:\path\to\mystia-steward-companion-references"
 ```

@@ -1,3 +1,5 @@
+#requires -Version 7.0
+
 param(
     [Parameter(Mandatory = $true)]
     [string]$Tag,
@@ -44,6 +46,31 @@ function Get-GhCommand {
     return $Gh.Source
 }
 
+function Get-PwshCommand {
+    $Pwsh = Get-Command "pwsh" -ErrorAction SilentlyContinue
+    if ($null -eq $Pwsh) {
+        throw "PowerShell 7 was not found. Install PowerShell 7 and run this script with: pwsh -ExecutionPolicy Bypass -File $PSCommandPath"
+    }
+
+    return $Pwsh.Source
+}
+
+function Test-GhReleaseExists {
+    param(
+        [Parameter(Mandatory = $true)][string]$Gh,
+        [Parameter(Mandatory = $true)][string]$Tag,
+        [Parameter(Mandatory = $true)][string]$Repo
+    )
+
+    try {
+        $Output = & $Gh release view $Tag --repo $Repo --json tagName 2>$null
+        return $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($Output)
+    }
+    catch {
+        return $false
+    }
+}
+
 Push-Location $RepoRoot
 try {
     if (-not $SkipBuild) {
@@ -59,7 +86,8 @@ try {
             $BuildArgs += $ReferenceDir
         }
 
-        Invoke-Checked -FilePath "powershell" -Arguments $BuildArgs
+        $Pwsh = Get-PwshCommand
+        Invoke-Checked -FilePath $Pwsh -Arguments $BuildArgs
     }
 
     if (-not (Test-Path -LiteralPath $ModZip -PathType Leaf)) {
@@ -86,8 +114,7 @@ try {
     $AssetPaths += $ChecksumPath
 
     $Gh = Get-GhCommand
-    $ExistingRelease = & $Gh release view $Tag --repo $Repo --json tagName 2>$null
-    $ReleaseExists = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($ExistingRelease)
+    $ReleaseExists = Test-GhReleaseExists -Gh $Gh -Tag $Tag -Repo $Repo
 
     if ($ReleaseExists) {
         [string[]]$UploadArgs = @("release", "upload", $Tag)

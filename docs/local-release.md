@@ -19,6 +19,7 @@
 - Rust stable。
 - Microsoft C++ Build Tools 2022 或 Visual Studio “使用 C++ 的桌面开发”组件。
 - Microsoft Edge WebView2 Runtime。
+- PowerShell 7。
 - GitHub CLI，并完成 `gh auth login`。
 
 `mods/bepinex/References/` 需要包含：
@@ -39,7 +40,7 @@ UnityEngine.InputLegacyModule.dll
 从仓库根目录执行：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
   -Tag v1.0.0 `
   -Title "v1.0.0" `
   -Notes "首个正式版本"
@@ -48,7 +49,7 @@ powershell -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 
 如果引用 DLL 不在 `mods\bepinex\References`，传入同一个目录：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
   -Tag v1.0.0 `
   -Title "v1.0.0" `
   -Notes "首个正式版本" `
@@ -68,7 +69,7 @@ powershell -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 
 如果已经构建过，只重新上传：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
+pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
   -Tag v1.0.0 `
   -SkipBuild `
   -Clobber
