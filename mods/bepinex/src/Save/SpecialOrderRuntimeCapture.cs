@@ -231,8 +231,8 @@ public static class SpecialOrderRuntimeCapture
 
         lock (SyncRoot)
         {
-            var existing = Orders.Where(current => IsSameOrderSlot(current, order)).ToList();
-            Orders.RemoveAll(current => IsSameOrderSlot(current, order));
+            var existing = Orders.Where(current => CanMergeCapturedOrders(current, order)).ToList();
+            Orders.RemoveAll(current => CanMergeCapturedOrders(current, order));
 
             var next = existing.Aggregate(order, MergeCapturedOrder);
             Orders.Add(next);
@@ -253,7 +253,7 @@ public static class SpecialOrderRuntimeCapture
 
         lock (SyncRoot)
         {
-            var removed = Orders.RemoveAll(existing => IsSameOrderSlot(existing, order));
+            var removed = Orders.RemoveAll(existing => IsSameOrderRemovalMatch(existing, order));
             _lastCapture = $"removed: desk={order.DeskCode}, guestId={order.GuestId?.ToString() ?? ""}";
             if (removed > 0) _changeVersion++;
             _status = BuildStatusLocked();
@@ -419,6 +419,37 @@ public static class SpecialOrderRuntimeCapture
         if (left.DeskCode >= 0 && right.DeskCode >= 0 && left.DeskCode != right.DeskCode) return false;
         if (left.GuestId.HasValue && right.GuestId.HasValue) return left.GuestId.Value == right.GuestId.Value;
         return string.Equals(left.GuestName, right.GuestName, StringComparison.Ordinal);
+    }
+
+    private static bool CanMergeCapturedOrders(CapturedRuntimeSpecialOrder left, CapturedRuntimeSpecialOrder right)
+    {
+        return IsSameOrderSlot(left, right) && CanMergeCapturedOrderDetails(left, right);
+    }
+
+    private static bool IsSameOrderRemovalMatch(CapturedRuntimeSpecialOrder existing, CapturedRuntimeSpecialOrder removed)
+    {
+        if (!string.IsNullOrWhiteSpace(existing.RuntimeKey)
+            && !string.IsNullOrWhiteSpace(removed.RuntimeKey))
+        {
+            return string.Equals(existing.RuntimeKey, removed.RuntimeKey, StringComparison.Ordinal);
+        }
+
+        if (!IsSameOrderSlot(existing, removed)) return false;
+
+        if (!HasAnyOrderDetail(removed))
+        {
+            return true;
+        }
+
+        return CanMergeCapturedOrderDetails(existing, removed);
+    }
+
+    private static bool HasAnyOrderDetail(CapturedRuntimeSpecialOrder order)
+    {
+        return order.HasFoodTagId
+            || order.HasBeverageTagId
+            || !string.IsNullOrWhiteSpace(order.FoodTag)
+            || !string.IsNullOrWhiteSpace(order.BeverageTag);
     }
 
     private static CapturedRuntimeSpecialOrder MergeCapturedOrder(
