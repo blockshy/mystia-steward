@@ -66,7 +66,7 @@ const MAX_RECOMMENDATION_ROWS = 8;
 const MAX_FOCUS_RECOMMENDATION_ROWS = 20;
 const DEFAULT_FOCUS_RECOMMENDATION_ROWS = 8;
 const DEFAULT_WINDOW_OPACITY = 0.96;
-const MIN_WINDOW_OPACITY = 0.6;
+const MIN_WINDOW_OPACITY = 0.2;
 const MAX_LOG_LINES_IN_VIEW = 400;
 const NON_ORDERABLE_RARE_FOOD_TAGS = new Set(['流行喜爱', '流行厌恶']);
 const INGREDIENTS = allIngredients as IIngredient[];
@@ -563,31 +563,34 @@ export function ModWorkbench() {
       </div>
 
       <Tabs value={tab} onValueChange={(value) => setTab(value as ModTab)} className="space-y-4">
-        <TabsList className="h-9 !w-full max-w-full justify-stretch overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          <TabsTrigger value="overview" className="min-w-0 flex-1">
+        <TabsList
+          className="h-9 !w-full max-w-full justify-stretch overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          data-gamepad-scope="tabs"
+        >
+          <TabsTrigger value="overview" className="min-w-0 flex-1" data-gamepad-tab="true" data-gamepad-tab-value="overview">
             概览
           </TabsTrigger>
-          <TabsTrigger value="normal" className="min-w-0 flex-1">
+          <TabsTrigger value="normal" className="min-w-0 flex-1" data-gamepad-tab="true" data-gamepad-tab-value="normal">
             普客
           </TabsTrigger>
-          <TabsTrigger value="rare" className="min-w-0 flex-1">
+          <TabsTrigger value="rare" className="min-w-0 flex-1" data-gamepad-tab="true" data-gamepad-tab-value="rare">
             稀客
           </TabsTrigger>
-          <TabsTrigger value="service" className="min-w-0 flex-1">
+          <TabsTrigger value="service" className="min-w-0 flex-1" data-gamepad-tab="true" data-gamepad-tab-value="service">
             经营中
           </TabsTrigger>
-          <TabsTrigger value="inventory" className="min-w-0 flex-1">
+          <TabsTrigger value="inventory" className="min-w-0 flex-1" data-gamepad-tab="true" data-gamepad-tab-value="inventory">
             修改
           </TabsTrigger>
-          <TabsTrigger value="logs" className="min-w-0 flex-1">
+          <TabsTrigger value="logs" className="min-w-0 flex-1" data-gamepad-tab="true" data-gamepad-tab-value="logs">
             日志
           </TabsTrigger>
-          <TabsTrigger value="settings" className="min-w-0 flex-1">
+          <TabsTrigger value="settings" className="min-w-0 flex-1" data-gamepad-tab="true" data-gamepad-tab-value="settings">
             设置
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="overview">
+        <TabsContent value="overview" data-gamepad-scope="content">
           <ModOverviewPanel
             endpoint={normalizedEndpoint}
             snapshot={snapshot}
@@ -598,7 +601,7 @@ export function ModWorkbench() {
           />
         </TabsContent>
 
-        <TabsContent value="normal">
+        <TabsContent value="normal" data-gamepad-scope="content">
           <ModNormalPanel
             runtime={runtime}
             runtimeSets={runtimeSets}
@@ -609,7 +612,7 @@ export function ModWorkbench() {
           />
         </TabsContent>
 
-        <TabsContent value="rare">
+        <TabsContent value="rare" data-gamepad-scope="content">
           <ModRarePanel
             runtime={runtime}
             runtimeSets={runtimeSets}
@@ -646,7 +649,7 @@ export function ModWorkbench() {
           />
         </TabsContent>
 
-        <TabsContent value="service">
+        <TabsContent value="service" data-gamepad-scope="content">
           <ModServicePanel
             runtime={runtime}
             night={night}
@@ -663,7 +666,7 @@ export function ModWorkbench() {
           />
         </TabsContent>
 
-        <TabsContent value="inventory">
+        <TabsContent value="inventory" data-gamepad-scope="content">
           <ModInventoryPanel
             endpoint={normalizedEndpoint}
             apiToken={apiToken}
@@ -673,11 +676,11 @@ export function ModWorkbench() {
           />
         </TabsContent>
 
-        <TabsContent value="logs">
+        <TabsContent value="logs" data-gamepad-scope="content">
           <ModLogsPanel endpoint={normalizedEndpoint} apiToken={apiToken} />
         </TabsContent>
 
-        <TabsContent value="settings">
+        <TabsContent value="settings" data-gamepad-scope="content">
           <ModSettingsPanel
             preferences={companionPreferences}
             themeMode={themeMode}
