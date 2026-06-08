@@ -2618,7 +2618,7 @@ async function prepareNextRareOrder(
     guestName: item.order.guestName,
     foodTag: item.order.foodTag,
     beverageTag: item.order.beverageTag,
-    recipeId: recipe ? String(recipe.recipe.id) : '-1',
+    recipeId: recipe ? String(recipe.recipe.recipeId) : '-1',
     recipeName: recipe?.recipe.name ?? '',
     extraIngredientIds: recipe ? recipe.extraIngredients.map((ingredient) => ingredient.id).join(',') : '',
     beverageId: beverage ? String(beverage.beverage.id) : '-1',

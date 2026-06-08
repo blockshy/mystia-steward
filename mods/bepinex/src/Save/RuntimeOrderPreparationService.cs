@@ -259,7 +259,7 @@ internal static class RuntimeOrderPreparationService
         }
 
         var extraText = extraIngredientIds.Count == 0 ? "不加料" : string.Join(",", extraIngredientIds);
-        return (true, $"{recipeName} 已开始制作（加料：{extraText}）。");
+        return (true, $"{recipeName} 已开始制作（配方 #{recipeId}，加料：{extraText}）。");
     }
 
     private static void RegisterPendingCookingCollection(object cookController, string recipeName)
