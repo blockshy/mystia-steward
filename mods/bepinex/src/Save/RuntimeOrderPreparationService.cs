@@ -192,7 +192,8 @@ internal static class RuntimeOrderPreparationService
         var runtimeOrder = FindRuntimeOrder(request);
         if (runtimeOrder.Order == null || runtimeOrder.Controller == null || runtimeOrder.Manager == null)
         {
-            AddFailure(result, "匹配运行时订单", "未找到当前第一笔稀客订单对象，可能订单已完成、客人已离场或经营状态刚刷新。");
+            var diagnostic = string.IsNullOrWhiteSpace(runtimeOrder.Diagnostic) ? "" : $"（{runtimeOrder.Diagnostic}）";
+            AddFailure(result, "匹配运行时订单", $"未找到当前第一笔稀客订单对象，可能订单已完成、客人已离场或经营状态刚刷新。{diagnostic}");
             return Finish(result);
         }
 
@@ -855,11 +856,15 @@ internal static class RuntimeOrderPreparationService
         var manager = GetSingletonInstance(GuestsManagerTypeName);
         if (manager == null) return new RuntimeOrderMatch();
 
+        var scannedControllers = 0;
+        var scannedOrders = 0;
         foreach (var controller in EnumerateGuestControllers(manager))
         {
+            scannedControllers++;
             if (controller == null) continue;
             foreach (var order in EnumerateControllerOrders(controller))
             {
+                scannedOrders++;
                 try
                 {
                     if (!IsMatchingSpecialOrder(order, controller, request)) continue;
@@ -878,7 +883,10 @@ internal static class RuntimeOrderPreparationService
             }
         }
 
-        return new RuntimeOrderMatch();
+        return new RuntimeOrderMatch
+        {
+            Diagnostic = $"scannedControllers={scannedControllers}, scannedOrders={scannedOrders}",
+        };
     }
 
     private static IEnumerable<object> EnumerateGuestControllers(object manager)
@@ -917,7 +925,7 @@ internal static class RuntimeOrderPreparationService
     private static IEnumerable<object> EnumerateControllerOrders(object controller)
     {
         var seen = new HashSet<nint>();
-        foreach (var name in new[] { "AllOrders", "AllOrdersData", "PeekOrders" })
+        foreach (var name in new[] { "AllOrders", "AllOrdersData" })
         {
             foreach (var order in ReadObjectEnumerable(ReadMember(controller, name)))
             {
@@ -934,6 +942,24 @@ internal static class RuntimeOrderPreparationService
                 if (!seen.Add(pointer)) continue;
                 yield return order;
             }
+        }
+
+        var peekOrder = TryInvokeInstanceValue(controller, "PeekOrders");
+        if (peekOrder == null) yield break;
+
+        var shouldYieldPeekOrder = false;
+        try
+        {
+            shouldYieldPeekOrder = seen.Add(ReadObjectPointer(peekOrder));
+        }
+        catch
+        {
+            // Ignore stale IL2CPP order objects while scanning live controllers.
+        }
+
+        if (shouldYieldPeekOrder)
+        {
+            yield return peekOrder;
         }
     }
 
@@ -1256,6 +1282,7 @@ internal static class RuntimeOrderPreparationService
         public object? Manager { get; init; }
         public object? Controller { get; init; }
         public object? Order { get; init; }
+        public string Diagnostic { get; init; } = "";
     }
 
     private sealed class ServeItemSelection
