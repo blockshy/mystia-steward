@@ -29,7 +29,7 @@
 - 运行时捕获订单维护 `ChangeVersion`；UI 控制器在版本变化后延迟 0.2 秒强制刷新经营数据并发布本地 API 快照。伴随窗口在 `经营中` 和稀客专注模式下以 750ms 轮询快照，其他页面保持 2 秒。
 - 运行时稀客 ID 会先归一化为本地 `customer_rare.json` 身份；优先读取游戏 `DataBaseCharacter.GetAllMappedGuests()` 固定映射和 `GetSpecialGuestsAndMappedGuests()` 完整运行时稀客表，运行时表按游戏语言名称匹配本地唯一同名稀客，手工事件变体只作为兜底。本地缺失但运行时具备有效喜好 Tag 的稀客会合成为临时 `RuntimeRareCustomer`，供经营中订单推荐和伴随窗口稀客页使用；剧情 Intro/Parallel/Current、问号占位、隐藏图鉴、NeverCome、无喜好数据的角色不合成。带具体桌号的捕获订单只允许匹配同一桌活跃稀客，未入座 `desk=-1` 稀客不能保活旧订单。
 - 诊断开启且经营数据扫描触发时，运行时固定数据会按主题写到诊断目录：`runtime-static-data.log` 映射稀客与 `aliasSource`、`runtime-tags.log` 标签和 TagRule、`runtime-database-diff.log` 核心食材/酒水/料理表对照与读取方式、`runtime-guests.log` 普客/稀客/事件变体、`runtime-izakayas.log` 场景和客人池。游戏数据库未初始化时每 5 秒重试，日志头部 `Complete: True` 表示读取成功。
-- 稀客订单专注模式支持精简模式，精简模式隐藏推荐料理 Tag 并压缩推荐面板间距。
+- 稀客订单专注模式支持精简模式和料理/酒水显示数量配置；精简模式隐藏推荐料理 Tag 并压缩推荐面板间距，显示数量包含收藏置顶项。
 
 ## 推荐排序口径
 
@@ -38,4 +38,4 @@
 - 稀客和经营中主推荐列表只展示满足当前点单料理 Tag / 酒水 Tag 的结果；未满足点单的 fallback 不得混入正式推荐。料理推荐优先 3 分以上候选，但低于 3 分且满足点单的料理仍要作为兜底显示。
 - 稀客收藏保存在 `BepInEx/config/MystiaStewardCompanion/favorites.json`，按 `customerId + foodTag` 收藏料理方案（含加料 ID），按 `customerId + beverageTag` 收藏酒水。收藏只置顶当前仍在推荐候选中的结果，不绕过解锁、库存和点单 Tag 校验。
 - 经营中订单显示顺序：首次出现时间升序；新订单不应插到已有订单前面。
-- 推荐行需要显示库存数量；料理行需要显示厨具和基础配方。
+- 推荐行需要显示库存数量；料理行需要显示厨具、基础配方和加料，并对这些定位信息做高亮。

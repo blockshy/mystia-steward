@@ -49,10 +49,15 @@ const LEGACY_STORAGE_PREFIX = 'mystia-steward';
 const ENDPOINT_STORAGE_KEY = `${STORAGE_PREFIX}-mod-api-endpoint`;
 const TOKEN_STORAGE_KEY = `${STORAGE_PREFIX}-mod-api-token`;
 const TAB_STORAGE_KEY = `${STORAGE_PREFIX}-mod-tab`;
+const FOCUS_COMPACT_STORAGE_KEY = `${STORAGE_PREFIX}-service-focus-compact`;
+const FOCUS_RECIPE_LIMIT_STORAGE_KEY = `${STORAGE_PREFIX}-service-focus-recipe-limit`;
+const FOCUS_BEVERAGE_LIMIT_STORAGE_KEY = `${STORAGE_PREFIX}-service-focus-beverage-limit`;
 const LEGACY_ENDPOINT_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-endpoint`;
 const LEGACY_TOKEN_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-token`;
 const LEGACY_TAB_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-tab`;
 const MAX_RECOMMENDATION_ROWS = 8;
+const MAX_FOCUS_RECOMMENDATION_ROWS = 20;
+const DEFAULT_FOCUS_RECOMMENDATION_ROWS = 8;
 const MAX_LOG_LINES_IN_VIEW = 400;
 const NON_ORDERABLE_RARE_FOOD_TAGS = new Set(['流行喜爱', '流行厌恶']);
 const INGREDIENTS = allIngredients as IIngredient[];
@@ -253,7 +258,15 @@ export function ModWorkbench() {
   );
   const [tab, setTab] = useState<ModTab>(() => readStoredTab());
   const [serviceFocusMode, setServiceFocusMode] = useState(false);
-  const [serviceFocusCompact, setServiceFocusCompact] = useState(false);
+  const [serviceFocusCompact, setServiceFocusCompact] = useState(() =>
+    readStoredBoolean(FOCUS_COMPACT_STORAGE_KEY, false),
+  );
+  const [serviceFocusRecipeLimit, setServiceFocusRecipeLimit] = useState(() =>
+    readStoredFocusLimit(FOCUS_RECIPE_LIMIT_STORAGE_KEY),
+  );
+  const [serviceFocusBeverageLimit, setServiceFocusBeverageLimit] = useState(() =>
+    readStoredFocusLimit(FOCUS_BEVERAGE_LIMIT_STORAGE_KEY),
+  );
   const [snapshot, setSnapshot] = useState<LocalApiSnapshot | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -383,6 +396,18 @@ export function ModWorkbench() {
   }, [tab]);
 
   useEffect(() => {
+    localStorage.setItem(FOCUS_COMPACT_STORAGE_KEY, serviceFocusCompact ? '1' : '0');
+  }, [serviceFocusCompact]);
+
+  useEffect(() => {
+    localStorage.setItem(FOCUS_RECIPE_LIMIT_STORAGE_KEY, String(serviceFocusRecipeLimit));
+  }, [serviceFocusRecipeLimit]);
+
+  useEffect(() => {
+    localStorage.setItem(FOCUS_BEVERAGE_LIMIT_STORAGE_KEY, String(serviceFocusBeverageLimit));
+  }, [serviceFocusBeverageLimit]);
+
+  useEffect(() => {
     if (!isTauriRuntime()) return;
 
     let disposed = false;
@@ -492,7 +517,11 @@ export function ModWorkbench() {
         favoriteBusyKey={favoriteBusyKey}
         favoriteError={favoriteError}
         compact={serviceFocusCompact}
+        recipeLimit={serviceFocusRecipeLimit}
+        beverageLimit={serviceFocusBeverageLimit}
         onCompactChange={setServiceFocusCompact}
+        onRecipeLimitChange={setServiceFocusRecipeLimit}
+        onBeverageLimitChange={setServiceFocusBeverageLimit}
         onToggleRecipeFavorite={toggleRecipeFavorite}
         onToggleBeverageFavorite={toggleBeverageFavorite}
         onExit={() => setServiceFocusMode(false)}
@@ -1149,7 +1178,11 @@ function ServiceFocusPage({
   favoriteBusyKey,
   favoriteError,
   compact,
+  recipeLimit,
+  beverageLimit,
   onCompactChange,
+  onRecipeLimitChange,
+  onBeverageLimitChange,
   onToggleRecipeFavorite,
   onToggleBeverageFavorite,
   onExit,
@@ -1161,7 +1194,11 @@ function ServiceFocusPage({
   favoriteBusyKey: string;
   favoriteError: string;
   compact: boolean;
+  recipeLimit: number;
+  beverageLimit: number;
   onCompactChange: (value: boolean) => void;
+  onRecipeLimitChange: (value: number) => void;
+  onBeverageLimitChange: (value: number) => void;
   onToggleRecipeFavorite: ToggleRecipeFavorite;
   onToggleBeverageFavorite: ToggleBeverageFavorite;
   onExit: () => void;
@@ -1175,10 +1212,22 @@ function ServiceFocusPage({
           <h1 className="text-xl font-semibold text-foreground">稀客订单专注模式</h1>
           <p className="mt-1 text-sm text-muted-foreground">只显示当前稀客点单推荐。</p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant={compact ? 'default' : 'outline'} onClick={() => onCompactChange(!compact)}>
-            {compact ? '常规模式' : '精简模式'}
-          </Button>
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          <SwitchControl
+            label="精简模式"
+            checked={compact}
+            onCheckedChange={onCompactChange}
+          />
+          <FocusLimitInput
+            label="料理"
+            value={recipeLimit}
+            onChange={onRecipeLimitChange}
+          />
+          <FocusLimitInput
+            label="酒水"
+            value={beverageLimit}
+            onChange={onBeverageLimitChange}
+          />
           <Button size="sm" variant="outline" onClick={onExit}>退出专注模式</Button>
         </div>
       </div>
@@ -1192,6 +1241,8 @@ function ServiceFocusPage({
           favoriteBusyKey={favoriteBusyKey}
           favoriteError={favoriteError}
           compact={compact}
+          recipeLimit={recipeLimit}
+          beverageLimit={beverageLimit}
           onToggleRecipeFavorite={onToggleRecipeFavorite}
           onToggleBeverageFavorite={onToggleBeverageFavorite}
         />
@@ -1210,6 +1261,8 @@ function CurrentOrderRecommendations({
   favoriteBusyKey,
   favoriteError,
   compact = false,
+  recipeLimit = MAX_RECOMMENDATION_ROWS,
+  beverageLimit = MAX_RECOMMENDATION_ROWS,
   onToggleRecipeFavorite,
   onToggleBeverageFavorite,
 }: {
@@ -1220,6 +1273,8 @@ function CurrentOrderRecommendations({
   favoriteBusyKey: string;
   favoriteError: string;
   compact?: boolean;
+  recipeLimit?: number;
+  beverageLimit?: number;
   onToggleRecipeFavorite: ToggleRecipeFavorite;
   onToggleBeverageFavorite: ToggleBeverageFavorite;
 }) {
@@ -1261,6 +1316,8 @@ function CurrentOrderRecommendations({
               favorites={favorites}
               favoriteBusyKey={favoriteBusyKey}
               compact={compact}
+              recipeLimit={recipeLimit}
+              beverageLimit={beverageLimit}
               onToggleRecipeFavorite={onToggleRecipeFavorite}
               onToggleBeverageFavorite={onToggleBeverageFavorite}
             />
@@ -1724,6 +1781,61 @@ function RuntimeUnavailable() {
   return <EmptyState text="尚未读取到游戏实时数据。请确认游戏已加载存档，且 Mod 本地 API 已连接。" />;
 }
 
+function SwitchControl({
+  label,
+  checked,
+  onCheckedChange,
+}: {
+  label: string;
+  checked: boolean;
+  onCheckedChange: (value: boolean) => void;
+}) {
+  return (
+    <label className="flex items-center gap-2 text-sm">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        onClick={() => onCheckedChange(!checked)}
+        className={`relative h-5 w-9 rounded-full border transition-colors ${
+          checked ? 'border-primary bg-primary' : 'border-border bg-muted'
+        }`}
+      >
+        <span
+          className={`absolute left-0 top-0.5 size-4 rounded-full bg-background shadow-sm transition-transform ${
+            checked ? 'translate-x-4' : 'translate-x-0.5'
+          }`}
+        />
+      </button>
+      <span className="whitespace-nowrap">{label}</span>
+    </label>
+  );
+}
+
+function FocusLimitInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="flex items-center gap-1.5 text-sm">
+      <span className="whitespace-nowrap text-muted-foreground">{label}</span>
+      <Input
+        type="number"
+        min={1}
+        max={MAX_FOCUS_RECOMMENDATION_ROWS}
+        value={value}
+        onChange={(event) => onChange(normalizeFocusRecommendationLimit(Number(event.target.value)))}
+        className="h-8 w-16"
+      />
+    </label>
+  );
+}
+
 function PlaceToolbar({
   selectedPlace,
   detectedPlace,
@@ -1816,6 +1928,8 @@ function OrderRecommendationPanel({
   favorites,
   favoriteBusyKey,
   compact = false,
+  recipeLimit = MAX_RECOMMENDATION_ROWS,
+  beverageLimit = MAX_RECOMMENDATION_ROWS,
   onToggleRecipeFavorite,
   onToggleBeverageFavorite,
 }: {
@@ -1824,9 +1938,14 @@ function OrderRecommendationPanel({
   favorites: FavoriteData;
   favoriteBusyKey: string;
   compact?: boolean;
+  recipeLimit?: number;
+  beverageLimit?: number;
   onToggleRecipeFavorite: ToggleRecipeFavorite;
   onToggleBeverageFavorite: ToggleBeverageFavorite;
 }) {
+  const visibleRecipes = item.recipes.slice(0, normalizeFocusRecommendationLimit(recipeLimit));
+  const visibleBeverages = item.beverages.slice(0, normalizeFocusRecommendationLimit(beverageLimit));
+
   return (
     <div className={compact ? 'rounded-md border border-border p-2' : 'rounded-md border border-border p-3'}>
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1843,9 +1962,9 @@ function OrderRecommendationPanel({
       <div className={compact ? `mt-2 ${DENSE_TWO_COLUMN_GRID_TIGHT}` : `mt-3 ${DENSE_TWO_COLUMN_GRID}`}>
         <div>
           <h3 className={compact ? 'mb-1 text-xs font-semibold' : 'mb-2 text-sm font-semibold'}>推荐料理</h3>
-          {item.recipes.length === 0 && <EmptyRow text="暂无满足点单的料理" />}
+          {visibleRecipes.length === 0 && <EmptyRow text="暂无满足点单的料理" />}
           <div className={compact ? 'space-y-1.5' : 'space-y-2'}>
-            {item.recipes.map((recipe, index) => (
+            {visibleRecipes.map((recipe, index) => (
               <RecipeRecommendationRow
                 key={`${recipe.recipe.id}-${index}`}
                 recipe={recipe}
@@ -1863,9 +1982,9 @@ function OrderRecommendationPanel({
 
         <div>
           <h3 className={compact ? 'mb-1 text-xs font-semibold' : 'mb-2 text-sm font-semibold'}>推荐酒水</h3>
-          {item.beverages.length === 0 && <EmptyRow text="暂无满足点单的酒水" />}
+          {visibleBeverages.length === 0 && <EmptyRow text="暂无满足点单的酒水" />}
           <div className={compact ? 'space-y-1.5' : 'space-y-2'}>
-            {item.beverages.map((beverage, index) => (
+            {visibleBeverages.map((beverage, index) => (
               <BeverageRecommendationRow
                 key={beverage.beverage.id}
                 beverage={beverage}
@@ -1907,7 +2026,8 @@ function RecipeRecommendationRow({
   const totalCost = recipe.baseCost + recipe.extraCost;
   const extras = recipe.extraIngredients.length === 0
     ? '不加料'
-    : recipe.extraIngredients.map((ingredient) => `+${formatIngredientWithQty(ingredient.name, ownedIngredientQty)}`).join(', ');
+    : recipe.extraIngredients.map((ingredient) => formatIngredientWithQty(ingredient.name, ownedIngredientQty)).join(', ');
+  const baseRecipe = formatIngredientNamesWithQty(recipe.recipe.ingredients, ownedIngredientQty) || '无';
   const busy = favoriteBusyKey === (favorite?.id ?? favoriteKey);
 
   return (
@@ -1934,13 +2054,38 @@ function RecipeRecommendationRow({
         )}
       </div>
       <div className="mt-1 text-xs text-muted-foreground">
-        分数 {recipe.foodScore} · 成本 {totalCost} · {extras}
+        分数 {recipe.foodScore} · 成本 {totalCost}
       </div>
-      <div className="mt-1 text-xs text-muted-foreground">
-        厨具: {recipe.recipe.cooker || '未知'} · 基础配方: {formatIngredientNamesWithQty(recipe.recipe.ingredients, ownedIngredientQty) || '无'}
+      <div className="mt-1 flex flex-wrap gap-1.5">
+        <RecipeMetaHighlight label="厨具" value={recipe.recipe.cooker || '未知'} tone="cooker" />
+        <RecipeMetaHighlight label="基础配方" value={baseRecipe} tone="base" />
+        <RecipeMetaHighlight label="加料" value={extras} tone="extra" />
       </div>
       {!compact && <TagSummary tags={recipe.allTags} cancelledTags={recipe.cancelledTags} />}
     </div>
+  );
+}
+
+function RecipeMetaHighlight({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: 'cooker' | 'base' | 'extra';
+}) {
+  const toneClass = tone === 'cooker'
+    ? 'border-amber-300/70 bg-amber-50 text-amber-950 dark:border-amber-400/30 dark:bg-amber-400/10 dark:text-amber-100'
+    : tone === 'base'
+      ? 'border-emerald-300/70 bg-emerald-50 text-emerald-950 dark:border-emerald-400/30 dark:bg-emerald-400/10 dark:text-emerald-100'
+      : 'border-sky-300/70 bg-sky-50 text-sky-950 dark:border-sky-400/30 dark:bg-sky-400/10 dark:text-sky-100';
+
+  return (
+    <span className={`inline-flex max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs ${toneClass}`}>
+      <span className="shrink-0 font-medium">{label}</span>
+      <span className="min-w-0 truncate" title={value}>{value}</span>
+    </span>
   );
 }
 
@@ -2254,6 +2399,11 @@ function normalizeEditableQuantity(value: number) {
   return Math.max(0, Math.min(9999, Math.trunc(value)));
 }
 
+function normalizeFocusRecommendationLimit(value: number) {
+  if (!Number.isFinite(value)) return DEFAULT_FOCUS_RECOMMENDATION_ROWS;
+  return Math.max(1, Math.min(MAX_FOCUS_RECOMMENDATION_ROWS, Math.trunc(value)));
+}
+
 function buildOrderRecommendations(
   orders: NightBusinessOrder[],
   runtime: RecommendationStateSnapshot | null | undefined,
@@ -2320,8 +2470,8 @@ function buildOrderRecommendations(
     recommendations.push({
       order,
       customer: cached.customer,
-      recipes: promoteFavoriteRecipes(cached.recipes, favorites, customer.id, foodTag).slice(0, MAX_RECOMMENDATION_ROWS),
-      beverages: promoteFavoriteBeverages(cached.beverages, favorites, customer.id, beverageTag).slice(0, MAX_RECOMMENDATION_ROWS),
+      recipes: promoteFavoriteRecipes(cached.recipes, favorites, customer.id, foodTag).slice(0, MAX_FOCUS_RECOMMENDATION_ROWS),
+      beverages: promoteFavoriteBeverages(cached.beverages, favorites, customer.id, beverageTag).slice(0, MAX_FOCUS_RECOMMENDATION_ROWS),
     });
   }
 
@@ -2636,6 +2786,16 @@ function readStoredTab(): ModTab {
   return value === 'overview' || value === 'normal' || value === 'rare' || value === 'service' || value === 'inventory' || value === 'logs'
     ? value
     : 'service';
+}
+
+function readStoredBoolean(key: string, fallback: boolean) {
+  const value = localStorage.getItem(key);
+  if (value === null) return fallback;
+  return value === '1' || value === 'true';
+}
+
+function readStoredFocusLimit(key: string) {
+  return normalizeFocusRecommendationLimit(Number(localStorage.getItem(key) ?? DEFAULT_FOCUS_RECOMMENDATION_ROWS));
 }
 
 function readMigratedStorage(key: string, legacyKey: string, fallback: string) {
