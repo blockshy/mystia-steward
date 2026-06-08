@@ -164,7 +164,15 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\set-version.ps1 -Version 1
 
 git add package.json apps\companion\src-tauri\Cargo.toml apps\companion\src-tauri\Cargo.lock apps\companion\src-tauri\tauri.conf.json mods\bepinex\src\Plugin\MystiaStewardCompanionPlugin.cs
 git commit -m "chore(release): bump version to 1.0.1"
-git push origin main
+git push origin dev
+```
+
+版本号变更先进入 `dev`；确认版本可发布后，再合并到 `main`，并在 `main` 上执行发布脚本。
+
+Linux 开发环境可使用：
+
+```bash
+bash mods/bepinex/tools/set-version.sh 1.0.1
 ```
 
 发布脚本会根据 `-Tag` 校验 `package.json`、`tauri.conf.json`、`Cargo.toml`、`Cargo.lock` 和 `PluginVersion`。如果版本不一致，脚本会失败并提示先同步版本。
@@ -174,6 +182,7 @@ git push origin main
 以 `v1.0.1` 为例：
 
 ```powershell
+git checkout main
 git pull --ff-only origin main
 git fetch --tags --force origin
 

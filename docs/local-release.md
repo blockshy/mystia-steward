@@ -43,13 +43,21 @@ UnityEngine.InputLegacyModule.dll
 pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\set-version.ps1 -Version 1.0.1
 ```
 
-版本号同步后需要提交并推送，再执行发布：
+Linux 开发环境可使用等价脚本：
+
+```bash
+bash mods/bepinex/tools/set-version.sh 1.0.1
+```
+
+版本号同步后先提交到 `dev`：
 
 ```powershell
 git add package.json apps\companion\src-tauri\Cargo.toml apps\companion\src-tauri\Cargo.lock apps\companion\src-tauri\tauri.conf.json mods\bepinex\src\Plugin\MystiaStewardCompanionPlugin.cs
 git commit -m "chore(release): bump version to 1.0.1"
-git push origin main
+git push origin dev
 ```
+
+确认版本可发布后，再合并到 `main`，并在 `main` 上执行发布脚本。
 
 `publish-release.ps1` 会根据 `-Tag` 校验代码版本。如果代码仍是旧版本，脚本会失败并提示先运行 `set-version.ps1`。
 
@@ -58,6 +66,9 @@ git push origin main
 从仓库根目录执行：
 
 ```powershell
+git checkout main
+git pull --ff-only origin main
+
 pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\publish-release.ps1 `
   -Tag v1.0.1 `
   -Title "v1.0.1" `
