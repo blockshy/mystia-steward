@@ -177,7 +177,7 @@ internal static class RuntimeOrderPreparationService
             return (false, $"无法从配方创建料理对象：{recipeName} #{recipeId}。");
         }
 
-        var cookerSelection = TryGetCookerForOrder(baseFood);
+        var cookerSelection = TryGetCookerForOrder(baseFood, recipe);
         if (!cookerSelection.Ok || cookerSelection.CookController == null)
         {
             return (false, cookerSelection.Message);
@@ -308,55 +308,119 @@ internal static class RuntimeOrderPreparationService
         return null;
     }
 
-    private static (bool Ok, object? CookController, string Message) TryGetCookerForOrder(object baseFood)
+    private static (bool Ok, object? CookController, string Message) TryGetCookerForOrder(object baseFood, object recipe)
     {
+        string? partnerMessage = null;
         var partnerManager = GetSingletonInstance(PartnerManagerTypeName);
-        if (partnerManager == null)
+        if (partnerManager != null)
         {
-            return (false, null, "当前经营伙伴管理器不可用，请确认已进入夜晚经营页面。");
-        }
-
-        var method = partnerManager.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-            .FirstOrDefault(candidate =>
-            {
-                if (!string.Equals(candidate.Name, "TryGetCookerForOrder", StringComparison.Ordinal)) return false;
-                var parameters = candidate.GetParameters();
-                return parameters.Length == 4
-                    && !parameters[0].ParameterType.IsByRef
-                    && parameters[1].ParameterType.IsByRef
-                    && parameters[2].ParameterType.IsByRef;
-            });
-        if (method == null)
-        {
-            return (false, null, "未找到游戏厨具选择入口 TryGetCookerForOrder。");
-        }
-
-        foreach (var canUsedCooker in BuildIntArrayArgumentCandidates(method.GetParameters()[3].ParameterType, Array.Empty<int>()))
-        {
-            var args = new object?[] { baseFood, null, null, canUsedCooker };
-            try
-            {
-                var status = ToInt(method.Invoke(partnerManager, args));
-                if (status == 3 && args[1] != null)
+            var method = partnerManager.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                .FirstOrDefault(candidate =>
                 {
-                    return (true, args[1], "已找到空闲可用厨具。");
-                }
-
-                return (false, null, status switch
-                {
-                    0 => "当前没有空闲厨具。",
-                    1 => "当前经营环境无法制作该料理。",
-                    2 => "游戏未匹配到该料理的可用配方。",
-                    _ => $"厨具选择失败，游戏返回状态 {status}。",
+                    if (!string.Equals(candidate.Name, "TryGetCookerForOrder", StringComparison.Ordinal)) return false;
+                    var parameters = candidate.GetParameters();
+                    return parameters.Length == 4
+                        && !parameters[0].ParameterType.IsByRef
+                        && parameters[1].ParameterType.IsByRef
+                        && parameters[2].ParameterType.IsByRef;
                 });
-            }
-            catch
+            if (method != null)
             {
-                // Try the next array representation.
+                foreach (var canUsedCooker in BuildIntArrayArgumentCandidates(method.GetParameters()[3].ParameterType, Array.Empty<int>()))
+                {
+                    var args = new object?[] { baseFood, null, null, canUsedCooker };
+                    try
+                    {
+                        var status = ToInt(method.Invoke(partnerManager, args));
+                        if (status == 3 && args[1] != null)
+                        {
+                            return (true, args[1], "已通过伙伴厨具入口找到空闲可用厨具。");
+                        }
+
+                        partnerMessage = status switch
+                        {
+                            0 => "伙伴厨具入口未返回空闲厨具。",
+                            1 => "伙伴厨具入口判断当前经营环境无法制作该料理。",
+                            2 => "伙伴厨具入口未匹配到该料理的可用配方。",
+                            _ => $"伙伴厨具入口返回状态 {status}。",
+                        };
+                        break;
+                    }
+                    catch
+                    {
+                        partnerMessage = "伙伴厨具入口调用失败。";
+                    }
+                }
+            }
+            else
+            {
+                partnerMessage = "未找到伙伴厨具入口 TryGetCookerForOrder。";
             }
         }
+        else
+        {
+            partnerMessage = "当前经营伙伴管理器不可用。";
+        }
 
-        return (false, null, "调用厨具选择入口失败。");
+        var cookSystemResult = TryGetCookerFromCookSystem(recipe);
+        if (cookSystemResult.Ok)
+        {
+            return cookSystemResult;
+        }
+
+        return (false, null, $"{cookSystemResult.Message}（{partnerMessage}）");
+    }
+
+    private static (bool Ok, object? CookController, string Message) TryGetCookerFromCookSystem(object recipe)
+    {
+        var cookSystem = GetSingletonInstance(CookSystemManagerTypeName);
+        if (cookSystem == null)
+        {
+            return (false, null, "当前厨具管理器不可用，请确认已进入夜晚经营页面。");
+        }
+
+        var controllers = InvokeInstance(cookSystem, "get_AllCookerControllers", Array.Empty<object?>());
+        var recipeCookerType = ToInt(ReadMember(recipe, "cookerType"));
+        var totalCount = 0;
+        var openCount = 0;
+        var matchingCount = 0;
+
+        foreach (var cookController in ReadObjectEnumerable(controllers))
+        {
+            totalCount++;
+            if (!ReadBool(InvokeInstance(cookController, "get_CouldCookerOpen", Array.Empty<object?>())))
+            {
+                continue;
+            }
+
+            openCount++;
+            var cooker = InvokeInstance(cookController, "get_Cooker", Array.Empty<object?>());
+            if (cooker == null || !CookerSupportsRecipe(cooker, recipeCookerType))
+            {
+                continue;
+            }
+
+            matchingCount++;
+            return (true, cookController, $"已通过玩家厨具列表找到空闲可用厨具（共 {totalCount} 个，空闲 {openCount} 个）。");
+        }
+
+        if (totalCount == 0)
+        {
+            return (false, null, "当前没有读取到任何厨具。");
+        }
+
+        if (openCount == 0)
+        {
+            return (false, null, $"当前没有空闲厨具（读取到 {totalCount} 个厨具）。");
+        }
+
+        return (false, null, $"当前有 {openCount} 个空闲厨具，但没有符合配方厨具类型 {recipeCookerType} 的厨具。");
+    }
+
+    private static bool CookerSupportsRecipe(object cooker, int recipeCookerType)
+    {
+        var cookerTypes = InvokeInstance(cooker, "get_AllAvailableCookerType", Array.Empty<object?>());
+        return ReadIntEnumerable(cookerTypes).Contains(recipeCookerType);
     }
 
     private static int[] ReadRecipeIngredientIds(object recipe)
@@ -448,6 +512,19 @@ internal static class RuntimeOrderPreparationService
             foreach (var item in enumerable)
             {
                 yield return ToInt(item);
+            }
+        }
+    }
+
+    private static IEnumerable<object> ReadObjectEnumerable(object? value)
+    {
+        if (value == null) yield break;
+        if (value is string) yield break;
+        if (value is IEnumerable enumerable)
+        {
+            foreach (var item in enumerable)
+            {
+                if (item != null) yield return item;
             }
         }
     }
@@ -562,7 +639,16 @@ internal static class RuntimeOrderPreparationService
     {
         if (value == null) return 0;
         if (value is int number) return number;
+        if (value is Enum enumValue) return Convert.ToInt32(enumValue);
+        if (value is IConvertible convertible) return Convert.ToInt32(convertible);
         return int.TryParse(value.ToString(), out var parsed) ? parsed : 0;
+    }
+
+    private static bool ReadBool(object? value)
+    {
+        if (value is bool boolValue) return boolValue;
+        if (value is IConvertible convertible) return convertible.ToBoolean(null);
+        return bool.TryParse(value?.ToString(), out var parsed) && parsed;
     }
 
     private static OrderPreparationResult Fail(OrderPreparationResult result, string error)
