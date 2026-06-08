@@ -1174,6 +1174,7 @@ internal sealed class StewardOverlayController
                 UpdateLocalApiLogSettings,
                 OpenLocalApiLogFolder,
                 EditInventoryFromLocalApi,
+                PrepareOrderFromLocalApi,
                 new FavoriteStore(FavoriteStore.ResolvePath(), _log),
                 _log);
             _localApiServer.Start();
@@ -1312,6 +1313,16 @@ internal sealed class StewardOverlayController
 
         if (pending.Error != null) throw pending.Error;
         return pending.Result ?? throw new InvalidOperationException("Inventory edit did not produce a result.");
+    }
+
+    private OrderPreparationResult PrepareOrderFromLocalApi(OrderPreparationRequest request)
+    {
+        var result = RuntimeOrderPreparationService.Prepare(request);
+        _status = result.Ok
+            ? L("已准备下一笔稀客订单。", "Next rare-customer order prepared.")
+            : L($"准备下一笔稀客订单未完成：{result.Error}", $"Preparing next rare-customer order did not finish: {result.Error}");
+        PublishLocalApiSnapshot();
+        return result;
     }
 
     private void ProcessPendingInventoryEdits()

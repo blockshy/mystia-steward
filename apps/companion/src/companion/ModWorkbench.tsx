@@ -60,6 +60,11 @@ const FOCUS_SWITCH_BEHAVIOR_STORAGE_KEY = `${STORAGE_PREFIX}-focus-switch-behavi
 const FOCUS_SWITCH_COOLDOWN_STORAGE_KEY = `${STORAGE_PREFIX}-focus-switch-cooldown-ms`;
 const ALWAYS_ON_TOP_STORAGE_KEY = `${STORAGE_PREFIX}-always-on-top`;
 const GAMEPAD_NAVIGATION_STORAGE_KEY = `${STORAGE_PREFIX}-gamepad-navigation`;
+const AUTO_PREP_TAKE_BEVERAGE_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-take-beverage`;
+const AUTO_PREP_START_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-start-cooking`;
+const AUTO_PREP_COLLECT_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-collect-cooking`;
+const AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-favorites-only`;
+const AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-stop-on-error`;
 const LEGACY_ENDPOINT_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-endpoint`;
 const LEGACY_TOKEN_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-token`;
 const LEGACY_TAB_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-tab`;
@@ -228,6 +233,31 @@ interface InventoryEditResponse {
   error: string | null;
 }
 
+interface OrderPreparationStep {
+  name: string;
+  ok: boolean;
+  skipped: boolean;
+  message: string;
+}
+
+interface OrderPreparationResponse {
+  ok: boolean;
+  prepared: boolean;
+  error: string | null;
+  order: {
+    deskCode: number;
+    guestId: number | null;
+    guestName: string;
+    foodTag: string;
+    beverageTag: string;
+  };
+  recipeId: number;
+  recipeName: string;
+  beverageId: number;
+  beverageName: string;
+  steps: OrderPreparationStep[];
+}
+
 interface FavoriteData {
   version: number;
   recipes: FavoriteRecipeEntry[];
@@ -267,6 +297,11 @@ interface CompanionPreferences {
   focusSwitchCooldownMs: number;
   alwaysOnTop: boolean;
   gamepadNavigationEnabled: boolean;
+  autoPrepTakeBeverage: boolean;
+  autoPrepStartCooking: boolean;
+  autoPrepCollectCooking: boolean;
+  autoPrepFavoritesOnly: boolean;
+  autoPrepStopOnError: boolean;
 }
 
 type ToggleRecipeFavorite = (customer: ICustomerRare, foodTag: string, recipe: IRareRecipeResult) => Promise<void>;
@@ -305,6 +340,8 @@ export function ModWorkbench() {
   const [favorites, setFavorites] = useState<FavoriteData>(() => emptyFavoriteData());
   const [favoriteError, setFavoriteError] = useState('');
   const [favoriteBusyKey, setFavoriteBusyKey] = useState('');
+  const [autoPrepBusy, setAutoPrepBusy] = useState(false);
+  const [autoPrepMessage, setAutoPrepMessage] = useState('');
   const recommendationCacheRef = useRef(new Map<string, CachedRecommendation>());
   const refreshInFlightRef = useRef(false);
 
@@ -414,6 +451,40 @@ export function ModWorkbench() {
     }
   }, [apiToken, favorites, normalizedEndpoint]);
 
+  const prepareNextOrder = useCallback(async () => {
+    setAutoPrepMessage('');
+    if (!apiToken) {
+      setAutoPrepMessage('本地 API Token 不可用，无法执行准备下一单。');
+      return;
+    }
+
+    const selection = selectNextOrderPreparation(orderRecommendations.recommendations, favorites, companionPreferences);
+    if (!selection.ok) {
+      setAutoPrepMessage(selection.message);
+      return;
+    }
+
+    setAutoPrepBusy(true);
+    try {
+      const response = await prepareNextRareOrder(
+        normalizedEndpoint,
+        apiToken,
+        selection.item,
+        selection.recipe,
+        selection.beverage,
+        selection.recipeFavorite,
+        selection.beverageFavorite,
+        companionPreferences,
+      );
+      setAutoPrepMessage(formatOrderPreparationResponse(response));
+      await refresh();
+    } catch (err) {
+      setAutoPrepMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAutoPrepBusy(false);
+    }
+  }, [apiToken, companionPreferences, favorites, normalizedEndpoint, orderRecommendations.recommendations, refresh]);
+
   useEffect(() => {
     localStorage.setItem(ENDPOINT_STORAGE_KEY, normalizedEndpoint);
   }, [normalizedEndpoint]);
@@ -520,9 +591,13 @@ export function ModWorkbench() {
         favorites={favorites}
         favoriteBusyKey={favoriteBusyKey}
         favoriteError={favoriteError}
+        autoPrepBusy={autoPrepBusy}
+        autoPrepMessage={autoPrepMessage}
+        autoPrepPreferences={companionPreferences}
         compact={serviceFocusCompact}
         recipeLimit={serviceFocusRecipeLimit}
         beverageLimit={serviceFocusBeverageLimit}
+        onPrepareNextOrder={prepareNextOrder}
         onCompactChange={setServiceFocusCompact}
         onRecipeLimitChange={setServiceFocusRecipeLimit}
         onBeverageLimitChange={setServiceFocusBeverageLimit}
@@ -675,8 +750,12 @@ export function ModWorkbench() {
             favorites={favorites}
             favoriteBusyKey={favoriteBusyKey}
             favoriteError={favoriteError}
+            autoPrepBusy={autoPrepBusy}
+            autoPrepMessage={autoPrepMessage}
+            autoPrepPreferences={companionPreferences}
             onToggleRecipeFavorite={toggleRecipeFavorite}
             onToggleBeverageFavorite={toggleBeverageFavorite}
+            onPrepareNextOrder={prepareNextOrder}
             onEnterFocusMode={() => setServiceFocusMode(true)}
           />
         </TabsContent>
@@ -1116,8 +1195,12 @@ function ModServicePanel({
   favorites,
   favoriteBusyKey,
   favoriteError,
+  autoPrepBusy,
+  autoPrepMessage,
+  autoPrepPreferences,
   onToggleRecipeFavorite,
   onToggleBeverageFavorite,
+  onPrepareNextOrder,
   onEnterFocusMode,
 }: {
   runtime: RecommendationStateSnapshot | null;
@@ -1129,8 +1212,12 @@ function ModServicePanel({
   favorites: FavoriteData;
   favoriteBusyKey: string;
   favoriteError: string;
+  autoPrepBusy: boolean;
+  autoPrepMessage: string;
+  autoPrepPreferences: CompanionPreferences;
   onToggleRecipeFavorite: ToggleRecipeFavorite;
   onToggleBeverageFavorite: ToggleBeverageFavorite;
+  onPrepareNextOrder: () => Promise<void>;
   onEnterFocusMode: () => void;
 }) {
   const activeGuests = night?.activeRareGuests ?? [];
@@ -1138,11 +1225,16 @@ function ModServicePanel({
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end">
+      <div className="flex flex-wrap justify-end gap-2">
+        <Button size="sm" variant="secondary" onClick={onPrepareNextOrder} disabled={autoPrepBusy || recommendations.length === 0}>
+          {autoPrepBusy ? '准备中...' : '准备下一单'}
+        </Button>
         <Button size="sm" onClick={onEnterFocusMode}>
           稀客订单专注模式
         </Button>
       </div>
+
+      <AutoPrepStatus message={autoPrepMessage} preferences={autoPrepPreferences} />
 
       <Card>
         <CardContent className={`${DENSE_THREE_COLUMN_GRID} p-4 text-sm`}>
@@ -1204,9 +1296,13 @@ function ServiceFocusPage({
   favorites,
   favoriteBusyKey,
   favoriteError,
+  autoPrepBusy,
+  autoPrepMessage,
+  autoPrepPreferences,
   compact,
   recipeLimit,
   beverageLimit,
+  onPrepareNextOrder,
   onCompactChange,
   onRecipeLimitChange,
   onBeverageLimitChange,
@@ -1220,9 +1316,13 @@ function ServiceFocusPage({
   favorites: FavoriteData;
   favoriteBusyKey: string;
   favoriteError: string;
+  autoPrepBusy: boolean;
+  autoPrepMessage: string;
+  autoPrepPreferences: CompanionPreferences;
   compact: boolean;
   recipeLimit: number;
   beverageLimit: number;
+  onPrepareNextOrder: () => Promise<void>;
   onCompactChange: (value: boolean) => void;
   onRecipeLimitChange: (value: number) => void;
   onBeverageLimitChange: (value: number) => void;
@@ -1240,6 +1340,9 @@ function ServiceFocusPage({
           <p className="mt-1 text-sm text-muted-foreground">只显示当前稀客点单推荐。</p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-3">
+          <Button size="sm" variant="secondary" onClick={onPrepareNextOrder} disabled={autoPrepBusy || recommendations.length === 0}>
+            {autoPrepBusy ? '准备中...' : '准备下一单'}
+          </Button>
           <SwitchControl
             label="精简模式"
             checked={compact}
@@ -1258,6 +1361,8 @@ function ServiceFocusPage({
           <Button size="sm" variant="outline" onClick={onExit}>退出专注模式</Button>
         </div>
       </div>
+
+      <AutoPrepStatus message={autoPrepMessage} preferences={autoPrepPreferences} />
 
       {hasOrders ? (
         <CurrentOrderRecommendations
@@ -1792,6 +1897,62 @@ function ModSettingsPanel({
           </div>
         </div>
       </ListPanel>
+
+      <ListPanel title="一键准备">
+        <div className="space-y-4">
+          <SwitchControl
+            label="自动取酒"
+            checked={preferences.autoPrepTakeBeverage}
+            onCheckedChange={(autoPrepTakeBeverage) => onPreferenceChange({ autoPrepTakeBeverage })}
+          />
+          <SwitchControl
+            label="自动开始料理"
+            checked={preferences.autoPrepStartCooking}
+            onCheckedChange={(autoPrepStartCooking) => onPreferenceChange({ autoPrepStartCooking })}
+          />
+          <SwitchControl
+            label="自动收取料理"
+            checked={preferences.autoPrepCollectCooking}
+            onCheckedChange={(autoPrepCollectCooking) => onPreferenceChange({ autoPrepCollectCooking })}
+          />
+          <SwitchControl
+            label="只处理收藏配方"
+            checked={preferences.autoPrepFavoritesOnly}
+            onCheckedChange={(autoPrepFavoritesOnly) => onPreferenceChange({ autoPrepFavoritesOnly })}
+          />
+          <SwitchControl
+            label="出错时暂停"
+            checked={preferences.autoPrepStopOnError}
+            onCheckedChange={(autoPrepStopOnError) => onPreferenceChange({ autoPrepStopOnError })}
+          />
+          <div className="text-xs text-muted-foreground">
+            “准备下一单”只处理当前排序第一笔稀客订单；未找到稳定游戏入口的步骤会显示失败原因，不会伪造扣库存。
+          </div>
+        </div>
+      </ListPanel>
+    </div>
+  );
+}
+
+function AutoPrepStatus({
+  message,
+  preferences,
+}: {
+  message: string;
+  preferences: CompanionPreferences;
+}) {
+  if (!message) return null;
+
+  return (
+    <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
+      <div className="font-medium text-foreground">准备下一单</div>
+      <div className="mt-1 whitespace-pre-line text-muted-foreground">{message}</div>
+      <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+        <Badge variant={preferences.autoPrepTakeBeverage ? 'secondary' : 'outline'}>取酒 {preferences.autoPrepTakeBeverage ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoPrepStartCooking ? 'secondary' : 'outline'}>料理 {preferences.autoPrepStartCooking ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoPrepCollectCooking ? 'secondary' : 'outline'}>收取 {preferences.autoPrepCollectCooking ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoPrepFavoritesOnly ? 'secondary' : 'outline'}>收藏限定 {preferences.autoPrepFavoritesOnly ? '开' : '关'}</Badge>
+      </div>
     </div>
   );
 }
@@ -2441,6 +2602,50 @@ async function writeInventoryQuantity(
   }
 }
 
+async function prepareNextRareOrder(
+  endpoint: string,
+  apiToken: string,
+  item: OrderRecommendation,
+  recipe: IRareRecipeResult | null,
+  beverage: IRareBeverageResult | null,
+  recipeFavorite: FavoriteRecipeEntry | null,
+  beverageFavorite: FavoriteBeverageEntry | null,
+  preferences: CompanionPreferences,
+): Promise<OrderPreparationResponse> {
+  const params = new URLSearchParams({
+    deskCode: String(item.order.deskCode),
+    guestId: item.order.guestId == null ? '' : String(item.order.guestId),
+    guestName: item.order.guestName,
+    foodTag: item.order.foodTag,
+    beverageTag: item.order.beverageTag,
+    recipeId: recipe ? String(recipe.recipe.id) : '-1',
+    recipeName: recipe?.recipe.name ?? '',
+    extraIngredientIds: recipe ? recipe.extraIngredients.map((ingredient) => ingredient.id).join(',') : '',
+    beverageId: beverage ? String(beverage.beverage.id) : '-1',
+    beverageName: beverage?.beverage.name ?? '',
+    autoTakeBeverage: String(preferences.autoPrepTakeBeverage),
+    autoStartCooking: String(preferences.autoPrepStartCooking),
+    autoCollectCooking: String(preferences.autoPrepCollectCooking),
+    favoritesOnly: String(preferences.autoPrepFavoritesOnly),
+    stopOnError: String(preferences.autoPrepStopOnError),
+    recipeFavorite: String(Boolean(recipeFavorite)),
+    beverageFavorite: String(Boolean(beverageFavorite)),
+  });
+  const abortController = new AbortController();
+  const timeoutId = window.setTimeout(() => abortController.abort(), 5000);
+
+  try {
+    return await readLocalApiJson<OrderPreparationResponse>(
+      endpoint,
+      apiToken,
+      `/orders/prepare-next?${params.toString()}`,
+      abortController.signal,
+    );
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
 async function readFavorites(endpoint: string, apiToken: string, signal: AbortSignal): Promise<FavoriteData> {
   return readLocalApiJson<FavoriteData>(endpoint, apiToken, '/favorites', signal);
 }
@@ -2714,6 +2919,111 @@ function buildOrderRecommendations(
   }
 
   return { recommendations, recommendationIssues };
+}
+
+type OrderPreparationSelection =
+  | {
+      ok: true;
+      item: OrderRecommendation;
+      recipe: IRareRecipeResult | null;
+      beverage: IRareBeverageResult | null;
+      recipeFavorite: FavoriteRecipeEntry | null;
+      beverageFavorite: FavoriteBeverageEntry | null;
+    }
+  | {
+      ok: false;
+      message: string;
+    };
+
+function selectNextOrderPreparation(
+  recommendations: OrderRecommendation[],
+  favorites: FavoriteData,
+  preferences: CompanionPreferences,
+): OrderPreparationSelection {
+  const rows = [...recommendations].sort((left, right) => compareNightOrders(left.order, right.order));
+  if (rows.length === 0) {
+    return { ok: false, message: '暂无可准备的稀客订单。' };
+  }
+
+  const item = rows[0];
+  const recipePick = pickRecipeForPreparation(item, favorites, preferences);
+  const beveragePick = pickBeverageForPreparation(item, favorites, preferences);
+  if (!recipePick.ok && (preferences.autoPrepStartCooking || preferences.autoPrepFavoritesOnly)) {
+    return {
+      ok: false,
+      message: preferences.autoPrepFavoritesOnly
+        ? '当前第一笔稀客订单没有匹配的收藏料理。'
+        : '当前第一笔稀客订单没有可用的推荐料理。',
+    };
+  }
+  if (!beveragePick.ok && (preferences.autoPrepTakeBeverage || preferences.autoPrepFavoritesOnly)) {
+    return {
+      ok: false,
+      message: preferences.autoPrepFavoritesOnly
+        ? '当前第一笔稀客订单没有匹配的收藏酒水。'
+        : '当前第一笔稀客订单没有可用的推荐酒水。',
+    };
+  }
+
+  return {
+    ok: true,
+    item,
+    recipe: recipePick.ok ? recipePick.recipe : null,
+    beverage: beveragePick.ok ? beveragePick.beverage : null,
+    recipeFavorite: recipePick.ok ? recipePick.favorite : null,
+    beverageFavorite: beveragePick.ok ? beveragePick.favorite : null,
+  };
+}
+
+function pickRecipeForPreparation(
+  item: OrderRecommendation,
+  favorites: FavoriteData,
+  preferences: CompanionPreferences,
+) {
+  if (!preferences.autoPrepStartCooking && !preferences.autoPrepFavoritesOnly) {
+    return { ok: false as const };
+  }
+
+  for (const recipe of item.recipes) {
+    const favorite = findRecipeFavorite(favorites, item.customer.id, item.order.foodTag, recipe);
+    if (preferences.autoPrepFavoritesOnly && !favorite) continue;
+    return { ok: true as const, recipe, favorite };
+  }
+
+  return { ok: false as const };
+}
+
+function pickBeverageForPreparation(
+  item: OrderRecommendation,
+  favorites: FavoriteData,
+  preferences: CompanionPreferences,
+) {
+  if (!preferences.autoPrepTakeBeverage && !preferences.autoPrepFavoritesOnly) {
+    return { ok: false as const };
+  }
+
+  for (const beverage of item.beverages) {
+    const favorite = findBeverageFavorite(favorites, item.customer.id, item.order.beverageTag, beverage);
+    if (preferences.autoPrepFavoritesOnly && !favorite) continue;
+    return { ok: true as const, beverage, favorite };
+  }
+
+  return { ok: false as const };
+}
+
+function formatOrderPreparationResponse(response: OrderPreparationResponse) {
+  const title = response.ok
+    ? `已处理：${response.order.guestName} · 桌 ${formatDesk(response.order.deskCode)}`
+    : `未完成：${response.order.guestName || '当前订单'} · 桌 ${formatDesk(response.order.deskCode)}`;
+  const target = [
+    response.recipeName ? `料理 ${response.recipeName}` : '',
+    response.beverageName ? `酒水 ${response.beverageName}` : '',
+  ].filter(Boolean).join(' / ');
+  const steps = response.steps.map((step) => {
+    const prefix = step.skipped ? '跳过' : step.ok ? '完成' : '失败';
+    return `${prefix} ${step.name}：${step.message}`;
+  });
+  return [title, target, ...steps, response.error ? `错误：${response.error}` : ''].filter(Boolean).join('\n');
 }
 
 function findRareCustomer(order: NightBusinessOrder, rareCustomersById: Map<number, ICustomerRare>) {
@@ -3050,6 +3360,11 @@ function readStoredCompanionPreferences(): CompanionPreferences {
     ),
     alwaysOnTop: readStoredBoolean(ALWAYS_ON_TOP_STORAGE_KEY, true),
     gamepadNavigationEnabled: readStoredBoolean(GAMEPAD_NAVIGATION_STORAGE_KEY, true),
+    autoPrepTakeBeverage: readStoredBoolean(AUTO_PREP_TAKE_BEVERAGE_STORAGE_KEY, true),
+    autoPrepStartCooking: readStoredBoolean(AUTO_PREP_START_COOKING_STORAGE_KEY, true),
+    autoPrepCollectCooking: readStoredBoolean(AUTO_PREP_COLLECT_COOKING_STORAGE_KEY, false),
+    autoPrepFavoritesOnly: readStoredBoolean(AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY, false),
+    autoPrepStopOnError: readStoredBoolean(AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY, true),
   });
 }
 
@@ -3065,6 +3380,11 @@ function normalizeCompanionPreferences(value: CompanionPreferences): CompanionPr
     focusSwitchCooldownMs: normalizeFocusSwitchCooldownMs(value.focusSwitchCooldownMs),
     alwaysOnTop: Boolean(value.alwaysOnTop),
     gamepadNavigationEnabled: Boolean(value.gamepadNavigationEnabled),
+    autoPrepTakeBeverage: Boolean(value.autoPrepTakeBeverage),
+    autoPrepStartCooking: Boolean(value.autoPrepStartCooking),
+    autoPrepCollectCooking: Boolean(value.autoPrepCollectCooking),
+    autoPrepFavoritesOnly: Boolean(value.autoPrepFavoritesOnly),
+    autoPrepStopOnError: Boolean(value.autoPrepStopOnError),
   };
 }
 
@@ -3088,6 +3408,11 @@ function persistCompanionPreferences(preferences: CompanionPreferences) {
   localStorage.setItem(FOCUS_SWITCH_COOLDOWN_STORAGE_KEY, String(normalized.focusSwitchCooldownMs));
   localStorage.setItem(ALWAYS_ON_TOP_STORAGE_KEY, normalized.alwaysOnTop ? '1' : '0');
   localStorage.setItem(GAMEPAD_NAVIGATION_STORAGE_KEY, normalized.gamepadNavigationEnabled ? '1' : '0');
+  localStorage.setItem(AUTO_PREP_TAKE_BEVERAGE_STORAGE_KEY, normalized.autoPrepTakeBeverage ? '1' : '0');
+  localStorage.setItem(AUTO_PREP_START_COOKING_STORAGE_KEY, normalized.autoPrepStartCooking ? '1' : '0');
+  localStorage.setItem(AUTO_PREP_COLLECT_COOKING_STORAGE_KEY, normalized.autoPrepCollectCooking ? '1' : '0');
+  localStorage.setItem(AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY, normalized.autoPrepFavoritesOnly ? '1' : '0');
+  localStorage.setItem(AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY, normalized.autoPrepStopOnError ? '1' : '0');
 }
 
 function applyCompanionVisualPreferences(preferences: CompanionPreferences) {
