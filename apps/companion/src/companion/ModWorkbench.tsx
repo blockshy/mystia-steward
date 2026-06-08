@@ -57,6 +57,7 @@ const FOCUS_RECIPE_LIMIT_STORAGE_KEY = `${STORAGE_PREFIX}-service-focus-recipe-l
 const FOCUS_BEVERAGE_LIMIT_STORAGE_KEY = `${STORAGE_PREFIX}-service-focus-beverage-limit`;
 const WINDOW_OPACITY_STORAGE_KEY = `${STORAGE_PREFIX}-window-opacity`;
 const FOCUS_SWITCH_BEHAVIOR_STORAGE_KEY = `${STORAGE_PREFIX}-focus-switch-behavior`;
+const FOCUS_SWITCH_COOLDOWN_STORAGE_KEY = `${STORAGE_PREFIX}-focus-switch-cooldown-ms`;
 const ALWAYS_ON_TOP_STORAGE_KEY = `${STORAGE_PREFIX}-always-on-top`;
 const GAMEPAD_NAVIGATION_STORAGE_KEY = `${STORAGE_PREFIX}-gamepad-navigation`;
 const LEGACY_ENDPOINT_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-endpoint`;
@@ -67,6 +68,9 @@ const MAX_FOCUS_RECOMMENDATION_ROWS = 20;
 const DEFAULT_FOCUS_RECOMMENDATION_ROWS = 8;
 const DEFAULT_WINDOW_OPACITY = 0.96;
 const MIN_WINDOW_OPACITY = 0.2;
+const DEFAULT_FOCUS_SWITCH_COOLDOWN_MS = 800;
+const MIN_FOCUS_SWITCH_COOLDOWN_MS = 250;
+const MAX_FOCUS_SWITCH_COOLDOWN_MS = 2000;
 const MAX_LOG_LINES_IN_VIEW = 400;
 const NON_ORDERABLE_RARE_FOOD_TAGS = new Set(['流行喜爱', '流行厌恶']);
 const INGREDIENTS = allIngredients as IIngredient[];
@@ -83,6 +87,7 @@ const DENSE_THREE_COLUMN_GRID = 'grid grid-cols-3 gap-3';
 const DENSE_FOUR_COLUMN_GRID = 'grid grid-cols-4 gap-3';
 const DENSE_CARD_HEADER_GRID = 'grid grid-cols-[minmax(0,1fr)_auto] gap-3';
 const DENSE_ITEM_GRID = 'grid grid-cols-[repeat(auto-fit,minmax(11rem,1fr))] gap-2';
+const MOD_TAB_TRIGGER_CLASS = 'min-w-0 flex-1 data-active:bg-primary data-active:text-primary-foreground dark:data-active:bg-primary dark:data-active:text-primary-foreground';
 
 type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'inventory' | 'logs' | 'settings';
 const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'service', 'inventory', 'logs', 'settings'];
@@ -259,6 +264,7 @@ interface FavoriteMutationResponse {
 interface CompanionPreferences {
   windowOpacity: number;
   focusSwitchBehavior: FocusSwitchBehavior;
+  focusSwitchCooldownMs: number;
   alwaysOnTop: boolean;
   gamepadNavigationEnabled: boolean;
 }
@@ -441,8 +447,13 @@ export function ModWorkbench() {
     void applyCompanionPreferencesToTauri(
       companionPreferences.focusSwitchBehavior,
       companionPreferences.alwaysOnTop,
+      companionPreferences.focusSwitchCooldownMs,
     );
-  }, [companionPreferences.alwaysOnTop, companionPreferences.focusSwitchBehavior]);
+  }, [
+    companionPreferences.alwaysOnTop,
+    companionPreferences.focusSwitchBehavior,
+    companionPreferences.focusSwitchCooldownMs,
+  ]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -471,12 +482,16 @@ export function ModWorkbench() {
 
   useGamepadNavigation({
     enabled: companionPreferences.gamepadNavigationEnabled,
+    toggleCooldownMs: companionPreferences.focusSwitchCooldownMs,
     activeTab: tab,
     tabs: MOD_TABS,
     focusMode: serviceFocusMode,
     onTabChange: setTab,
     onToggleWindow: () => {
-      void toggleCompanionFocus(companionPreferences.focusSwitchBehavior);
+      void toggleCompanionFocus(
+        companionPreferences.focusSwitchBehavior,
+        companionPreferences.focusSwitchCooldownMs,
+      );
     },
     onEnterFocusMode: () => {
       setTab('service');
@@ -567,25 +582,25 @@ export function ModWorkbench() {
           className="h-9 !w-full max-w-full justify-stretch overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           data-gamepad-scope="tabs"
         >
-          <TabsTrigger value="overview" className="min-w-0 flex-1" data-gamepad-tab="true" data-gamepad-tab-value="overview">
+          <TabsTrigger value="overview" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="overview">
             概览
           </TabsTrigger>
-          <TabsTrigger value="normal" className="min-w-0 flex-1" data-gamepad-tab="true" data-gamepad-tab-value="normal">
+          <TabsTrigger value="normal" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="normal">
             普客
           </TabsTrigger>
-          <TabsTrigger value="rare" className="min-w-0 flex-1" data-gamepad-tab="true" data-gamepad-tab-value="rare">
+          <TabsTrigger value="rare" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="rare">
             稀客
           </TabsTrigger>
-          <TabsTrigger value="service" className="min-w-0 flex-1" data-gamepad-tab="true" data-gamepad-tab-value="service">
+          <TabsTrigger value="service" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="service">
             经营中
           </TabsTrigger>
-          <TabsTrigger value="inventory" className="min-w-0 flex-1" data-gamepad-tab="true" data-gamepad-tab-value="inventory">
+          <TabsTrigger value="inventory" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="inventory">
             修改
           </TabsTrigger>
-          <TabsTrigger value="logs" className="min-w-0 flex-1" data-gamepad-tab="true" data-gamepad-tab-value="logs">
+          <TabsTrigger value="logs" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="logs">
             日志
           </TabsTrigger>
-          <TabsTrigger value="settings" className="min-w-0 flex-1" data-gamepad-tab="true" data-gamepad-tab-value="settings">
+          <TabsTrigger value="settings" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="settings">
             设置
           </TabsTrigger>
         </TabsList>
@@ -1718,6 +1733,10 @@ function ModSettingsPanel({
             ]}
             onChange={(focusSwitchBehavior) => onPreferenceChange({ focusSwitchBehavior })}
           />
+          <FocusSwitchCooldownInput
+            value={preferences.focusSwitchCooldownMs}
+            onChange={(focusSwitchCooldownMs) => onPreferenceChange({ focusSwitchCooldownMs })}
+          />
           <SwitchControl
             label="始终置顶"
             checked={preferences.alwaysOnTop}
@@ -1944,6 +1963,34 @@ function FocusLimitInput({
         className="h-8 w-16"
       />
     </label>
+  );
+}
+
+function FocusSwitchCooldownInput({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div>
+      <label className="flex items-center justify-between gap-3 text-sm">
+        <span className="font-medium">切换冷却时间</span>
+        <Input
+          type="number"
+          min={MIN_FOCUS_SWITCH_COOLDOWN_MS}
+          max={MAX_FOCUS_SWITCH_COOLDOWN_MS}
+          step={50}
+          value={value}
+          onChange={(event) => onChange(normalizeFocusSwitchCooldownMs(Number(event.target.value)))}
+          className="h-8 w-24"
+        />
+      </label>
+      <div className="mt-1 text-xs text-muted-foreground">
+        单位毫秒，范围 {MIN_FOCUS_SWITCH_COOLDOWN_MS} - {MAX_FOCUS_SWITCH_COOLDOWN_MS}。调低后切换更快，过低可能重复触发。
+      </div>
+    </div>
   );
 }
 
@@ -2998,6 +3045,9 @@ function readStoredCompanionPreferences(): CompanionPreferences {
   return normalizeCompanionPreferences({
     windowOpacity: Number(localStorage.getItem(WINDOW_OPACITY_STORAGE_KEY) ?? DEFAULT_WINDOW_OPACITY),
     focusSwitchBehavior: readStoredFocusSwitchBehavior(),
+    focusSwitchCooldownMs: Number(
+      localStorage.getItem(FOCUS_SWITCH_COOLDOWN_STORAGE_KEY) ?? DEFAULT_FOCUS_SWITCH_COOLDOWN_MS,
+    ),
     alwaysOnTop: readStoredBoolean(ALWAYS_ON_TOP_STORAGE_KEY, true),
     gamepadNavigationEnabled: readStoredBoolean(GAMEPAD_NAVIGATION_STORAGE_KEY, true),
   });
@@ -3012,6 +3062,7 @@ function normalizeCompanionPreferences(value: CompanionPreferences): CompanionPr
   return {
     windowOpacity: normalizeWindowOpacity(value.windowOpacity),
     focusSwitchBehavior: value.focusSwitchBehavior === 'keep-visible' ? 'keep-visible' : 'hide',
+    focusSwitchCooldownMs: normalizeFocusSwitchCooldownMs(value.focusSwitchCooldownMs),
     alwaysOnTop: Boolean(value.alwaysOnTop),
     gamepadNavigationEnabled: Boolean(value.gamepadNavigationEnabled),
   };
@@ -3022,10 +3073,19 @@ function normalizeWindowOpacity(value: number) {
   return Math.max(MIN_WINDOW_OPACITY, Math.min(1, value));
 }
 
+function normalizeFocusSwitchCooldownMs(value: number) {
+  if (!Number.isFinite(value)) return DEFAULT_FOCUS_SWITCH_COOLDOWN_MS;
+  return Math.max(
+    MIN_FOCUS_SWITCH_COOLDOWN_MS,
+    Math.min(MAX_FOCUS_SWITCH_COOLDOWN_MS, Math.trunc(value)),
+  );
+}
+
 function persistCompanionPreferences(preferences: CompanionPreferences) {
   const normalized = normalizeCompanionPreferences(preferences);
   localStorage.setItem(WINDOW_OPACITY_STORAGE_KEY, String(normalized.windowOpacity));
   localStorage.setItem(FOCUS_SWITCH_BEHAVIOR_STORAGE_KEY, normalized.focusSwitchBehavior);
+  localStorage.setItem(FOCUS_SWITCH_COOLDOWN_STORAGE_KEY, String(normalized.focusSwitchCooldownMs));
   localStorage.setItem(ALWAYS_ON_TOP_STORAGE_KEY, normalized.alwaysOnTop ? '1' : '0');
   localStorage.setItem(GAMEPAD_NAVIGATION_STORAGE_KEY, normalized.gamepadNavigationEnabled ? '1' : '0');
 }
@@ -3040,6 +3100,7 @@ function applyCompanionVisualPreferences(preferences: CompanionPreferences) {
 async function applyCompanionPreferencesToTauri(
   focusSwitchBehavior: FocusSwitchBehavior,
   alwaysOnTop: boolean,
+  focusSwitchCooldownMs: number,
 ) {
   if (!isTauriRuntime()) return;
 
@@ -3048,6 +3109,7 @@ async function applyCompanionPreferencesToTauri(
     await invoke('apply_companion_preferences', {
       keepVisibleWhenFocused: focusSwitchBehavior === 'keep-visible',
       alwaysOnTop,
+      windowSwitchCooldownMs: normalizeFocusSwitchCooldownMs(focusSwitchCooldownMs),
     });
   } catch {
     // Browser mode and older companion builds do not expose this command.
@@ -3066,13 +3128,17 @@ function readMigratedStorage(key: string, legacyKey: string, fallback: string) {
   return legacyValue;
 }
 
-async function toggleCompanionFocus(focusSwitchBehavior: FocusSwitchBehavior) {
+async function toggleCompanionFocus(
+  focusSwitchBehavior: FocusSwitchBehavior,
+  focusSwitchCooldownMs: number,
+) {
   if (!isTauriRuntime()) return;
 
   try {
     const { invoke } = await import('@tauri-apps/api/core');
     await invoke('toggle_companion_focus', {
       keepVisibleWhenFocused: focusSwitchBehavior === 'keep-visible',
+      windowSwitchCooldownMs: normalizeFocusSwitchCooldownMs(focusSwitchCooldownMs),
     });
   } catch {
     // Browser mode and older companion builds do not expose this command.

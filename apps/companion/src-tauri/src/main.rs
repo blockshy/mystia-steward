@@ -22,6 +22,9 @@ const CONTROL_EXIT: &[u8] = b"mystia-steward-companion:exit";
 const WINDOW_STATE_FILE: &str = "window-state.txt";
 const MIN_WINDOW_WIDTH: u32 = 720;
 const MIN_WINDOW_HEIGHT: u32 = 520;
+const DEFAULT_WINDOW_SWITCH_COOLDOWN_MS: u64 = 800;
+const MIN_WINDOW_SWITCH_COOLDOWN_MS: u64 = 250;
+const MAX_WINDOW_SWITCH_COOLDOWN_MS: u64 = 2000;
 
 struct GamePidState(Arc<Mutex<Option<u32>>>);
 struct WindowSwitchState(Arc<Mutex<Option<Instant>>>);
@@ -30,12 +33,14 @@ struct CompanionPreferenceState(Arc<Mutex<CompanionPreferences>>);
 #[derive(Clone, Copy)]
 struct CompanionPreferences {
     keep_visible_when_focused: bool,
+    window_switch_cooldown_ms: u64,
 }
 
 impl Default for CompanionPreferences {
     fn default() -> Self {
         Self {
             keep_visible_when_focused: false,
+            window_switch_cooldown_ms: DEFAULT_WINDOW_SWITCH_COOLDOWN_MS,
         }
     }
 }
@@ -130,11 +135,15 @@ fn toggle_companion_focus(
     switch_state: tauri::State<'_, WindowSwitchState>,
     preference_state: tauri::State<'_, CompanionPreferenceState>,
     keep_visible_when_focused: Option<bool>,
+    window_switch_cooldown_ms: Option<u64>,
 ) {
-    if !try_begin_window_switch(&switch_state.0) {
+    let preferences = current_companion_preferences(&preference_state.0);
+    if !try_begin_window_switch(
+        &switch_state.0,
+        window_switch_cooldown_ms.unwrap_or(preferences.window_switch_cooldown_ms),
+    ) {
         return;
     }
-    let preferences = current_companion_preferences(&preference_state.0);
     toggle_main_window(
         &app,
         current_game_pid(&game_pid_state.0),
@@ -148,10 +157,14 @@ fn apply_companion_preferences(
     preference_state: tauri::State<'_, CompanionPreferenceState>,
     keep_visible_when_focused: bool,
     always_on_top: bool,
+    window_switch_cooldown_ms: u64,
 ) {
     if let Ok(mut preferences) = preference_state.0.lock() {
         *preferences = CompanionPreferences {
             keep_visible_when_focused,
+            window_switch_cooldown_ms: normalize_window_switch_cooldown_ms(
+                window_switch_cooldown_ms,
+            ),
         };
     }
 
@@ -197,18 +210,26 @@ fn current_companion_preferences(
         .unwrap_or_default()
 }
 
-fn try_begin_window_switch(switch_state: &Arc<Mutex<Option<Instant>>>) -> bool {
+fn try_begin_window_switch(
+    switch_state: &Arc<Mutex<Option<Instant>>>,
+    cooldown_ms: u64,
+) -> bool {
     let Ok(mut last_switch) = switch_state.lock() else {
         return true;
     };
+    let cooldown = Duration::from_millis(normalize_window_switch_cooldown_ms(cooldown_ms));
     let now = Instant::now();
     if last_switch
-        .is_some_and(|previous| now.duration_since(previous) < Duration::from_millis(1200))
+        .is_some_and(|previous| now.duration_since(previous) < cooldown)
     {
         return false;
     }
     *last_switch = Some(now);
     true
+}
+
+fn normalize_window_switch_cooldown_ms(value: u64) -> u64 {
+    value.clamp(MIN_WINDOW_SWITCH_COOLDOWN_MS, MAX_WINDOW_SWITCH_COOLDOWN_MS)
 }
 
 struct LocalApiTarget {
@@ -314,13 +335,14 @@ fn start_instance_control_server(
             if message.starts_with(CONTROL_SHOW) {
                 show_main_window(&app);
             } else if message.starts_with(CONTROL_TOGGLE) {
-                if !try_begin_window_switch(&switch_state) {
+                let preferences = current_companion_preferences(&preferences);
+                if !try_begin_window_switch(&switch_state, preferences.window_switch_cooldown_ms) {
                     continue;
                 }
                 toggle_main_window(
                     &app,
                     current_game_pid(&game_pid),
-                    current_companion_preferences(&preferences).keep_visible_when_focused,
+                    preferences.keep_visible_when_focused,
                 );
             } else if message.starts_with(CONTROL_EXIT) {
                 app.exit(0);

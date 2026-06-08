@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 
 const FIRST_REPEAT_DELAY_MS = 360;
 const REPEAT_DELAY_MS = 140;
-const TOGGLE_COOLDOWN_MS = 1200;
+const DEFAULT_TOGGLE_COOLDOWN_MS = 800;
 const AXIS_THRESHOLD = 0.55;
 const SCROLL_STEP = 320;
 
@@ -47,6 +47,7 @@ interface GamepadActionState {
 
 export interface GamepadNavigationOptions<TTab extends string> {
   enabled?: boolean;
+  toggleCooldownMs?: number;
   activeTab: TTab;
   tabs: readonly TTab[];
   focusMode: boolean;
@@ -59,6 +60,7 @@ export interface GamepadNavigationOptions<TTab extends string> {
 
 export function useGamepadNavigation<TTab extends string>({
   enabled = true,
+  toggleCooldownMs = DEFAULT_TOGGLE_COOLDOWN_MS,
   activeTab,
   tabs,
   focusMode,
@@ -72,6 +74,7 @@ export function useGamepadNavigation<TTab extends string>({
     activeTab,
     tabs,
     focusMode,
+    toggleCooldownMs,
     onTabChange,
     onToggleWindow,
     onEnterFocusMode,
@@ -84,6 +87,7 @@ export function useGamepadNavigation<TTab extends string>({
       activeTab,
       tabs,
       focusMode,
+      toggleCooldownMs,
       onTabChange,
       onToggleWindow,
       onEnterFocusMode,
@@ -99,6 +103,7 @@ export function useGamepadNavigation<TTab extends string>({
     onToggleCompactMode,
     onToggleWindow,
     tabs,
+    toggleCooldownMs,
   ]);
 
   useEffect(() => {
@@ -191,7 +196,7 @@ export function useGamepadNavigation<TTab extends string>({
 
     const requestWindowToggle = () => {
       const now = performance.now();
-      if (now - lastToggleAt < TOGGLE_COOLDOWN_MS) return;
+      if (now - lastToggleAt < normalizeToggleCooldownMs(optionsRef.current.toggleCooldownMs)) return;
       lastToggleAt = now;
       optionsRef.current.onToggleWindow();
     };
@@ -296,6 +301,11 @@ function isButtonPressed(gamepad: Gamepad, index: number): boolean {
 function normalizeAxis(value: number): number {
   if (!Number.isFinite(value) || Math.abs(value) < AXIS_THRESHOLD) return 0;
   return value;
+}
+
+function normalizeToggleCooldownMs(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_TOGGLE_COOLDOWN_MS;
+  return Math.max(100, Math.min(3000, Math.trunc(value)));
 }
 
 function getVisibleFocusableElements(): HTMLElement[] {
