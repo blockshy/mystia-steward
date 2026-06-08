@@ -3286,7 +3286,7 @@ function isTransientAutoPreparationFailure(response: OrderPreparationResponse): 
     ...response.steps.map((step) => `${step.name} ${step.message}`),
   ].join('\n');
   return text.includes('当前没有空闲厨具')
-    || text.includes('没有符合配方厨具类型')
+    || text.includes('当前没有读取到任何厨具')
     || text.includes('厨具被占用')
     || text.includes('送餐盘已满')
     || text.includes('送餐盘对象不可用')
