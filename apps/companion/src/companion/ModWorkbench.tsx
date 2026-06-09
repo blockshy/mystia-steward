@@ -26,6 +26,8 @@ import {
   getAllRareCustomers,
   getRareCustomersByPlace,
   rankBeveragesForRare,
+  rankPreferenceBeveragesForRare,
+  rankPreferenceRecipesForRare,
   rankRecipesForRare,
 } from '@/lib/rare-recommend';
 import { isTauriRuntime } from '@/lib/tauri-runtime';
@@ -67,6 +69,8 @@ const AUTO_PREP_START_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-start-c
 const AUTO_PREP_COLLECT_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-collect-cooking`;
 const AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-favorites-only`;
 const AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-stop-on-error`;
+const FILTER_MISSING_COOKERS_STORAGE_KEY = `${STORAGE_PREFIX}-filter-missing-cookers`;
+const GAME_UI_PINNING_STORAGE_KEY = `${STORAGE_PREFIX}-game-ui-pinning`;
 const LEGACY_ENDPOINT_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-endpoint`;
 const LEGACY_TOKEN_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-token`;
 const LEGACY_TAB_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-tab`;
@@ -81,6 +85,19 @@ const MAX_FOCUS_SWITCH_COOLDOWN_MS = 2000;
 const MAX_LOG_LINES_IN_VIEW = 400;
 const AUTO_FIRST_ORDER_TICK_MS = 1500;
 const NON_ORDERABLE_RARE_FOOD_TAGS = new Set(['流行喜爱', '流行厌恶']);
+const COOKER_TYPE_NAME_BY_ID = new Map<number, string>([
+  [1, '煮锅'],
+  [2, '烧烤架'],
+  [3, '油锅'],
+  [4, '蒸锅'],
+  [5, '料理台'],
+]);
+const COOKER_NAME_ALIASES = new Map<string, string>([
+  ['烤架', '烧烤架'],
+  ['烧烤台', '烧烤架'],
+  ['锅', '煮锅'],
+  ['炸锅', '油锅'],
+]);
 const INGREDIENTS = allIngredients as IIngredient[];
 const INGREDIENT_BY_NAME = new Map(INGREDIENTS.map((ingredient) => [ingredient.name, ingredient]));
 const INGREDIENT_ID_BY_NAME = new Map(INGREDIENTS.map((ingredient) => [ingredient.name, ingredient.id]));
@@ -115,9 +132,20 @@ interface RecommendationStateSnapshot {
   availableIngredientIds: number[];
   ownedIngredientQty: Record<string, number>;
   ownedBeverageQty: Record<string, number>;
+  placedCookerTypeIds?: number[];
+  placedCookers?: PlacedCookerSnapshot[];
   popularFoodTag: string | null;
   popularHateFoodTag: string | null;
   famousShopEnabled: boolean;
+}
+
+interface PlacedCookerSnapshot {
+  controllerIndex: number;
+  typeIds: number[];
+  typeNames: string[];
+  name: string;
+  isOpen: boolean;
+  source: string;
 }
 
 interface NightBusinessGuest {
@@ -180,12 +208,17 @@ interface RuntimeSets {
   unavailableIngredientIds: Set<number>;
   ownedIngredientQty: Record<number, number>;
   ownedBeverageQty: Record<number, number>;
+  placedCookerTypeIds: Set<number>;
+  placedCookerNames: Set<string>;
+  hasCookerSnapshot: boolean;
 }
 
 interface CachedRecommendation {
   customer: ICustomerRare;
   recipes: IRareRecipeResult[];
   beverages: IRareBeverageResult[];
+  preferenceRecipes: IRareRecipeResult[];
+  preferenceBeverages: IRareBeverageResult[];
 }
 
 interface OrderRecommendation extends CachedRecommendation {
@@ -294,6 +327,15 @@ interface FavoriteMutationResponse {
   error: string | null;
 }
 
+interface GameUiPinningTarget {
+  signature: string;
+  recipeId: number;
+  recipeName: string;
+  ingredientIds: number[];
+  beverageId: number;
+  beverageName: string;
+}
+
 interface CompanionPreferences {
   windowOpacity: number;
   focusSwitchBehavior: FocusSwitchBehavior;
@@ -307,6 +349,8 @@ interface CompanionPreferences {
   autoPrepCollectCooking: boolean;
   autoPrepFavoritesOnly: boolean;
   autoPrepStopOnError: boolean;
+  filterMissingCookers: boolean;
+  gameUiPinningEnabled: boolean;
 }
 
 interface AutoFirstOrderState {
@@ -359,6 +403,7 @@ export function ModWorkbench() {
   const lastAutoFirstOrderAtRef = useRef(0);
   const recommendationCacheRef = useRef(new Map<string, CachedRecommendation>());
   const refreshInFlightRef = useRef(false);
+  const lastUiPinningSignatureRef = useRef('');
 
   const updateCompanionPreferences = useCallback((next: Partial<CompanionPreferences>) => {
     setCompanionPreferences((current) => normalizeCompanionPreferences({ ...current, ...next }));
@@ -380,10 +425,36 @@ export function ModWorkbench() {
 
   const runtimeSets = useMemo(() => buildRuntimeSets(runtime), [runtime]);
   const orderRecommendations = useMemo(
-    () => buildOrderRecommendations(night?.orders ?? [], runtime, rareCustomersById, recommendationCacheRef.current, favorites),
-    [night?.orders, runtime, rareCustomersById, favorites],
+    () => buildOrderRecommendations(
+      night?.orders ?? [],
+      runtime,
+      rareCustomersById,
+      recommendationCacheRef.current,
+      favorites,
+      companionPreferences,
+    ),
+    [night?.orders, runtime, rareCustomersById, favorites, companionPreferences],
   );
   const snapshotRefreshIntervalMs = tab === 'service' || serviceFocusMode ? 750 : 2000;
+
+  useEffect(() => {
+    const target = companionPreferences.gameUiPinningEnabled
+      ? buildGameUiPinningTarget(orderRecommendations.recommendations)
+      : null;
+    const signature = `${companionPreferences.gameUiPinningEnabled ? '1' : '0'}|${target?.signature ?? 'disabled'}`;
+    if (lastUiPinningSignatureRef.current === signature) return;
+    lastUiPinningSignatureRef.current = signature;
+
+    publishGameUiPinningTarget(normalizedEndpoint, apiToken, companionPreferences.gameUiPinningEnabled, target)
+      .catch(() => {
+        // Local API may be unavailable before the game reaches the title screen.
+      });
+  }, [
+    apiToken,
+    companionPreferences.gameUiPinningEnabled,
+    normalizedEndpoint,
+    orderRecommendations.recommendations,
+  ]);
 
   const refresh = useCallback(async () => {
     if (refreshInFlightRef.current) return;
@@ -863,6 +934,7 @@ export function ModWorkbench() {
             favorites={favorites}
             favoriteBusyKey={favoriteBusyKey}
             favoriteError={favoriteError}
+            preferences={companionPreferences}
             onPlaceChange={(place) => {
               setManualPlace(place);
               setRareCustomerId(null);
@@ -1136,6 +1208,7 @@ function ModRarePanel({
   favorites,
   favoriteBusyKey,
   favoriteError,
+  preferences,
   onPlaceChange,
   onFollowDetectedPlace,
   onRareCustomerChange,
@@ -1155,6 +1228,7 @@ function ModRarePanel({
   favorites: FavoriteData;
   favoriteBusyKey: string;
   favoriteError: string;
+  preferences: CompanionPreferences;
   onPlaceChange: (place: TPlace) => void;
   onFollowDetectedPlace: () => void;
   onRareCustomerChange: (customerId: number | null) => void;
@@ -1209,10 +1283,11 @@ function ModRarePanel({
       runtimeSets.ownedIngredientQty,
       runtime.famousShopEnabled,
     )
+      .filter((recipe) => shouldKeepRecipeForCooker(recipe, runtimeSets, preferences.filterMissingCookers))
       .sort((a, b) => compareRareRecipesForService(a, b, runtimeSets.ownedIngredientQty))
       .sort((a, b) => compareFavoriteRecipeResults(a, b, favorites, selectedCustomer.id, foodTag))
       .slice(0, MAX_RECOMMENDATION_ROWS);
-  }, [beverageTag, favorites, foodTag, runtime, runtimeSets, selectedCustomer]);
+  }, [beverageTag, favorites, foodTag, preferences.filterMissingCookers, runtime, runtimeSets, selectedCustomer]);
 
   const beverages = useMemo(() => {
     if (!runtimeSets || !selectedCustomer || !beverageTag) return [];
@@ -1393,6 +1468,12 @@ function ModServicePanel({
           <InfoLine label="经营场景" value={detectedPlace ?? night?.placeLabel ?? '无经营场景'} />
           <InfoLine label="扫描状态" value={night?.source || '暂无'} />
           <InfoLine label="推荐数据" value={runtime ? '已就绪' : '暂不可用'} />
+          <InfoLine
+            label="已摆放厨具"
+            value={runtimeSets?.hasCookerSnapshot
+              ? [...runtimeSets.placedCookerNames].join('、') || '已读取'
+              : '未读取'}
+          />
         </CardContent>
       </Card>
 
@@ -2024,6 +2105,27 @@ function ModSettingsPanel({
         </div>
       </ListPanel>
 
+      <ListPanel title="推荐">
+        <div className="space-y-4">
+          <SwitchControl
+            label="排除缺失厨具"
+            checked={preferences.filterMissingCookers}
+            onCheckedChange={(filterMissingCookers) => onPreferenceChange({ filterMissingCookers })}
+          />
+          <div className="text-xs text-muted-foreground">
+            进入经营场景后，若读取到已摆放厨具，推荐列表会隐藏当前场景无法制作的料理。
+          </div>
+          <SwitchControl
+            label="游戏界面置顶推荐（实验性）"
+            checked={preferences.gameUiPinningEnabled}
+            onCheckedChange={(gameUiPinningEnabled) => onPreferenceChange({ gameUiPinningEnabled })}
+          />
+          <div className="text-xs text-muted-foreground">
+            打开料理或酒水选择界面时，尝试把当前第一笔订单的推荐材料、料理和酒水排到前面；失败时只记录诊断，不修改库存。
+          </div>
+        </div>
+      </ListPanel>
+
       <ListPanel title="自动化">
         <div className="space-y-4">
           <SwitchControl
@@ -2495,6 +2597,12 @@ function OrderRecommendationPanel({
 }) {
   const visibleRecipes = item.recipes.slice(0, normalizeFocusRecommendationLimit(recipeLimit));
   const visibleBeverages = item.beverages.slice(0, normalizeFocusRecommendationLimit(beverageLimit));
+  const visiblePreferenceRecipes = visibleRecipes.length >= 3
+    ? []
+    : item.preferenceRecipes.slice(0, Math.max(0, normalizeFocusRecommendationLimit(recipeLimit) - visibleRecipes.length));
+  const visiblePreferenceBeverages = visibleBeverages.length >= 3
+    ? []
+    : item.preferenceBeverages.slice(0, Math.max(0, normalizeFocusRecommendationLimit(beverageLimit) - visibleBeverages.length));
 
   return (
     <div className={compact ? 'rounded-md border border-border p-2' : 'rounded-md border border-border p-3'}>
@@ -2527,6 +2635,22 @@ function OrderRecommendationPanel({
                 onToggleFavorite={() => onToggleRecipeFavorite(item.customer, item.order.foodTag, recipe)}
               />
             ))}
+            {visiblePreferenceRecipes.length > 0 && (
+              <div className={compact ? 'pt-1' : 'pt-2'}>
+                <div className="mb-1 text-xs font-medium text-muted-foreground">喜好备选（不满足点单）</div>
+                <div className={compact ? 'space-y-1.5' : 'space-y-2'}>
+                  {visiblePreferenceRecipes.map((recipe, index) => (
+                    <RecipeRecommendationRow
+                      key={`fallback-${recipe.recipe.id}-${index}`}
+                      recipe={recipe}
+                      index={visibleRecipes.length + index}
+                      ownedIngredientQty={runtimeSets?.ownedIngredientQty ?? {}}
+                      compact={compact}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -2547,6 +2671,22 @@ function OrderRecommendationPanel({
                 onToggleFavorite={() => onToggleBeverageFavorite(item.customer, item.order.beverageTag, beverage)}
               />
             ))}
+            {visiblePreferenceBeverages.length > 0 && (
+              <div className={compact ? 'pt-1' : 'pt-2'}>
+                <div className="mb-1 text-xs font-medium text-muted-foreground">喜好备选（不满足点单）</div>
+                <div className={compact ? 'space-y-1.5' : 'space-y-2'}>
+                  {visiblePreferenceBeverages.map((beverage, index) => (
+                    <BeverageRecommendationRow
+                      key={`fallback-${beverage.beverage.id}`}
+                      beverage={beverage}
+                      index={visibleBeverages.length + index}
+                      ownedBeverageQty={runtimeSets?.ownedBeverageQty ?? {}}
+                      compact={compact}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -2769,6 +2909,35 @@ async function writeInventoryQuantity(
   }
 }
 
+async function publishGameUiPinningTarget(
+  endpoint: string,
+  apiToken: string,
+  enabled: boolean,
+  target: GameUiPinningTarget | null,
+): Promise<void> {
+  const params = new URLSearchParams({
+    enabled: String(enabled),
+    recipeId: target ? String(target.recipeId) : '-1',
+    recipeName: target?.recipeName ?? '',
+    ingredientIds: target ? target.ingredientIds.join(',') : '',
+    beverageId: target ? String(target.beverageId) : '-1',
+    beverageName: target?.beverageName ?? '',
+  });
+  const abortController = new AbortController();
+  const timeoutId = window.setTimeout(() => abortController.abort(), 2200);
+
+  try {
+    await readLocalApiJson<{ ok: boolean }>(
+      endpoint,
+      apiToken,
+      `/ui-pinning/target?${params.toString()}`,
+      abortController.signal,
+    );
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
 async function prepareNextRareOrder(
   endpoint: string,
   apiToken: string,
@@ -2963,7 +3132,42 @@ function buildRuntimeSets(runtime: RecommendationStateSnapshot | null): RuntimeS
     unavailableIngredientIds,
     ownedIngredientQty: normalizeOwnedIngredientQty(runtime.ownedIngredientQty),
     ownedBeverageQty: normalizeOwnedIngredientQty(runtime.ownedBeverageQty ?? {}),
+    placedCookerTypeIds: new Set(runtime.placedCookerTypeIds ?? []),
+    placedCookerNames: buildPlacedCookerNameSet(runtime),
+    hasCookerSnapshot: (runtime.placedCookers?.length ?? 0) > 0 || (runtime.placedCookerTypeIds?.length ?? 0) > 0,
   };
+}
+
+function buildPlacedCookerNameSet(runtime: RecommendationStateSnapshot): Set<string> {
+  const names = new Set<string>();
+  for (const typeId of runtime.placedCookerTypeIds ?? []) {
+    const mapped = COOKER_TYPE_NAME_BY_ID.get(typeId);
+    if (mapped) names.add(normalizeCookerName(mapped));
+  }
+  for (const cooker of runtime.placedCookers ?? []) {
+    for (const name of [cooker.name, ...(cooker.typeNames ?? [])]) {
+      const normalized = normalizeCookerName(name);
+      if (normalized) names.add(normalized);
+    }
+  }
+  return names;
+}
+
+function shouldKeepRecipeForCooker(
+  recipe: IRareRecipeResult,
+  runtimeSets: RuntimeSets | null,
+  filterMissingCookers: boolean,
+): boolean {
+  if (!filterMissingCookers || !runtimeSets?.hasCookerSnapshot) return true;
+  const requiredCooker = normalizeCookerName(recipe.recipe.cooker);
+  if (!requiredCooker) return true;
+  return runtimeSets.placedCookerNames.has(requiredCooker);
+}
+
+function normalizeCookerName(value: string | null | undefined): string {
+  const normalized = (value ?? '').trim();
+  if (!normalized) return '';
+  return COOKER_NAME_ALIASES.get(normalized) ?? normalized;
 }
 
 function toRuntimeRareCustomer(customer: RuntimeRareCustomer): ICustomerRare {
@@ -3067,6 +3271,7 @@ function buildOrderRecommendations(
   rareCustomersById: Map<number, ICustomerRare>,
   cache: Map<string, CachedRecommendation>,
   favorites: FavoriteData,
+  preferences: CompanionPreferences,
 ): { recommendations: OrderRecommendation[]; recommendationIssues: RecommendationIssue[] } {
   if (orders.length === 0) return { recommendations: [], recommendationIssues: [] };
   const sortedOrders = sortNightOrders(orders);
@@ -3080,7 +3285,7 @@ function buildOrderRecommendations(
   const runtimeSets = buildRuntimeSets(runtime);
   if (!runtimeSets) return { recommendations: [], recommendationIssues: [] };
 
-  const stateSignature = buildRecommendationStateSignature(runtime);
+  const stateSignature = buildRecommendationStateSignature(runtime, preferences);
   const recommendations: OrderRecommendation[] = [];
   const recommendationIssues: RecommendationIssue[] = [];
 
@@ -3114,12 +3319,36 @@ function buildOrderRecommendations(
         runtimeSets.ownedIngredientQty,
         runtime.famousShopEnabled,
       )
+        .filter((recipe) => shouldKeepRecipeForCooker(recipe, runtimeSets, preferences.filterMissingCookers))
         .sort((a, b) => compareRareRecipesForService(a, b, runtimeSets.ownedIngredientQty));
+
+      const preferenceRecipes = recipes.length >= 3
+        ? []
+        : rankPreferenceRecipesForRare(
+          customer,
+          foodTag,
+          beverageTag,
+          runtimeSets.recipeIds,
+          runtimeSets.ingredientIds,
+          new Set<number>(),
+          runtime.popularFoodTag,
+          runtime.popularHateFoodTag,
+          4,
+          runtimeSets.ownedIngredientQty,
+          runtime.famousShopEnabled,
+        )
+          .filter((recipe) => shouldKeepRecipeForCooker(recipe, runtimeSets, preferences.filterMissingCookers))
+          .sort((a, b) => compareRareRecipesForService(a, b, runtimeSets.ownedIngredientQty));
 
       const beverages = rankBeveragesForRare(customer, beverageTag, runtimeSets.beverageIds)
         .sort(compareRareBeveragesForService);
 
-      cached = { customer, recipes, beverages };
+      const preferenceBeverages = beverages.length >= 3
+        ? []
+        : rankPreferenceBeveragesForRare(customer, beverageTag, runtimeSets.beverageIds)
+          .sort(compareRareBeveragesForService);
+
+      cached = { customer, recipes, beverages, preferenceRecipes, preferenceBeverages };
       cache.set(cacheKey, cached);
       trimRecommendationCache(cache);
     }
@@ -3129,6 +3358,8 @@ function buildOrderRecommendations(
       customer: cached.customer,
       recipes: promoteFavoriteRecipes(cached.recipes, favorites, customer.id, foodTag).slice(0, MAX_FOCUS_RECOMMENDATION_ROWS),
       beverages: promoteFavoriteBeverages(cached.beverages, favorites, customer.id, beverageTag).slice(0, MAX_FOCUS_RECOMMENDATION_ROWS),
+      preferenceRecipes: cached.preferenceRecipes.slice(0, MAX_FOCUS_RECOMMENDATION_ROWS),
+      preferenceBeverages: cached.preferenceBeverages.slice(0, MAX_FOCUS_RECOMMENDATION_ROWS),
     });
   }
 
@@ -3186,6 +3417,42 @@ function selectNextOrderPreparation(
     beverage: beveragePick.ok ? beveragePick.beverage : null,
     recipeFavorite: recipePick.ok ? recipePick.favorite : null,
     beverageFavorite: beveragePick.ok ? beveragePick.favorite : null,
+  };
+}
+
+function buildGameUiPinningTarget(recommendations: OrderRecommendation[]): GameUiPinningTarget | null {
+  const item = [...recommendations].sort((left, right) => compareNightOrders(left.order, right.order))[0];
+  if (!item) return null;
+  const recipe = item.recipes[0] ?? null;
+  const beverage = item.beverages[0] ?? null;
+  if (!recipe && !beverage) return null;
+
+  const baseIngredientIds = recipe
+    ? recipe.recipe.ingredients
+      .map((name) => INGREDIENT_BY_NAME.get(name)?.id ?? -1)
+      .filter((id) => id >= 0)
+    : [];
+  const ingredientIds = normalizeIdList([
+    ...baseIngredientIds,
+    ...(recipe?.extraIngredients.map((ingredient) => ingredient.id) ?? []),
+  ]);
+  const recipeId = recipe?.recipe.recipeId ?? recipe?.recipe.id ?? -1;
+  const beverageId = beverage?.beverage.id ?? -1;
+
+  return {
+    signature: [
+      item.order.firstSeenAtUtc ?? item.order.lastSeenAtUtc ?? '',
+      item.order.deskCode,
+      item.order.guestId ?? item.order.guestName,
+      recipeId,
+      ingredientIds.join(','),
+      beverageId,
+    ].join('|'),
+    recipeId,
+    recipeName: recipe?.recipe.name ?? '',
+    ingredientIds,
+    beverageId,
+    beverageName: beverage?.beverage.name ?? '',
   };
 }
 
@@ -3561,11 +3828,17 @@ function buildLowStockEntries(
     .slice(0, limit);
 }
 
-function buildRecommendationStateSignature(runtime: RecommendationStateSnapshot) {
+function buildRecommendationStateSignature(runtime: RecommendationStateSnapshot, preferences: CompanionPreferences) {
   const ownedQty = Object.entries(runtime.ownedIngredientQty)
     .sort(([a], [b]) => Number(a) - Number(b))
     .map(([id, qty]) => `${id}:${qty}`)
     .join(',');
+  const placedCookers = [
+    ...(runtime.placedCookerTypeIds ?? []).map((id) => `id:${id}`),
+    ...(runtime.placedCookers ?? []).flatMap((cooker) =>
+      [cooker.name, ...(cooker.typeNames ?? [])].map((name) => `name:${normalizeCookerName(name)}`),
+    ),
+  ].filter(Boolean).sort().join(',');
 
   return [
     runtime.availableRecipeIds.join(','),
@@ -3575,6 +3848,8 @@ function buildRecommendationStateSignature(runtime: RecommendationStateSnapshot)
     runtime.popularFoodTag ?? '',
     runtime.popularHateFoodTag ?? '',
     runtime.famousShopEnabled ? '1' : '0',
+    preferences.filterMissingCookers ? 'filterCooker:1' : 'filterCooker:0',
+    placedCookers,
   ].join('|');
 }
 
@@ -3643,6 +3918,8 @@ function readStoredCompanionPreferences(): CompanionPreferences {
     autoPrepCollectCooking: readStoredBoolean(AUTO_PREP_COLLECT_COOKING_STORAGE_KEY, false),
     autoPrepFavoritesOnly: readStoredBoolean(AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY, false),
     autoPrepStopOnError: readStoredBoolean(AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY, false),
+    filterMissingCookers: readStoredBoolean(FILTER_MISSING_COOKERS_STORAGE_KEY, true),
+    gameUiPinningEnabled: readStoredBoolean(GAME_UI_PINNING_STORAGE_KEY, false),
   });
 }
 
@@ -3665,6 +3942,8 @@ function normalizeCompanionPreferences(value: CompanionPreferences): CompanionPr
     autoPrepCollectCooking: Boolean(value.autoPrepCollectCooking),
     autoPrepFavoritesOnly: Boolean(value.autoPrepFavoritesOnly),
     autoPrepStopOnError: Boolean(value.autoPrepStopOnError),
+    filterMissingCookers: value.filterMissingCookers !== false,
+    gameUiPinningEnabled: Boolean(value.gameUiPinningEnabled),
   };
 }
 
@@ -3695,6 +3974,8 @@ function persistCompanionPreferences(preferences: CompanionPreferences) {
   localStorage.setItem(AUTO_PREP_COLLECT_COOKING_STORAGE_KEY, normalized.autoPrepCollectCooking ? '1' : '0');
   localStorage.setItem(AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY, normalized.autoPrepFavoritesOnly ? '1' : '0');
   localStorage.setItem(AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY, normalized.autoPrepStopOnError ? '1' : '0');
+  localStorage.setItem(FILTER_MISSING_COOKERS_STORAGE_KEY, normalized.filterMissingCookers ? '1' : '0');
+  localStorage.setItem(GAME_UI_PINNING_STORAGE_KEY, normalized.gameUiPinningEnabled ? '1' : '0');
 }
 
 function applyCompanionVisualPreferences(preferences: CompanionPreferences) {

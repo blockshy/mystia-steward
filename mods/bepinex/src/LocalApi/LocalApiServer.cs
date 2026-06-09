@@ -197,6 +197,9 @@ internal sealed class LocalApiServer : IDisposable
                     case "/orders/complete-first":
                         WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _completeOrder));
                         break;
+                    case "/ui-pinning/target":
+                        WriteResponse(stream, 200, "OK", UpdateUiPinningTargetJson(query));
+                        break;
                     case "/favorites":
                         WriteResponse(stream, 200, "OK", _favoriteStore.GetJson());
                         break;
@@ -382,6 +385,26 @@ internal sealed class LocalApiServer : IDisposable
         catch (Exception ex)
         {
             return "{\"ok\":false,\"prepared\":false,\"error\":\"" + EscapeJson(ex.Message) + "\",\"order\":{\"deskCode\":-1,\"guestId\":null,\"guestName\":\"\",\"foodTag\":\"\",\"beverageTag\":\"\"},\"recipeId\":-1,\"recipeName\":\"\",\"beverageId\":-1,\"beverageName\":\"\",\"steps\":[]}";
+        }
+    }
+
+    private static string UpdateUiPinningTargetJson(string query)
+    {
+        try
+        {
+            var enabled = ReadBoolQuery(query, "enabled") ?? false;
+            var status = RuntimeUiPinningService.UpdateTarget(
+                enabled,
+                ReadIntQuery(query, "recipeId", -1),
+                ReadIntQuery(query, "beverageId", -1),
+                ReadIntListQuery(query, "ingredientIds"),
+                ReadStringQuery(query, "recipeName"),
+                ReadStringQuery(query, "beverageName"));
+            return "{\"ok\":true,\"status\":\"" + EscapeJson(status) + "\",\"error\":null}";
+        }
+        catch (Exception ex)
+        {
+            return "{\"ok\":false,\"status\":\"\",\"error\":\"" + EscapeJson(ex.Message) + "\"}";
         }
     }
 

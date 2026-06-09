@@ -36,6 +36,7 @@ public sealed class MystiaStewardCompanionPlugin : BasePlugin
             Log);
 
         SpecialOrderRuntimeCapture.Attach(Log);
+        RuntimeUiPinningService.Attach(Log);
         if (settings.EnableSpecialOrderLogFallback.Value)
         {
             SpecialOrderLogCapture.Attach(Log);

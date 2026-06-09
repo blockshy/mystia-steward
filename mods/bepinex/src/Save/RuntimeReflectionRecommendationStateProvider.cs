@@ -87,7 +87,9 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
             CollabStatus = ReadStringBoolDictionary(GetMemberValue(playerPartial, "collabStatus")),
         };
 
-        return RecommendationState.FromSave(_repository, parsed);
+        var state = RecommendationState.FromSave(_repository, parsed);
+        RuntimeCookerSnapshotService.ApplyTo(state);
+        return state;
     }
 
     private static List<int> ReadLiveRecipeIds(object? storagePartial)
