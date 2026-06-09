@@ -8,6 +8,7 @@ namespace MystiaStewardCompanion.Save;
 internal static class RuntimeCookerSnapshotService
 {
     private const string CookSystemManagerTypeName = "NightScene.CookingUtility.CookSystemManager";
+    private const string RunTimeStorageTypeName = "GameData.RunTime.Common.RunTimeStorage";
 
     private static readonly object SyncRoot = new();
 
@@ -49,7 +50,25 @@ internal static class RuntimeCookerSnapshotService
 
     private static List<PlacedCookerInfo> ReadPlacedCookers()
     {
+        var managerResult = ReadCookSystemCookers(out var managerStatus);
+        if (managerResult.Count > 0)
+        {
+            SetStatus(managerStatus);
+            return managerResult;
+        }
+
+        var storageResult = ReadStorageCookers(out var storageStatus);
+        SetStatus(storageResult.Count > 0
+            ? $"{storageStatus}; fallback={managerStatus}"
+            : $"{managerStatus}; {storageStatus}");
+        return storageResult;
+    }
+
+    private static List<PlacedCookerInfo> ReadCookSystemCookers(out string status)
+    {
         var result = new List<PlacedCookerInfo>();
+        status = "manager not read";
+
         object? cookSystem;
         try
         {
@@ -57,32 +76,24 @@ internal static class RuntimeCookerSnapshotService
         }
         catch (Exception ex)
         {
-            SetStatus($"manager error: {ex.Message}");
+            status = $"manager error: {ex.Message}";
             return result;
         }
 
         if (cookSystem == null)
         {
-            SetStatus("manager missing");
+            status = "manager missing";
             return result;
         }
 
         var allCookers = ReadMember(cookSystem, "AllCookers");
-        object? controllers = null;
         if (allCookers == null)
         {
-            try
-            {
-                controllers = InvokeInstance(cookSystem, "get_AllCookerControllers", Array.Empty<object?>());
-            }
-            catch (Exception ex)
-            {
-                SetStatus($"controllers error: {ex.Message}");
-                return result;
-            }
+            status = "manager cookers not initialized";
+            return result;
         }
 
-        var controllerItems = ReadCookerControllers(allCookers, controllers).ToList();
+        var controllerItems = ReadCookerControllers(allCookers).ToList();
         var index = 0;
         foreach (var controller in controllerItems)
         {
@@ -102,7 +113,7 @@ internal static class RuntimeCookerSnapshotService
 
             if (cooker == null) continue;
 
-            var typeIds = ReadCookerTypeIds(cooker).Distinct().OrderBy(id => id).ToList();
+            var typeIds = ReadCookerTypeIds(cooker).Where(id => id > 0).Distinct().OrderBy(id => id).ToList();
             if (typeIds.Count == 0) continue;
 
             var typeNames = typeIds.Select(ResolveCookerTypeName).Where(name => name.Length > 0).Distinct().ToList();
@@ -122,17 +133,70 @@ internal static class RuntimeCookerSnapshotService
             .Where(name => !string.IsNullOrWhiteSpace(name))
             .Distinct()
             .ToArray();
-        SetStatus(result.Count == 0
-            ? $"empty; controllers={controllerItems.Count}; allCookersType={allCookers?.GetType().FullName ?? "null"}; controllersType={controllers?.GetType().FullName ?? "null"}"
-            : $"ok; controllers={controllerItems.Count}; cookers={result.Count}; types={string.Join("/", typeSummary)}");
+        status = result.Count == 0
+            ? $"manager empty; controllers={controllerItems.Count}; allCookersType={allCookers.GetType().FullName}"
+            : $"ok; controllers={controllerItems.Count}; cookers={result.Count}; types={string.Join("/", typeSummary)}";
         return result;
     }
 
-    private static IEnumerable<object> ReadCookerControllers(object? allCookers, object? controllers)
+    private static List<PlacedCookerInfo> ReadStorageCookers(out string status)
+    {
+        var result = new List<PlacedCookerInfo>();
+        status = "storage not read";
+
+        object? cookerPairs;
+        try
+        {
+            cookerPairs = InvokeStatic(RunTimeStorageTypeName, "GetAllCookers", Array.Empty<object?>());
+        }
+        catch (Exception ex)
+        {
+            status = $"storage error: {ex.InnerException?.Message ?? ex.Message}";
+            return result;
+        }
+
+        var index = 0;
+        foreach (var pair in ReadObjectEnumerable(cookerPairs))
+        {
+            var cooker = ReadMember(pair, "Key")
+                ?? ReadMember(pair, "key")
+                ?? ReadMember(pair, "Item1");
+            var count = ToInt(ReadMember(pair, "Value")
+                ?? ReadMember(pair, "value")
+                ?? ReadMember(pair, "Item2"));
+            if (cooker == null || count <= 0) continue;
+
+            var typeIds = ReadCookerTypeIds(cooker).Where(id => id > 0).Distinct().OrderBy(id => id).ToList();
+            if (typeIds.Count == 0) continue;
+
+            var typeNames = typeIds.Select(ResolveCookerTypeName).Where(name => name.Length > 0).Distinct().ToList();
+            result.Add(new PlacedCookerInfo
+            {
+                ControllerIndex = index++,
+                TypeIds = typeIds,
+                TypeNames = typeNames,
+                Name = typeNames.Count > 0 ? string.Join("/", typeNames) : cooker.GetType().Name,
+                IsOpen = true,
+                Source = "RunTimeStorage",
+            });
+        }
+
+        var typeSummary = result
+            .SelectMany(cooker => cooker.TypeNames)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct()
+            .ToArray();
+        status = result.Count == 0
+            ? $"storage empty; sourceType={cookerPairs?.GetType().FullName ?? "null"}"
+            : $"storage ok; cookers={result.Count}; types={string.Join("/", typeSummary)}";
+        return result;
+    }
+
+    private static IEnumerable<object> ReadCookerControllers(object? allCookers)
     {
         var dictionaryValues = ReadDictionaryValues(allCookers).Where(value => value != null).Cast<object>().ToList();
         var seen = new HashSet<nint>();
-        foreach (var controller in dictionaryValues.Count > 0 ? dictionaryValues : ReadObjectEnumerable(controllers))
+        foreach (var controller in dictionaryValues)
         {
             if (controller == null) continue;
             if (!seen.Add(ReadObjectPointer(controller))) continue;
@@ -145,7 +209,7 @@ internal static class RuntimeCookerSnapshotService
         try
         {
             var directType = ToInt(ReadMember(cooker, "type"));
-            if (directType >= 0) return new List<int> { directType };
+            if (directType > 0) return new List<int> { directType };
         }
         catch
         {
@@ -153,7 +217,7 @@ internal static class RuntimeCookerSnapshotService
         }
 
         var cookerTypes = TryInvokeInstanceValue(cooker, "get_AllAvailableCookerType");
-        return ReadIntEnumerable(cookerTypes).Where(id => id >= 0).ToList();
+        return ReadIntEnumerable(cookerTypes).Where(id => id > 0).ToList();
     }
 
     private static string ResolveCookerTypeName(int typeId)
@@ -196,6 +260,17 @@ internal static class RuntimeCookerSnapshotService
             .FirstOrDefault(candidate => string.Equals(candidate.Name, methodName, StringComparison.Ordinal)
                 && CanUseParameters(candidate.GetParameters(), args));
         return method == null ? null : method.Invoke(target, args);
+    }
+
+    private static object? InvokeStatic(string typeName, string methodName, object?[] args)
+    {
+        var type = FindType(typeName);
+        if (type == null) return null;
+
+        var method = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+            .FirstOrDefault(candidate => string.Equals(candidate.Name, methodName, StringComparison.Ordinal)
+                && CanUseParameters(candidate.GetParameters(), args));
+        return method == null ? null : method.Invoke(null, args);
     }
 
     private static bool CanUseParameters(ParameterInfo[] parameters, object?[] args)
