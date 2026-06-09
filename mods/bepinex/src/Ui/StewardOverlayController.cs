@@ -144,6 +144,7 @@ internal sealed class StewardOverlayController
         ProcessPendingInventoryEdits();
         ProcessPendingOrderPreparations();
         ProcessPendingCookingCollections();
+        RefreshOnSceneChange();
         RefreshBusinessContextOnSpecialOrderChange();
 
         if (IsTogglePressed())
@@ -196,6 +197,31 @@ internal sealed class StewardOverlayController
         if (!_specialOrderRefreshPending || Time.realtimeSinceStartup < _nextSpecialOrderRefreshAt) return;
 
         _specialOrderRefreshPending = false;
+        RefreshBusinessContext(false, force: true);
+    }
+
+    private void RefreshOnSceneChange()
+    {
+        if (_config == null) return;
+
+        var sceneName = GetActiveSceneName();
+        if (string.Equals(sceneName, _activeSceneName, StringComparison.Ordinal)) return;
+
+        _activeSceneName = sceneName;
+        _nextAutoRefreshAt = 0f;
+        _nextBusinessRefreshAt = 0f;
+        _businessFallbackState = null;
+
+        if (IsNonGameplayScene(sceneName))
+        {
+            ClearLoadedRuntime(L(
+                "当前游戏运行时数据不可用：当前处于非游戏内页面。",
+                "Live game runtime data unavailable: this is not an in-game page."));
+            PublishLocalApiSnapshot();
+            return;
+        }
+
+        RefreshRuntimeState(false);
         RefreshBusinessContext(false, force: true);
     }
 
@@ -1048,7 +1074,8 @@ internal sealed class StewardOverlayController
 
             if (RuntimeReflectionRecommendationStateProvider.CanReadRuntimeState(out var runtimeReason))
             {
-                IRecommendationStateProvider runtimeProvider = new RuntimeReflectionRecommendationStateProvider(_repository);
+                var includePlacedCookers = IsNightBusinessScene(_activeSceneName);
+                IRecommendationStateProvider runtimeProvider = new RuntimeReflectionRecommendationStateProvider(_repository, includePlacedCookers);
                 var previousSource = _runtimeSource;
                 var nextRuntimeState = runtimeProvider.LoadState();
                 ApplyConfigOverrides(nextRuntimeState);
@@ -2018,7 +2045,16 @@ internal sealed class StewardOverlayController
 
     private bool IsNonGameplayScene(string sceneName)
     {
-        if (_config == null || string.IsNullOrWhiteSpace(sceneName)) return false;
+        if (string.IsNullOrWhiteSpace(sceneName)) return false;
+        if (sceneName.Contains("entry", StringComparison.OrdinalIgnoreCase)
+            || sceneName.Contains("title", StringComparison.OrdinalIgnoreCase)
+            || sceneName.Contains("menu", StringComparison.OrdinalIgnoreCase)
+            || sceneName.Contains("loading", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (_config == null) return false;
         return ContainsConfiguredKeyword(sceneName, _config.NonGameplaySceneKeywords.Value);
     }
 

@@ -156,7 +156,7 @@ internal static class RuntimeCookerSnapshotService
         }
 
         var index = 0;
-        foreach (var pair in ReadObjectEnumerable(cookerPairs))
+        foreach (var pair in ReadRawObjectEnumerable(cookerPairs))
         {
             var cooker = ReadMember(pair, "Key")
                 ?? ReadMember(pair, "key")
@@ -312,12 +312,23 @@ internal static class RuntimeCookerSnapshotService
     {
         if (value == null || value is string) yield break;
 
+        foreach (var item in ReadRawObjectEnumerable(value))
+        {
+            if (item == null) continue;
+            yield return NormalizeDictionaryItem(item) ?? item;
+        }
+    }
+
+    private static IEnumerable<object> ReadRawObjectEnumerable(object? value)
+    {
+        if (value == null || value is string) yield break;
+
         var seen = new HashSet<nint>();
         foreach (var item in EnumerateManaged(value).Concat(EnumerateByIndexer(value)))
         {
             if (item == null) continue;
             if (!seen.Add(ReadObjectPointer(item))) continue;
-            yield return NormalizeDictionaryItem(item) ?? item;
+            yield return item;
         }
     }
 
