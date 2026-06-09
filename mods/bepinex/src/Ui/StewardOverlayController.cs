@@ -1228,6 +1228,7 @@ internal sealed class StewardOverlayController
                 Status = _status,
                 RuntimeSource = _runtimeSource,
                 DataDirectory = _repository?.DataDirectory ?? "",
+                RuntimeUiPinningStatus = RuntimeUiPinningService.Status,
                 RecommendationState = publishedState == null ? null : RecommendationStateSnapshot.From(publishedState),
                 NightBusiness = _businessContext,
                 RuntimeRareCustomers = _repository == null

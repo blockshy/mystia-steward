@@ -134,6 +134,7 @@ interface RecommendationStateSnapshot {
   ownedBeverageQty: Record<string, number>;
   placedCookerTypeIds?: number[];
   placedCookers?: PlacedCookerSnapshot[];
+  placedCookerStatus?: string;
   popularFoodTag: string | null;
   popularHateFoodTag: string | null;
   famousShopEnabled: boolean;
@@ -196,6 +197,7 @@ interface LocalApiSnapshot {
   status: string;
   runtimeSource: string;
   dataDirectory: string;
+  runtimeUiPinningStatus?: string;
   recommendationState: RecommendationStateSnapshot | null;
   nightBusiness: NightBusinessContext | null;
   runtimeRareCustomers?: RuntimeRareCustomer[];
@@ -443,12 +445,20 @@ export function ModWorkbench() {
       : null;
     const signature = `${companionPreferences.gameUiPinningEnabled ? '1' : '0'}|${target?.signature ?? 'disabled'}`;
     if (lastUiPinningSignatureRef.current === signature) return;
-    lastUiPinningSignatureRef.current = signature;
 
+    let cancelled = false;
     publishGameUiPinningTarget(normalizedEndpoint, apiToken, companionPreferences.gameUiPinningEnabled, target)
+      .then(() => {
+        if (!cancelled) lastUiPinningSignatureRef.current = signature;
+      })
       .catch(() => {
+        if (!cancelled) lastUiPinningSignatureRef.current = '';
         // Local API may be unavailable before the game reaches the title screen.
       });
+
+    return () => {
+      cancelled = true;
+    };
   }, [
     apiToken,
     companionPreferences.gameUiPinningEnabled,
@@ -967,6 +977,7 @@ export function ModWorkbench() {
             recommendations={orderRecommendations.recommendations}
             recommendationIssues={orderRecommendations.recommendationIssues}
             runtimeSets={runtimeSets}
+            uiPinningStatus={snapshot?.runtimeUiPinningStatus ?? ''}
             favorites={favorites}
             favoriteBusyKey={favoriteBusyKey}
             favoriteError={favoriteError}
@@ -1415,6 +1426,7 @@ function ModServicePanel({
   recommendations,
   recommendationIssues,
   runtimeSets,
+  uiPinningStatus,
   favorites,
   favoriteBusyKey,
   favoriteError,
@@ -1432,6 +1444,7 @@ function ModServicePanel({
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
   runtimeSets: RuntimeSets | null;
+  uiPinningStatus: string;
   favorites: FavoriteData;
   favoriteBusyKey: string;
   favoriteError: string;
@@ -1472,8 +1485,9 @@ function ModServicePanel({
             label="已摆放厨具"
             value={runtimeSets?.hasCookerSnapshot
               ? [...runtimeSets.placedCookerNames].join('、') || '已读取'
-              : '未读取'}
+              : runtime?.placedCookerStatus ? `未读取 · ${runtime.placedCookerStatus}` : '未读取'}
           />
+          <InfoLine label="界面置顶" value={uiPinningStatus || '暂无'} />
         </CardContent>
       </Card>
 

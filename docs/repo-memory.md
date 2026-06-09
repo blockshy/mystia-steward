@@ -32,6 +32,7 @@
 - 伴随窗口内手柄导航由 `apps/companion/src/companion/use-gamepad-navigation.ts` 管理：左摇杆/十字键移动焦点，`A` 确认，`B` 返回或退出专注模式，`LB/RB` 切页，`LT/RT` 滚动，`Y` 进入专注模式或切换精简模式，`X` 收藏当前推荐行。导航采用 `data-gamepad-scope` 分区，顶部页签栏左右键只在页签之间移动，向下进入当前页面内容；行内控件左右移动优先在当前 `data-gamepad-row` 内完成，range 滑杆左右键直接调值，推荐行和收藏按钮需要稳定 `data-gamepad-focus-key` 以便状态变化后回焦。
 - 经营中稀客订单按首次捕获时间稳定排序；运行时捕获订单保留到明确移除、稀客离场或 6 小时硬上限，避免长时间未上菜时从伴随窗口消失。
 - 运行时推荐状态会尝试读取当前夜间经营场景已摆放的全部厨具，快照来自 `CookSystemManager.Instance.AllCookerControllers` 和 `Cooker.AllAvailableCookerType`；读不到快照时不要过滤料理。
+- 经营中概览会显示厨具快照读取状态和 `RuntimeUiPinningService.Status`。排查“缺失厨具过滤/游戏界面置顶”时，优先让用户提供这两行状态和 `BepInEx/LogOutput.log`。
 - 运行时捕获订单维护 `ChangeVersion`；UI 控制器在版本变化后延迟 0.2 秒强制刷新经营数据并发布本地 API 快照。伴随窗口在 `经营中` 和稀客专注模式下以 750ms 轮询快照，其他页面保持 2 秒。
 - 运行时稀客 ID 会先归一化为本地 `customer_rare.json` 身份；优先读取游戏 `DataBaseCharacter.GetAllMappedGuests()` 固定映射和 `GetSpecialGuestsAndMappedGuests()` 完整运行时稀客表，运行时表按游戏语言名称匹配本地唯一同名稀客，手工事件变体只作为兜底。本地缺失但运行时具备有效喜好 Tag 的稀客会合成为临时 `RuntimeRareCustomer`，供经营中订单推荐和伴随窗口稀客页使用；剧情 Intro/Parallel/Current、问号占位、隐藏图鉴、NeverCome、无喜好数据的角色不合成。带具体桌号的捕获订单只允许匹配同一桌活跃稀客，未入座 `desk=-1` 稀客不能保活旧订单。
 - 诊断开启且经营数据扫描触发时，运行时固定数据会按主题写到诊断目录：`runtime-static-data.log` 映射稀客与 `aliasSource`、`runtime-tags.log` 标签和 TagRule、`runtime-database-diff.log` 核心食材/酒水/料理表对照与读取方式、`runtime-guests.log` 普客/稀客/事件变体、`runtime-izakayas.log` 场景和客人池。游戏数据库未初始化时每 5 秒重试，日志头部 `Complete: True` 表示读取成功。

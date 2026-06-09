@@ -145,6 +145,7 @@ public sealed class NightBusinessReflectionProvider
             acceptedRuntimeOrders = ReadRuntimeCapturedOrders(runtimeOrders, activeGuests).ToList();
             sourceStats.Add($"RuntimeCapture={acceptedRuntimeOrders.Count}/{runtimeOrders.Count}");
             sourceStats.Add($"RuntimeCaptureStatus={SpecialOrderRuntimeCapture.Status}");
+            sourceStats.Add($"UiPinning={RuntimeUiPinningService.Status}");
             orders.AddRange(acceptedRuntimeOrders);
         }
         catch (Exception ex)

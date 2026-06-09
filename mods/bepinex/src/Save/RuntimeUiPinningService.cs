@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Runtime.CompilerServices;
 using System.Reflection;
 using BepInEx.Logging;
 using HarmonyLib;
@@ -89,6 +90,9 @@ internal static class RuntimeUiPinningService
             _recipeName = enabled ? recipeName.Trim() : "";
             _beverageName = enabled ? beverageName.Trim() : "";
             _lastAction = enabled ? "target updated" : "disabled";
+            _log?.LogInfo(enabled
+                ? $"Runtime UI pinning target updated: recipe={_recipeId}/{_recipeName}, beverage={_beverageId}/{_beverageName}, ingredients={string.Join(",", _ingredientIds)}."
+                : "Runtime UI pinning target disabled.");
             return Status;
         }
     }
@@ -188,7 +192,7 @@ internal static class RuntimeUiPinningService
             var key = ReadPairKey(item) ?? item;
             var id = ReadObjectId(key);
             return priority.TryGetValue(id, out var index) ? index : int.MaxValue;
-        }, $"ingredient:{fieldName}");
+        }, $"ingredient:{fieldName}", item => ReadObjectId(ReadPairKey(item) ?? item));
     }
 
     private static void TryMoveFirst(object target, string fieldName, Func<object, bool> match, string label)
@@ -200,38 +204,58 @@ internal static class RuntimeUiPinningService
             return;
         }
 
-        ReorderList(list, item => match(item) ? 0 : 1, label);
+        ReorderList(list, item => match(item) ? 0 : int.MaxValue, label, item => ReadObjectId(ReadPairKey(item) ?? item));
     }
 
-    private static void ReorderList(object list, Func<object, int> priority, string label)
+    private static void ReorderList(object list, Func<object, int> priority, string label, Func<object, int> describeId)
     {
         try
         {
-            var count = GetCount(list);
-            if (count <= 1) return;
-
-            var items = new List<object>();
-            for (var index = 0; index < count; index++)
+            var items = ReadObjectEnumerable(list).ToList();
+            var count = items.Count;
+            if (count <= 1)
             {
-                var item = GetItem(list, index);
-                if (item != null) items.Add(item);
+                NoteAction($"{label} skipped; count={count}");
+                return;
             }
 
-            var reordered = items
+            var ranked = items
                 .Select((item, index) => new { item, index, priority = priority(item) })
+                .ToList();
+            if (ranked.All(item => item.priority == int.MaxValue))
+            {
+                NoteAction($"{label} target missing; count={count}; ids={FormatIds(items, describeId)}");
+                return;
+            }
+
+            var reordered = ranked
                 .OrderBy(item => item.priority)
                 .ThenBy(item => item.index)
                 .Select(item => item.item)
                 .ToList();
 
-            if (reordered.SequenceEqual(items)) return;
-            if (!ClearList(list)) return;
-            foreach (var item in reordered)
+            if (reordered.SequenceEqual(items))
             {
-                if (!AddListItem(list, item)) return;
+                NoteAction($"{label} already first; count={count}; ids={FormatIds(items, describeId)}");
+                return;
             }
 
-            NoteAction($"{label} reordered");
+            if (!ClearList(list))
+            {
+                NoteAction($"{label} clear failed; count={count}");
+                return;
+            }
+
+            foreach (var item in reordered)
+            {
+                if (!AddListItem(list, item))
+                {
+                    NoteAction($"{label} add failed; count={count}");
+                    return;
+                }
+            }
+
+            NoteAction($"{label} reordered; count={count}; ids={FormatIds(reordered, describeId)}");
         }
         catch (Exception ex)
         {
@@ -239,16 +263,17 @@ internal static class RuntimeUiPinningService
         }
     }
 
-    private static int GetCount(object list)
+    private static IEnumerable<object> ReadObjectEnumerable(object? value)
     {
-        if (list is ICollection collection) return collection.Count;
-        return ToInt(TryInvokeInstanceValue(list, "get_Count") ?? ReadMember(list, "Count"));
-    }
+        if (value == null || value is string) yield break;
 
-    private static object? GetItem(object list, int index)
-    {
-        if (list is IList ilist) return ilist[index];
-        return TryInvokeInstanceValue(list, "get_Item", new object?[] { index });
+        var seen = new HashSet<nint>();
+        foreach (var item in EnumerateManaged(value).Concat(EnumerateByEnumerator(value)).Concat(EnumerateByIndexer(value)))
+        {
+            if (item == null) continue;
+            if (!seen.Add(ReadObjectPointer(item))) continue;
+            yield return item;
+        }
     }
 
     private static bool ClearList(object list)
@@ -289,6 +314,13 @@ internal static class RuntimeUiPinningService
             ?? ReadMember(value, "foodID"));
     }
 
+    private static string FormatIds(IReadOnlyList<object> items, Func<object, int> describeId)
+    {
+        var ids = items.Take(8).Select(describeId).ToArray();
+        var suffix = items.Count > ids.Length ? $".../{items.Count}" : "";
+        return string.Join(",", ids) + suffix;
+    }
+
     private static void NoteAction(string action)
     {
         lock (SyncRoot)
@@ -312,6 +344,40 @@ internal static class RuntimeUiPinningService
         catch
         {
             return null;
+        }
+    }
+
+    private static IEnumerable<object?> EnumerateManaged(object value)
+    {
+        if (value is not IEnumerable enumerable) yield break;
+
+        foreach (var item in enumerable)
+        {
+            yield return item;
+        }
+    }
+
+    private static IEnumerable<object?> EnumerateByEnumerator(object value)
+    {
+        var enumerator = TryInvokeInstanceValue(value, "GetEnumerator");
+        if (enumerator == null) yield break;
+
+        while (ReadBool(TryInvokeInstanceValue(enumerator, "MoveNext")))
+        {
+            yield return ReadMember(enumerator, "Current") ?? TryInvokeInstanceValue(enumerator, "get_Current");
+        }
+    }
+
+    private static IEnumerable<object?> EnumerateByIndexer(object value)
+    {
+        var count = ToInt(TryInvokeInstanceValue(value, "get_Count")
+            ?? ReadMember(value, "Count")
+            ?? ReadMember(value, "_size"));
+        if (count <= 0) yield break;
+
+        for (var index = 0; index < Math.Min(count, 256); index++)
+        {
+            yield return TryInvokeInstanceValue(value, "get_Item", new object?[] { index });
         }
     }
 
@@ -431,5 +497,43 @@ internal static class RuntimeUiPinningService
         }
 
         return int.TryParse(value.ToString(), out var parsed) ? parsed : -1;
+    }
+
+    private static bool ReadBool(object? value)
+    {
+        if (value is bool boolean) return boolean;
+        if (value is IConvertible convertible)
+        {
+            try
+            {
+                return convertible.ToInt32(null) != 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    private static nint ReadObjectPointer(object target)
+    {
+        var pointer = ReadMember(target, "Pointer") ?? ReadMember(target, "NativePointer") ?? ReadMember(target, "m_CachedPtr");
+        if (pointer is IntPtr intPtr) return intPtr;
+        if (pointer is nint native) return native;
+        if (pointer is IConvertible convertible)
+        {
+            try
+            {
+                return new IntPtr(convertible.ToInt64(null));
+            }
+            catch
+            {
+                return new IntPtr(RuntimeHelpers.GetHashCode(target));
+            }
+        }
+
+        return new IntPtr(RuntimeHelpers.GetHashCode(target));
     }
 }

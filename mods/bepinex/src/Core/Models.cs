@@ -209,6 +209,7 @@ public sealed class RecommendationState
     public Dictionary<int, int> OwnedBeverageQty { get; } = new();
     public HashSet<int> PlacedCookerTypeIds { get; } = new();
     public List<PlacedCookerInfo> PlacedCookers { get; } = new();
+    public string PlacedCookerStatus { get; set; } = "";
     public string? PopularFoodTag { get; set; }
     public string? PopularHateFoodTag { get; set; }
     public bool FamousShopEnabled { get; set; }
