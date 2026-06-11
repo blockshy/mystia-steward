@@ -918,6 +918,15 @@ export function ModWorkbench() {
     const pausedCount = orders.filter((order) => normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order))?.paused).length;
     setNormalOrderPausedCount(pausedCount);
     if (runnableOrders.length === 0) {
+      const waitingCount = orders.filter((order) => {
+        const state = normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order));
+        return state?.prepared && !state.collected;
+      }).length;
+      const collectedCount = orders.filter((order) => normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order))?.collected).length;
+      setNormalOrderMessage(waitingCount > 0 || collectedCount > 0 || pausedCount > 0
+        ? `普客自动化\n当前没有需要新开锅的普客订单。\n等待制作或送达 ${waitingCount} 笔，已收至保温箱 ${collectedCount} 笔，暂停 ${pausedCount} 笔。`
+        : '普客自动化\n当前没有需要执行的新步骤。');
+      lastAutoNormalOrderAtRef.current = now;
       return;
     }
 

@@ -748,30 +748,6 @@ internal static class RuntimeOrderPreparationService
             return (true, $"{pending.RecipeName} 已完成，但成品不是目标料理 {pending.Target.FoodName}（料理 #{pending.Target.FoodId}），本次不会放入普客保温箱。");
         }
 
-        var order = pending.Target.Order;
-        if (order == null)
-        {
-            return (true, $"{pending.RecipeName} 已完成，但目标普客订单对象已不可用，已停止自动收取。");
-        }
-
-        if (ReadMember(order, "ServFood") != null)
-        {
-            TryResetCookControllerAfterNormalWarmerCollect(pending.CookController, cookedFood);
-            return (true, $"{pending.RecipeName} 已完成，但目标普客订单已有料理，本次未放入保温箱。");
-        }
-
-        var pendingFood = ReadMember(order, "ServedFoodInAir");
-        if (pendingFood != null)
-        {
-            if (pending.Target.FoodId >= 0 && IsSellable(pendingFood, sellableType: 0, id: pending.Target.FoodId))
-            {
-                TryResetCookControllerAfterNormalWarmerCollect(pending.CookController, cookedFood);
-                return (true, $"{pending.RecipeName} 已完成，但目标料理已处于订单待送达状态，本次未放入保温箱。");
-            }
-
-            return (false, $"{pending.RecipeName} 已完成，但订单已有其他待送达料理，等待玩家处理后再自动收取。");
-        }
-
         if (!TryStoreFoodInNormalStorage(cookedFood, pending.Target.FoodId, out var storeMessage))
         {
             return (false, $"{pending.RecipeName} 已完成，但{storeMessage}，等待下一轮重试。");
