@@ -66,7 +66,6 @@ const ALWAYS_ON_TOP_STORAGE_KEY = `${STORAGE_PREFIX}-always-on-top`;
 const GAMEPAD_NAVIGATION_STORAGE_KEY = `${STORAGE_PREFIX}-gamepad-navigation`;
 const AUTOMATION_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-automation-enabled`;
 const AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-order-enabled`;
-const AUTO_NORMAL_TAKE_BEVERAGE_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-take-beverage`;
 const AUTO_NORMAL_START_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-start-cooking`;
 const AUTO_NORMAL_COLLECT_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-collect-cooking`;
 const AUTO_NORMAL_STOP_ON_ERROR_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-stop-on-error`;
@@ -467,7 +466,6 @@ interface CompanionPreferences {
   gamepadNavigationEnabled: boolean;
   automationEnabled: boolean;
   autoNormalOrderEnabled: boolean;
-  autoNormalTakeBeverage: boolean;
   autoNormalStartCooking: boolean;
   autoNormalCollectCooking: boolean;
   autoNormalStopOnError: boolean;
@@ -491,6 +489,13 @@ interface AutoFirstOrderState {
   orderKey: string;
   prepared: boolean;
   beverageHandled: boolean;
+  paused: boolean;
+}
+
+interface NormalAutoOrderState {
+  orderKey: string;
+  prepared: boolean;
+  collected: boolean;
   paused: boolean;
 }
 
@@ -538,7 +543,7 @@ export function ModWorkbench() {
   const [normalOrderPausedCount, setNormalOrderPausedCount] = useState(0);
   const autoFirstOrderStateRef = useRef<AutoFirstOrderState>({ orderKey: '', prepared: false, beverageHandled: false, paused: false });
   const autoFirstOrderBusyRef = useRef(false);
-  const normalOrderStatesRef = useRef(new Map<string, AutoFirstOrderState>());
+  const normalOrderStatesRef = useRef(new Map<string, NormalAutoOrderState>());
   const normalOrderBusyRef = useRef(false);
   const lastAutoFirstOrderAtRef = useRef(0);
   const lastAutoNormalOrderAtRef = useRef(0);
@@ -879,7 +884,7 @@ export function ModWorkbench() {
     if (!hasNormalOrderActionEnabled(companionPreferences)) {
       normalOrderStatesRef.current.clear();
       setNormalOrderPausedCount(0);
-      setNormalOrderMessage('普客自动化已开启，请至少启用一个处理阶段：直送酒水、自动开始料理或自动收取料理。');
+      setNormalOrderMessage('普客自动化已开启，请至少启用一个处理阶段：自动制作料理或收至保温箱。');
       return;
     }
 
@@ -918,16 +923,14 @@ export function ModWorkbench() {
       const messages: string[] = [];
       for (const order of runnableOrders) {
         const orderKey = buildNormalAutoOrderKey(order);
-        const currentState = normalOrderStatesRef.current.get(orderKey) ?? { orderKey, prepared: false, beverageHandled: false, paused: false };
+        const currentState = normalOrderStatesRef.current.get(orderKey) ?? { orderKey, prepared: false, collected: false, paused: false };
         const requestPreferences = {
           ...companionPreferences,
-          autoNormalTakeBeverage: companionPreferences.autoNormalTakeBeverage && !currentState.beverageHandled,
           autoNormalStartCooking: companionPreferences.autoNormalStartCooking && !currentState.prepared,
-          autoNormalCollectCooking: companionPreferences.autoNormalCollectCooking,
+          autoNormalCollectCooking: companionPreferences.autoNormalCollectCooking && !currentState.collected,
         };
 
-        if (!requestPreferences.autoNormalTakeBeverage
-          && !requestPreferences.autoNormalStartCooking
+        if (!requestPreferences.autoNormalStartCooking
           && !requestPreferences.autoNormalCollectCooking) {
           continue;
         }
@@ -943,14 +946,14 @@ export function ModWorkbench() {
           orderKey,
           prepared: currentState.prepared
             || didAcknowledgeStep(response, '普客开始料理')
-            || didAcknowledgeStep(response, '普客送达料理')
-            || didAcknowledgeStep(response, '普客料理'),
-          beverageHandled: currentState.beverageHandled || didAcknowledgeStep(response, '普客直送酒水'),
+            || didAcknowledgeStep(response, '普客料理')
+            || didNormalOrderCollectToWarmer(response),
+          collected: currentState.collected || didNormalOrderCollectToWarmer(response),
           paused: !response.ok && !transientFailure && companionPreferences.autoNormalStopOnError,
         };
         normalOrderStatesRef.current.set(orderKey, nextState);
 
-        const prefix = `桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}/${order.beverageName || `#${order.beverageId}`}`;
+        const prefix = `桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}`;
         const suffix = nextState.paused
           ? '\n普客自动化已暂停该订单，订单变化或重新开启后会继续。'
           : transientFailure
@@ -1901,13 +1904,13 @@ function ModServicePanel({
             {autoPrepPreferences.automationEnabled && autoPrepPreferences.autoNormalOrderEnabled ? (
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
                 <span className="text-muted-foreground">
-                  普客自动化会自动处理最早出现且未满足的普客订单。
+                  普客自动化会自动制作最早出现的未完成普客料理，并在完成后收至保温箱。
                 </span>
                 {normalOrderBusy && <Badge variant="secondary">处理中</Badge>}
               </div>
             ) : autoPrepPreferences.automationEnabled ? (
               <div className="mb-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-                开启“启用普客处理”后，会自动处理最早一笔未满足普客订单。
+                开启“启用普客处理”后，可自动制作普客料理并收至保温箱。
               </div>
             ) : (
               <div className="mb-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
@@ -2773,11 +2776,6 @@ function NormalServiceAutomationPanel({
         {preferences.autoNormalOrderEnabled && (
           <>
             <SwitchControl
-              label="直送酒水"
-              checked={preferences.autoNormalTakeBeverage}
-              onCheckedChange={(autoNormalTakeBeverage) => onPreferenceChange({ autoNormalTakeBeverage })}
-            />
-            <SwitchControl
               label="自动开始料理"
               checked={preferences.autoNormalStartCooking}
               onCheckedChange={(autoNormalStartCooking) => onPreferenceChange({ autoNormalStartCooking })}
@@ -2869,7 +2867,6 @@ function NormalAutoPrepStatus({
         <Badge variant={pausedCount > 0 ? 'destructive' : 'secondary'}>暂停订单 {pausedCount}</Badge>
         <Badge variant="outline">每轮最多 {MAX_NORMAL_AUTO_ORDERS_PER_TICK}</Badge>
         <Badge variant={preferences.autoNormalOrderEnabled ? 'secondary' : 'outline'}>启用 {preferences.autoNormalOrderEnabled ? '开' : '关'}</Badge>
-        <Badge variant={preferences.autoNormalTakeBeverage ? 'secondary' : 'outline'}>酒水 {preferences.autoNormalTakeBeverage ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoNormalStartCooking ? 'secondary' : 'outline'}>料理 {preferences.autoNormalStartCooking ? '开' : '关'}</Badge>
         {preferences.autoNormalStartCooking && (
           <Badge variant={preferences.autoNormalCompleteQte ? 'secondary' : 'outline'}>
@@ -3777,7 +3774,6 @@ async function completeFirstNormalOrder(
     recipeName: order.foodName || recipe?.name || '',
     beverageId: String(order.beverageId),
     beverageName: order.beverageName || BEVERAGE_NAME_BY_ID.get(order.beverageId) || '',
-    autoTakeBeverage: String(preferences.autoNormalTakeBeverage),
     autoStartCooking: String(preferences.autoNormalStartCooking),
     autoCollectCooking: String(preferences.autoNormalCollectCooking),
     completeQte: String(preferences.autoNormalStartCooking && preferences.autoNormalCompleteQte),
@@ -4416,8 +4412,7 @@ function hasAutomationActionEnabled(preferences: CompanionPreferences): boolean 
 }
 
 function hasNormalOrderActionEnabled(preferences: CompanionPreferences): boolean {
-  return preferences.autoNormalTakeBeverage
-    || preferences.autoNormalStartCooking
+  return preferences.autoNormalStartCooking
     || preferences.autoNormalCollectCooking;
 }
 
@@ -4465,6 +4460,14 @@ function didCompleteStep(response: OrderPreparationResponse, name: string): bool
 
 function didAcknowledgeStep(response: OrderPreparationResponse, name: string): boolean {
   return response.steps.some((step) => step.name === name && step.ok && !isInactiveSkippedStep(step));
+}
+
+function didNormalOrderCollectToWarmer(response: OrderPreparationResponse): boolean {
+  return response.steps.some((step) => step.ok
+    && (step.message.includes('已在普客保温箱')
+      || step.message.includes('已自动收至普客保温箱')
+      || step.message.includes('该订单已经送达料理')
+      || step.message.includes('目标普客订单已有料理')));
 }
 
 function isInactiveSkippedStep(step: OrderPreparationStep): boolean {
@@ -5005,7 +5008,6 @@ function readStoredCompanionPreferences(): CompanionPreferences {
     gamepadNavigationEnabled: readStoredBoolean(GAMEPAD_NAVIGATION_STORAGE_KEY, true),
     automationEnabled: readStoredBoolean(AUTOMATION_ENABLED_STORAGE_KEY, false),
     autoNormalOrderEnabled: readStoredBoolean(AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY, false),
-    autoNormalTakeBeverage: readStoredBoolean(AUTO_NORMAL_TAKE_BEVERAGE_STORAGE_KEY, false),
     autoNormalStartCooking: readStoredBoolean(AUTO_NORMAL_START_COOKING_STORAGE_KEY, false),
     autoNormalCollectCooking: readStoredBoolean(AUTO_NORMAL_COLLECT_COOKING_STORAGE_KEY, false),
     autoNormalStopOnError: readStoredBoolean(AUTO_NORMAL_STOP_ON_ERROR_STORAGE_KEY, false),
@@ -5112,7 +5114,6 @@ function normalizeCompanionPreferences(value: Partial<CompanionPreferences>): Co
     gamepadNavigationEnabled: Boolean(value.gamepadNavigationEnabled),
     automationEnabled: Boolean(value.automationEnabled),
     autoNormalOrderEnabled: Boolean(value.autoNormalOrderEnabled),
-    autoNormalTakeBeverage: Boolean(value.autoNormalTakeBeverage),
     autoNormalStartCooking: Boolean(value.autoNormalStartCooking),
     autoNormalCollectCooking: Boolean(value.autoNormalCollectCooking),
     autoNormalStopOnError: Boolean(value.autoNormalStopOnError),
@@ -5155,7 +5156,6 @@ function persistCompanionPreferences(preferences: CompanionPreferences) {
   localStorage.setItem(GAMEPAD_NAVIGATION_STORAGE_KEY, normalized.gamepadNavigationEnabled ? '1' : '0');
   localStorage.setItem(AUTOMATION_ENABLED_STORAGE_KEY, normalized.automationEnabled ? '1' : '0');
   localStorage.setItem(AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY, normalized.autoNormalOrderEnabled ? '1' : '0');
-  localStorage.setItem(AUTO_NORMAL_TAKE_BEVERAGE_STORAGE_KEY, normalized.autoNormalTakeBeverage ? '1' : '0');
   localStorage.setItem(AUTO_NORMAL_START_COOKING_STORAGE_KEY, normalized.autoNormalStartCooking ? '1' : '0');
   localStorage.setItem(AUTO_NORMAL_COLLECT_COOKING_STORAGE_KEY, normalized.autoNormalCollectCooking ? '1' : '0');
   localStorage.setItem(AUTO_NORMAL_STOP_ON_ERROR_STORAGE_KEY, normalized.autoNormalStopOnError ? '1' : '0');
