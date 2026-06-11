@@ -129,8 +129,8 @@ internal sealed class StewardOverlayController
         LoadRepository();
         _localApiToken = EnsureLocalApiToken(config);
         StartLocalApi();
-        RefreshRuntimeState(false);
         RefreshBusinessContext(false);
+        RefreshRuntimeState(false);
         PublishLocalApiSnapshot();
         if (_localApiServer != null)
         {
@@ -144,6 +144,7 @@ internal sealed class StewardOverlayController
         ProcessPendingInventoryEdits();
         ProcessPendingOrderPreparations();
         ProcessPendingCookingCollections();
+        RefreshOnSceneChange();
         RefreshBusinessContextOnSpecialOrderChange();
 
         if (IsTogglePressed())
@@ -160,8 +161,8 @@ internal sealed class StewardOverlayController
 
         if (Input.GetKeyDown(_config.ReloadKey.Value))
         {
-            RefreshRuntimeState(true);
             RefreshBusinessContext(true);
+            RefreshRuntimeState(true);
         }
 
         if (!_config.EnableInGameOverlay.Value && _visible)
@@ -177,8 +178,8 @@ internal sealed class StewardOverlayController
 
         if (!_config.AutoRefreshRuntime.Value || Time.realtimeSinceStartup < _nextAutoRefreshAt) return;
         _nextAutoRefreshAt = Time.realtimeSinceStartup + Math.Max(1f, _config.AutoRefreshSeconds.Value);
-        RefreshRuntimeState(false);
         RefreshBusinessContext(false);
+        RefreshRuntimeState(false);
     }
 
     private void RefreshBusinessContextOnSpecialOrderChange()
@@ -197,6 +198,31 @@ internal sealed class StewardOverlayController
 
         _specialOrderRefreshPending = false;
         RefreshBusinessContext(false, force: true);
+    }
+
+    private void RefreshOnSceneChange()
+    {
+        if (_config == null) return;
+
+        var sceneName = GetActiveSceneName();
+        if (string.Equals(sceneName, _activeSceneName, StringComparison.Ordinal)) return;
+
+        _activeSceneName = sceneName;
+        _nextAutoRefreshAt = 0f;
+        _nextBusinessRefreshAt = 0f;
+        _businessFallbackState = null;
+
+        if (IsNonGameplayScene(sceneName))
+        {
+            ClearLoadedRuntime(L(
+                "当前游戏运行时数据不可用：当前处于非游戏内页面。",
+                "Live game runtime data unavailable: this is not an in-game page."));
+            PublishLocalApiSnapshot();
+            return;
+        }
+
+        RefreshBusinessContext(false, force: true);
+        RefreshRuntimeState(false);
     }
 
     private bool IsTogglePressed()
@@ -265,6 +291,7 @@ internal sealed class StewardOverlayController
 
     public void LateUpdate()
     {
+        RuntimeCookerHighlightService.Tick();
         if (_visible && _config?.BlockGameInputOnPanel.Value == true)
         {
             BlockGameInputIfPointerOverPanel();
@@ -279,6 +306,7 @@ internal sealed class StewardOverlayController
         CompanionProcessLauncher.TryNotifyExit();
         _localApiServer?.Dispose();
         _localApiServer = null;
+        RuntimeCookerHighlightService.Clear();
         RestoreCursorState();
     }
 
@@ -1048,7 +1076,8 @@ internal sealed class StewardOverlayController
 
             if (RuntimeReflectionRecommendationStateProvider.CanReadRuntimeState(out var runtimeReason))
             {
-                IRecommendationStateProvider runtimeProvider = new RuntimeReflectionRecommendationStateProvider(_repository);
+                var includePlacedCookers = HasActiveNightBusinessContext(_businessContext);
+                IRecommendationStateProvider runtimeProvider = new RuntimeReflectionRecommendationStateProvider(_repository, includePlacedCookers);
                 var previousSource = _runtimeSource;
                 var nextRuntimeState = runtimeProvider.LoadState();
                 ApplyConfigOverrides(nextRuntimeState);
@@ -1140,6 +1169,8 @@ internal sealed class StewardOverlayController
                 {
                     Source = L("当前不在夜晚经营场景。", "Not in a night business scene."),
                 };
+                ClearPlacedCookersFromCurrentState("not in night business scene");
+                RuntimeCookerHighlightService.Clear();
                 if (manual) _status = L("当前无经营场景。", "No active business scene.");
                 return;
             }
@@ -1228,6 +1259,7 @@ internal sealed class StewardOverlayController
                 Status = _status,
                 RuntimeSource = _runtimeSource,
                 DataDirectory = _repository?.DataDirectory ?? "",
+                RuntimeUiPinningStatus = RuntimeUiPinningService.Status,
                 RecommendationState = publishedState == null ? null : RecommendationStateSnapshot.From(publishedState),
                 NightBusiness = _businessContext,
                 RuntimeRareCustomers = _repository == null
@@ -1575,8 +1607,40 @@ internal sealed class StewardOverlayController
         _runtimeSource = "";
         _runtimeStateSignature = "";
         _lastRuntimeReadUtc = DateTime.MinValue;
+        RuntimeCookerHighlightService.Clear();
         InvalidateRecommendationCache();
         _status = status;
+    }
+
+    private void ClearPlacedCookersFromCurrentState(string status)
+    {
+        if (_state == null) return;
+        if (_state.PlacedCookers.Count == 0
+            && _state.PlacedCookerTypeIds.Count == 0
+            && string.Equals(_state.PlacedCookerStatus, status, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _state.PlacedCookers.Clear();
+        _state.PlacedCookerTypeIds.Clear();
+        _state.PlacedCookerStatus = status;
+        _runtimeStateSignature = BuildRecommendationStateSignature(_state);
+        _businessFallbackState = null;
+        InvalidateRecommendationCache();
+    }
+
+    private static bool HasActiveNightBusinessContext(NightBusinessContext? context)
+    {
+        if (context == null) return false;
+        if (string.IsNullOrWhiteSpace(context.Place) && string.IsNullOrWhiteSpace(context.PlaceLabel)) return false;
+        if (context.Source.Contains("not in", StringComparison.OrdinalIgnoreCase)
+            || context.Source.Contains("不在", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return true;
     }
 
     private RecommendationState GetBusinessRecommendationState()
@@ -1619,6 +1683,15 @@ internal sealed class StewardOverlayController
                 hash = (hash * 31) + item.Value;
             }
 
+            hash = HashIds(hash, state.PlacedCookerTypeIds);
+            foreach (var cooker in state.PlacedCookers.OrderBy(cooker => cooker.ControllerIndex))
+            {
+                hash = (hash * 31) + cooker.ControllerIndex;
+                hash = HashIds(hash, cooker.TypeIds);
+                hash = (hash * 31) + cooker.Source.GetHashCode();
+            }
+
+            hash = (hash * 31) + state.PlacedCookerStatus.GetHashCode();
             hash = (hash * 31) + (state.PopularFoodTag?.GetHashCode() ?? 0);
             hash = (hash * 31) + (state.PopularHateFoodTag?.GetHashCode() ?? 0);
             hash = (hash * 31) + (state.FamousShopEnabled ? 1 : 0);
@@ -2017,7 +2090,16 @@ internal sealed class StewardOverlayController
 
     private bool IsNonGameplayScene(string sceneName)
     {
-        if (_config == null || string.IsNullOrWhiteSpace(sceneName)) return false;
+        if (string.IsNullOrWhiteSpace(sceneName)) return false;
+        if (sceneName.Contains("entry", StringComparison.OrdinalIgnoreCase)
+            || sceneName.Contains("title", StringComparison.OrdinalIgnoreCase)
+            || sceneName.Contains("menu", StringComparison.OrdinalIgnoreCase)
+            || sceneName.Contains("loading", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (_config == null) return false;
         return ContainsConfiguredKeyword(sceneName, _config.NonGameplaySceneKeywords.Value);
     }
 

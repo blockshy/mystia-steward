@@ -13,6 +13,7 @@ internal static class RuntimeOrderPreparationService
     private const string RuntimeStorageTypeName = "GameData.RunTime.Common.RunTimeStorage";
     private const string PartnerManagerTypeName = "NightScene.PartnerUtility.PartnerManager";
     private const string CookSystemManagerTypeName = "NightScene.CookingUtility.CookSystemManager";
+    private const string QteRewardManagerTypeName = "NightScene.CookingUtility.QTERewardManager";
     private const string GuestsManagerTypeName = "NightScene.GuestManagementUtility.GuestsManager";
     private const string MatchedCookComboTypeName = "NightScene.UI.CookingUtility.WorkSceneCookingSelectionPannel+MatchedCookCombo";
     private static readonly object PendingCookingLock = new();
@@ -96,7 +97,7 @@ internal static class RuntimeOrderPreparationService
             }
             else
             {
-                var cookingResult = TryStartCooking(request.RecipeId, request.RecipeName, request.ExtraIngredientIds, request.AutoCollectCooking);
+                var cookingResult = TryStartCooking(request.RecipeId, request.RecipeName, request.ExtraIngredientIds, request.AutoCollectCooking, request.CompleteQte);
                 if (cookingResult.Ok)
                 {
                     result.Steps.Add(new OrderPreparationStep
@@ -105,6 +106,17 @@ internal static class RuntimeOrderPreparationService
                         Ok = true,
                         Message = cookingResult.Message,
                     });
+
+                    if (!string.IsNullOrWhiteSpace(cookingResult.QteMessage))
+                    {
+                        result.Steps.Add(new OrderPreparationStep
+                        {
+                            Name = "料理 QTE",
+                            Ok = true,
+                            Skipped = cookingResult.QteSkipped,
+                            Message = cookingResult.QteMessage,
+                        });
+                    }
                 }
                 else
                 {
@@ -331,42 +343,43 @@ internal static class RuntimeOrderPreparationService
         return (true, $"{beverageName} 已放入送餐盘（{quantityText}）。");
     }
 
-    private static (bool Ok, string Message) TryStartCooking(
+    private static CookingStartResult TryStartCooking(
         int recipeId,
         string recipeName,
         IReadOnlyList<int> extraIngredientIds,
-        bool autoCollect)
+        bool autoCollect,
+        bool completeQte)
     {
         var recipe = InvokeStatic(DataBaseCoreTypeName, "RefRecipe", new object?[] { recipeId });
         if (recipe == null)
         {
-            return (false, $"无法从游戏数据库读取料理配方：{recipeName} #{recipeId}。");
+            return CookingStartResult.Failed($"无法从游戏数据库读取料理配方：{recipeName} #{recipeId}。");
         }
 
         var baseFood = CreateFoodFromRecipe(recipe);
         if (baseFood == null)
         {
-            return (false, $"无法从配方创建料理对象：{recipeName} #{recipeId}。");
+            return CookingStartResult.Failed($"无法从配方创建料理对象：{recipeName} #{recipeId}。");
         }
 
         var cookerSelection = TryGetCookerForOrder(baseFood, recipe);
         if (!cookerSelection.Ok || cookerSelection.CookController == null)
         {
-            return (false, cookerSelection.Message);
+            return CookingStartResult.Failed(cookerSelection.Message);
         }
 
         var cookController = cookerSelection.CookController;
         var cooker = InvokeInstance(cookController, "get_Cooker", Array.Empty<object?>());
         if (cooker == null)
         {
-            return (false, "已找到可用厨具控制器，但无法读取厨具数据。");
+            return CookingStartResult.Failed("已找到可用厨具控制器，但无法读取厨具数据。");
         }
 
         var finalFood = CreateCookResult(recipe, extraIngredientIds, cooker) ?? baseFood;
         var ingredientIds = ReadRecipeIngredientIds(recipe).Concat(extraIngredientIds).ToArray();
         if (!HasEnoughIngredients(ingredientIds, out var missingIngredientId))
         {
-            return (false, $"材料不足，缺少材料 #{missingIngredientId}。");
+            return CookingStartResult.Failed($"材料不足，缺少材料 #{missingIngredientId}。");
         }
 
         if (ingredientIds.Length > 0)
@@ -378,6 +391,7 @@ internal static class RuntimeOrderPreparationService
         }
 
         InvokeInstance(cookController, "SetCook", new object?[] { finalFood, recipe, true });
+        var qteResult = TryHandleCookingQte(completeQte);
         InvokeInstance(cookController, "StartCookCountDown", new object?[] { 1f, false });
 
         var cookSystem = GetSingletonInstance(CookSystemManagerTypeName);
@@ -392,7 +406,65 @@ internal static class RuntimeOrderPreparationService
         }
 
         var extraText = extraIngredientIds.Count == 0 ? "不加料" : string.Join(",", extraIngredientIds);
-        return (true, $"{recipeName} 已开始制作（配方 #{recipeId}，加料：{extraText}）。");
+        return CookingStartResult.Succeeded($"{recipeName} 已开始制作（配方 #{recipeId}，加料：{extraText}）。", qteResult.Message, qteResult.Skipped);
+    }
+
+    private static CookingQteResult TryHandleCookingQte(bool completeQte)
+    {
+        if (!completeQte)
+        {
+            return CookingQteResult.Skip("已跳过料理 QTE；不会累计音游数值或触发对应 Buff。");
+        }
+
+        var completed = TryCompleteCookingQte(out var completeMessage);
+        return completed
+            ? CookingQteResult.Completed($"{completeMessage}；不会打开原生音游面板。")
+            : CookingQteResult.Skip($"{completeMessage}；已回退为跳过料理 QTE。");
+    }
+
+    private sealed class CookingQteResult
+    {
+        public string Message { get; private init; } = "";
+        public bool Skipped { get; private init; }
+        public static CookingQteResult Skip(string message)
+        {
+            return new CookingQteResult
+            {
+                Message = message,
+                Skipped = true,
+            };
+        }
+
+        public static CookingQteResult Completed(string message)
+        {
+            return new CookingQteResult
+            {
+                Message = message,
+                Skipped = false,
+            };
+        }
+    }
+
+    private static bool TryCompleteCookingQte(out string message)
+    {
+        try
+        {
+            var manager = GetSingletonInstance(QteRewardManagerTypeName);
+            if (manager == null)
+            {
+                message = "自动完成原生 QTE 失败：QTE 奖励管理器不可用。";
+                return false;
+            }
+
+            InvokeInstance(manager, "OnQTESucceeded", new object?[] { -1, true });
+            message = "已尝试自动完成原生 QTE 奖励结算。";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            message = $"自动完成原生 QTE 失败：{ex.GetBaseException().Message}";
+            return false;
+        }
     }
 
     private static void RegisterPendingCookingCollection(object cookController, string recipeName)
@@ -1437,6 +1509,34 @@ internal static class RuntimeOrderPreparationService
         public object CookController { get; init; } = new();
         public string RecipeName { get; init; } = "";
         public DateTime CreatedAtUtc { get; init; }
+    }
+
+    private sealed class CookingStartResult
+    {
+        public bool Ok { get; private init; }
+        public string Message { get; private init; } = "";
+        public string QteMessage { get; private init; } = "";
+        public bool QteSkipped { get; private init; }
+
+        public static CookingStartResult Succeeded(string message, string qteMessage, bool qteSkipped)
+        {
+            return new CookingStartResult
+            {
+                Ok = true,
+                Message = message,
+                QteMessage = qteMessage,
+                QteSkipped = qteSkipped,
+            };
+        }
+
+        public static CookingStartResult Failed(string message)
+        {
+            return new CookingStartResult
+            {
+                Ok = false,
+                Message = message,
+            };
+        }
     }
 
     private sealed class RuntimeOrderMatch

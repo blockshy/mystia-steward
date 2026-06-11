@@ -355,6 +355,11 @@ function evaluateCombo(
   return { foodScore, meetsRequiredFood, activeTags, cancelledTags };
 }
 
+interface RareRecipeRankOptions {
+  allowPreferenceFallback?: boolean;
+  minFoodScore?: number;
+}
+
 /** 稀客料理推荐 */
 export function rankRecipesForRare(
   customer: ICustomerRare,
@@ -368,6 +373,7 @@ export function rankRecipesForRare(
   maxExtraIngredients = 4,
   ownedIngredientQty: Record<number, number> = {},
   isFamousShop = false,
+  options: RareRecipeRankOptions = {},
 ): IRareRecipeResult[] {
   const results: IRareRecipeResult[] = [];
 
@@ -376,7 +382,8 @@ export function rankRecipesForRare(
   const ASSUMED_BEV_SCORE = 1;
   const ASSUMED_BEV_MEETS = true;
   const TARGET_FOOD_SCORE = 3;
-  const minFoodScore = TARGET_FOOD_SCORE;
+  const allowPreferenceFallback = options.allowPreferenceFallback ?? false;
+  const minFoodScore = Math.max(1, options.minFoodScore ?? TARGET_FOOD_SCORE);
 
   // 构建可用食材列表
   const usableIngredients: IIngredient[] = [];
@@ -498,7 +505,7 @@ export function rankRecipesForRare(
     // 先评估不加料的情况
     const baseEval = bestEval;
 
-    if (baseEval.foodScore >= minFoodScore && baseEval.meetsRequiredFood) {
+    if (baseEval.foodScore >= minFoodScore && (baseEval.meetsRequiredFood || allowPreferenceFallback)) {
       bestCombo = [];
     } else if (extraSlots > 0) {
       const n = candidates.length;
@@ -620,7 +627,7 @@ export function rankRecipesForRare(
                     : EMPTY_EASTER_EFFECT;
             }
 
-            if (comboEasterEffect.effect === 'priority-exgood' && ev.meetsRequiredFood) {
+            if (comboEasterEffect.effect === 'priority-exgood' && (ev.meetsRequiredFood || allowPreferenceFallback)) {
               const shouldReplacePriority =
                 bestPriorityComboForK === null ||
                 isReasonDataPreferred(reasonData, bestPriorityReasonForK, cost, bestPriorityCostForK);
@@ -635,7 +642,7 @@ export function rankRecipesForRare(
               }
             }
 
-            if (ev.foodScore >= minFoodScore && ev.meetsRequiredFood) {
+            if (ev.foodScore >= minFoodScore && (ev.meetsRequiredFood || allowPreferenceFallback)) {
               const shouldReplace =
                 bestComboForK === null ||
                 isReasonDataPreferred(reasonData, bestReasonForK, cost, bestCostForK);
@@ -714,7 +721,8 @@ export function rankRecipesForRare(
       rating = getRating(finalFoodScore, ASSUMED_BEV_SCORE, finalMeetsRequiredFood, ASSUMED_BEV_MEETS);
     }
 
-    if (!finalMeetsRequiredFood) continue;
+    if (!finalMeetsRequiredFood && !allowPreferenceFallback) continue;
+    if (!finalMeetsRequiredFood && finalFoodScore <= 0) continue;
 
     const easterHighlightExtraIngredientIds = selectedIngredients
       .filter((ingredient) => bestEasterEffect.ingredientHighlightIds.includes(ingredient.id))
@@ -758,6 +766,35 @@ export function rankRecipesForRare(
   return results;
 }
 
+export function rankPreferenceRecipesForRare(
+  customer: ICustomerRare,
+  requiredFoodTag: string,
+  requiredBevTag: string,
+  availableRecipeIds: Set<number>,
+  availableIngredientIds: Set<number>,
+  disabledIngredientIds: Set<number>,
+  popularFoodTag: string | null,
+  popularHateFoodTag: string | null,
+  maxExtraIngredients = 4,
+  ownedIngredientQty: Record<number, number> = {},
+  isFamousShop = false,
+): IRareRecipeResult[] {
+  return rankRecipesForRare(
+    customer,
+    requiredFoodTag,
+    requiredBevTag,
+    availableRecipeIds,
+    availableIngredientIds,
+    disabledIngredientIds,
+    popularFoodTag,
+    popularHateFoodTag,
+    maxExtraIngredients,
+    ownedIngredientQty,
+    isFamousShop,
+    { allowPreferenceFallback: true, minFoodScore: 1 },
+  ).filter((row) => !row.meetsRequiredFood);
+}
+
 /** 稀客酒水推荐 */
 export function rankBeveragesForRare(
   customer: ICustomerRare,
@@ -784,6 +821,37 @@ export function rankBeveragesForRare(
     if (a.meetsRequiredBev !== b.meetsRequiredBev)
       return a.meetsRequiredBev ? -1 : 1;
     return b.beverage.price - a.beverage.price;
+  });
+
+  return results;
+}
+
+export function rankPreferenceBeveragesForRare(
+  customer: ICustomerRare,
+  requiredBevTag: string,
+  availableBeverageIds: Set<number>,
+): IRareBeverageResult[] {
+  const results: IRareBeverageResult[] = [];
+
+  for (const bev of allBeverages as IBeverage[]) {
+    if (!availableBeverageIds.has(bev.id)) continue;
+    if (bev.tags.includes(requiredBevTag)) continue;
+
+    const matchedTags = bev.tags.filter((tag) => customer.beverageTags.includes(tag));
+    if (matchedTags.length === 0) continue;
+
+    results.push({
+      beverage: bev,
+      bevScore: matchedTags.length,
+      meetsRequiredBev: false,
+      matchedTags,
+    });
+  }
+
+  results.sort((a, b) => {
+    if (a.bevScore !== b.bevScore) return b.bevScore - a.bevScore;
+    if (a.beverage.price !== b.beverage.price) return b.beverage.price - a.beverage.price;
+    return a.beverage.id - b.beverage.id;
   });
 
   return results;

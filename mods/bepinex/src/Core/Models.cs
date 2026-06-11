@@ -40,6 +40,16 @@ public sealed class Beverage
     public int Price { get; set; }
 }
 
+public sealed class PlacedCookerInfo
+{
+    public int ControllerIndex { get; init; }
+    public List<int> TypeIds { get; init; } = new();
+    public List<string> TypeNames { get; init; } = new();
+    public string Name { get; init; } = "";
+    public bool IsOpen { get; init; }
+    public string Source { get; init; } = "";
+}
+
 public sealed class NormalCustomer
 {
     public int Id { get; set; }
@@ -165,6 +175,11 @@ public sealed class NightBusinessGuest
     public int? GuestId { get; init; }
     public string GuestName { get; init; } = "";
     public string Source { get; init; } = "";
+    public int? Fund { get; init; }
+    public int? BaseFundCarry { get; init; }
+    public int? MaxFundCarry { get; init; }
+    public int? ExtraFundByBuff { get; init; }
+    public bool? WillPayMoney { get; init; }
 }
 
 public sealed class NightBusinessContext
@@ -197,6 +212,9 @@ public sealed class RecommendationState
     public HashSet<int> AvailableIngredientIds { get; } = new();
     public Dictionary<int, int> OwnedIngredientQty { get; } = new();
     public Dictionary<int, int> OwnedBeverageQty { get; } = new();
+    public HashSet<int> PlacedCookerTypeIds { get; } = new();
+    public List<PlacedCookerInfo> PlacedCookers { get; } = new();
+    public string PlacedCookerStatus { get; set; } = "";
     public string? PopularFoodTag { get; set; }
     public string? PopularHateFoodTag { get; set; }
     public bool FamousShopEnabled { get; set; }

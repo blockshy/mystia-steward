@@ -15,7 +15,7 @@ public sealed class MystiaStewardCompanionPlugin : BasePlugin
 
     public const string PluginGuid = "com.tyukki.mystia-steward-companion";
     public const string PluginName = "mystia-steward-companion";
-    public const string PluginVersion = "1.0.3";
+    public const string PluginVersion = "1.0.4";
 
     public override void Load()
     {
@@ -36,6 +36,7 @@ public sealed class MystiaStewardCompanionPlugin : BasePlugin
             Log);
 
         SpecialOrderRuntimeCapture.Attach(Log);
+        RuntimeUiPinningService.Attach(Log);
         if (settings.EnableSpecialOrderLogFallback.Value)
         {
             SpecialOrderLogCapture.Attach(Log);

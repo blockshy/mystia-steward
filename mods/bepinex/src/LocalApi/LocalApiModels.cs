@@ -11,6 +11,7 @@ internal sealed class LocalApiSnapshot
     public string Status { get; init; } = "";
     public string RuntimeSource { get; init; } = "";
     public string DataDirectory { get; init; } = "";
+    public string RuntimeUiPinningStatus { get; init; } = "";
     public RecommendationStateSnapshot? RecommendationState { get; init; }
     public NightBusinessContext? NightBusiness { get; init; }
     public List<RuntimeRareCustomer> RuntimeRareCustomers { get; init; } = new();
@@ -23,6 +24,9 @@ internal sealed class RecommendationStateSnapshot
     public List<int> AvailableIngredientIds { get; init; } = new();
     public Dictionary<int, int> OwnedIngredientQty { get; init; } = new();
     public Dictionary<int, int> OwnedBeverageQty { get; init; } = new();
+    public List<int> PlacedCookerTypeIds { get; init; } = new();
+    public List<PlacedCookerInfo> PlacedCookers { get; init; } = new();
+    public string PlacedCookerStatus { get; init; } = "";
     public string? PopularFoodTag { get; init; }
     public string? PopularHateFoodTag { get; init; }
     public bool FamousShopEnabled { get; init; }
@@ -40,6 +44,11 @@ internal sealed class RecommendationStateSnapshot
             OwnedBeverageQty = state.OwnedBeverageQty
                 .OrderBy(item => item.Key)
                 .ToDictionary(item => item.Key, item => item.Value),
+            PlacedCookerTypeIds = state.PlacedCookerTypeIds.OrderBy(id => id).ToList(),
+            PlacedCookers = state.PlacedCookers
+                .OrderBy(cooker => cooker.ControllerIndex)
+                .ToList(),
+            PlacedCookerStatus = state.PlacedCookerStatus,
             PopularFoodTag = state.PopularFoodTag,
             PopularHateFoodTag = state.PopularHateFoodTag,
             FamousShopEnabled = state.FamousShopEnabled,

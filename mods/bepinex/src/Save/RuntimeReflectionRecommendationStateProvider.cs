@@ -13,10 +13,12 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
     private const string FamousShopSwitchKey = "Aya_FamousIzakaya";
 
     private readonly DataRepository _repository;
+    private readonly bool _includePlacedCookers;
 
-    public RuntimeReflectionRecommendationStateProvider(DataRepository repository)
+    public RuntimeReflectionRecommendationStateProvider(DataRepository repository, bool includePlacedCookers = true)
     {
         _repository = repository;
+        _includePlacedCookers = includePlacedCookers;
     }
 
     public string Description => "Game runtime live data";
@@ -87,7 +89,17 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
             CollabStatus = ReadStringBoolDictionary(GetMemberValue(playerPartial, "collabStatus")),
         };
 
-        return RecommendationState.FromSave(_repository, parsed);
+        var state = RecommendationState.FromSave(_repository, parsed);
+        if (_includePlacedCookers)
+        {
+            RuntimeCookerSnapshotService.ApplyTo(state);
+        }
+        else
+        {
+            state.PlacedCookerStatus = "not in night business scene";
+        }
+
+        return state;
     }
 
     private static List<int> ReadLiveRecipeIds(object? storagePartial)

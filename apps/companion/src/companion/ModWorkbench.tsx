@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { FolderOpen, Power, RefreshCw, Star } from 'lucide-react';
+import { ArrowDown, ArrowUp, FolderOpen, Power, RefreshCw, RotateCcw, Star } from 'lucide-react';
 import { CustomerScoreBadges } from '@/components/ScoreBadge';
 import { RegionSelector } from '@/components/RegionSelector';
 import { TagBadge } from '@/components/TagBadge';
@@ -26,6 +26,8 @@ import {
   getAllRareCustomers,
   getRareCustomersByPlace,
   rankBeveragesForRare,
+  rankPreferenceBeveragesForRare,
+  rankPreferenceRecipesForRare,
   rankRecipesForRare,
 } from '@/lib/rare-recommend';
 import { isTauriRuntime } from '@/lib/tauri-runtime';
@@ -67,6 +69,13 @@ const AUTO_PREP_START_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-start-c
 const AUTO_PREP_COLLECT_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-collect-cooking`;
 const AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-favorites-only`;
 const AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-stop-on-error`;
+const AUTO_PREP_COMPLETE_QTE_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-complete-qte`;
+const FILTER_MISSING_COOKERS_STORAGE_KEY = `${STORAGE_PREFIX}-filter-missing-cookers`;
+const GAME_UI_PINNING_STORAGE_KEY = `${STORAGE_PREFIX}-game-ui-pinning`;
+const COOKER_HIGHLIGHT_STORAGE_KEY = `${STORAGE_PREFIX}-cooker-highlight`;
+const RECIPE_SORT_RULES_STORAGE_KEY = `${STORAGE_PREFIX}-recipe-sort-rules`;
+const BEVERAGE_SORT_RULES_STORAGE_KEY = `${STORAGE_PREFIX}-beverage-sort-rules`;
+const SERVICE_ORDER_SORT_MODE_STORAGE_KEY = `${STORAGE_PREFIX}-service-order-sort-mode`;
 const LEGACY_ENDPOINT_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-endpoint`;
 const LEGACY_TOKEN_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-token`;
 const LEGACY_TAB_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-tab`;
@@ -81,6 +90,19 @@ const MAX_FOCUS_SWITCH_COOLDOWN_MS = 2000;
 const MAX_LOG_LINES_IN_VIEW = 400;
 const AUTO_FIRST_ORDER_TICK_MS = 1500;
 const NON_ORDERABLE_RARE_FOOD_TAGS = new Set(['流行喜爱', '流行厌恶']);
+const COOKER_TYPE_NAME_BY_ID = new Map<number, string>([
+  [1, '煮锅'],
+  [2, '烧烤架'],
+  [3, '油锅'],
+  [4, '蒸锅'],
+  [5, '料理台'],
+]);
+const COOKER_NAME_ALIASES = new Map<string, string>([
+  ['烤架', '烧烤架'],
+  ['烧烤台', '烧烤架'],
+  ['锅', '煮锅'],
+  ['炸锅', '油锅'],
+]);
 const INGREDIENTS = allIngredients as IIngredient[];
 const INGREDIENT_BY_NAME = new Map(INGREDIENTS.map((ingredient) => [ingredient.name, ingredient]));
 const INGREDIENT_ID_BY_NAME = new Map(INGREDIENTS.map((ingredient) => [ingredient.name, ingredient.id]));
@@ -100,6 +122,64 @@ const MOD_TAB_TRIGGER_CLASS = 'min-w-0 flex-1 data-active:bg-primary data-active
 type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'inventory' | 'logs' | 'settings';
 const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'service', 'inventory', 'logs', 'settings'];
 type FocusSwitchBehavior = 'hide' | 'keep-visible';
+type ServiceOrderSortMode = 'ordered' | 'guest';
+type SortDirection = 'asc' | 'desc';
+type RecipeSortKey =
+  | 'requiredTag'
+  | 'foodScore'
+  | 'rating'
+  | 'extraCount'
+  | 'resourcePressure'
+  | 'recipePrice'
+  | 'extraCost'
+  | 'baseCost'
+  | 'totalCost'
+  | 'profit'
+  | 'cookerAvailable'
+  | 'recipeId';
+type BeverageSortKey =
+  | 'requiredTag'
+  | 'bevScore'
+  | 'beveragePrice'
+  | 'ownedQuantity'
+  | 'beverageId';
+
+interface SortRule<K extends string> {
+  key: K;
+  direction: SortDirection;
+  enabled: boolean;
+}
+
+interface SortOption<K extends string> {
+  key: K;
+  label: string;
+  defaultDirection: SortDirection;
+  defaultEnabled: boolean;
+}
+
+const RECIPE_SORT_OPTIONS: SortOption<RecipeSortKey>[] = [
+  { key: 'requiredTag', label: '满足点单 Tag', defaultDirection: 'desc', defaultEnabled: true },
+  { key: 'foodScore', label: '料理分数', defaultDirection: 'desc', defaultEnabled: true },
+  { key: 'extraCount', label: '加料数量', defaultDirection: 'asc', defaultEnabled: true },
+  { key: 'resourcePressure', label: '资源压力', defaultDirection: 'asc', defaultEnabled: true },
+  { key: 'recipePrice', label: '料理售价', defaultDirection: 'desc', defaultEnabled: true },
+  { key: 'extraCost', label: '加料成本', defaultDirection: 'asc', defaultEnabled: true },
+  { key: 'recipeId', label: '料理 ID', defaultDirection: 'asc', defaultEnabled: true },
+  { key: 'rating', label: '推荐评级', defaultDirection: 'desc', defaultEnabled: false },
+  { key: 'baseCost', label: '基础成本', defaultDirection: 'asc', defaultEnabled: false },
+  { key: 'totalCost', label: '总成本', defaultDirection: 'asc', defaultEnabled: false },
+  { key: 'profit', label: '预计利润', defaultDirection: 'desc', defaultEnabled: false },
+  { key: 'cookerAvailable', label: '当前厨具可制作', defaultDirection: 'desc', defaultEnabled: false },
+];
+const BEVERAGE_SORT_OPTIONS: SortOption<BeverageSortKey>[] = [
+  { key: 'requiredTag', label: '满足点单 Tag', defaultDirection: 'desc', defaultEnabled: true },
+  { key: 'bevScore', label: '酒水分数', defaultDirection: 'desc', defaultEnabled: true },
+  { key: 'beveragePrice', label: '酒水售价', defaultDirection: 'desc', defaultEnabled: true },
+  { key: 'beverageId', label: '酒水 ID', defaultDirection: 'asc', defaultEnabled: true },
+  { key: 'ownedQuantity', label: '当前库存数量', defaultDirection: 'desc', defaultEnabled: false },
+];
+const DEFAULT_RECIPE_SORT_RULES = buildDefaultSortRules(RECIPE_SORT_OPTIONS);
+const DEFAULT_BEVERAGE_SORT_RULES = buildDefaultSortRules(BEVERAGE_SORT_OPTIONS);
 
 const RATING_LABELS: Record<TRating, string> = {
   ExGood: '完美',
@@ -115,9 +195,21 @@ interface RecommendationStateSnapshot {
   availableIngredientIds: number[];
   ownedIngredientQty: Record<string, number>;
   ownedBeverageQty: Record<string, number>;
+  placedCookerTypeIds?: number[];
+  placedCookers?: PlacedCookerSnapshot[];
+  placedCookerStatus?: string;
   popularFoodTag: string | null;
   popularHateFoodTag: string | null;
   famousShopEnabled: boolean;
+}
+
+interface PlacedCookerSnapshot {
+  controllerIndex: number;
+  typeIds: number[];
+  typeNames: string[];
+  name: string;
+  isOpen: boolean;
+  source: string;
 }
 
 interface NightBusinessGuest {
@@ -125,6 +217,11 @@ interface NightBusinessGuest {
   guestId: number | null;
   guestName: string;
   source: string;
+  fund?: number | null;
+  baseFundCarry?: number | null;
+  maxFundCarry?: number | null;
+  extraFundByBuff?: number | null;
+  willPayMoney?: boolean | null;
 }
 
 interface NightBusinessOrder {
@@ -168,6 +265,7 @@ interface LocalApiSnapshot {
   status: string;
   runtimeSource: string;
   dataDirectory: string;
+  runtimeUiPinningStatus?: string;
   recommendationState: RecommendationStateSnapshot | null;
   nightBusiness: NightBusinessContext | null;
   runtimeRareCustomers?: RuntimeRareCustomer[];
@@ -180,12 +278,17 @@ interface RuntimeSets {
   unavailableIngredientIds: Set<number>;
   ownedIngredientQty: Record<number, number>;
   ownedBeverageQty: Record<number, number>;
+  placedCookerTypeIds: Set<number>;
+  placedCookerNames: Set<string>;
+  hasCookerSnapshot: boolean;
 }
 
 interface CachedRecommendation {
   customer: ICustomerRare;
   recipes: IRareRecipeResult[];
   beverages: IRareBeverageResult[];
+  preferenceRecipes: IRareRecipeResult[];
+  preferenceBeverages: IRareBeverageResult[];
 }
 
 interface OrderRecommendation extends CachedRecommendation {
@@ -294,6 +397,17 @@ interface FavoriteMutationResponse {
   error: string | null;
 }
 
+interface GameUiPinningTarget {
+  signature: string;
+  recipeId: number;
+  recipeName: string;
+  ingredientIds: number[];
+  beverageId: number;
+  beverageName: string;
+  cookerTypeId: number;
+  cookerName: string;
+}
+
 interface CompanionPreferences {
   windowOpacity: number;
   focusSwitchBehavior: FocusSwitchBehavior;
@@ -307,6 +421,13 @@ interface CompanionPreferences {
   autoPrepCollectCooking: boolean;
   autoPrepFavoritesOnly: boolean;
   autoPrepStopOnError: boolean;
+  autoPrepCompleteQte: boolean;
+  filterMissingCookers: boolean;
+  gameUiPinningEnabled: boolean;
+  cookerHighlightEnabled: boolean;
+  recipeSortRules: SortRule<RecipeSortKey>[];
+  beverageSortRules: SortRule<BeverageSortKey>[];
+  serviceOrderSortMode: ServiceOrderSortMode;
 }
 
 interface AutoFirstOrderState {
@@ -359,6 +480,7 @@ export function ModWorkbench() {
   const lastAutoFirstOrderAtRef = useRef(0);
   const recommendationCacheRef = useRef(new Map<string, CachedRecommendation>());
   const refreshInFlightRef = useRef(false);
+  const lastUiPinningSignatureRef = useRef('');
 
   const updateCompanionPreferences = useCallback((next: Partial<CompanionPreferences>) => {
     setCompanionPreferences((current) => normalizeCompanionPreferences({ ...current, ...next }));
@@ -380,10 +502,59 @@ export function ModWorkbench() {
 
   const runtimeSets = useMemo(() => buildRuntimeSets(runtime), [runtime]);
   const orderRecommendations = useMemo(
-    () => buildOrderRecommendations(night?.orders ?? [], runtime, rareCustomersById, recommendationCacheRef.current, favorites),
-    [night?.orders, runtime, rareCustomersById, favorites],
+    () => buildOrderRecommendations(
+      night?.orders ?? [],
+      runtime,
+      rareCustomersById,
+      recommendationCacheRef.current,
+      favorites,
+      companionPreferences,
+    ),
+    [night?.orders, runtime, rareCustomersById, favorites, companionPreferences],
+  );
+  const gameUiPinningTarget = useMemo(
+    () => companionPreferences.gameUiPinningEnabled || companionPreferences.cookerHighlightEnabled
+      ? buildGameUiPinningTarget(orderRecommendations.recommendations, companionPreferences.serviceOrderSortMode)
+      : null,
+    [
+      companionPreferences.cookerHighlightEnabled,
+      companionPreferences.gameUiPinningEnabled,
+      companionPreferences.serviceOrderSortMode,
+      orderRecommendations.recommendations,
+    ],
   );
   const snapshotRefreshIntervalMs = tab === 'service' || serviceFocusMode ? 750 : 2000;
+
+  useEffect(() => {
+    const signature = `${companionPreferences.gameUiPinningEnabled ? '1' : '0'}|${companionPreferences.cookerHighlightEnabled ? '1' : '0'}|${gameUiPinningTarget?.signature ?? 'disabled'}`;
+    if (lastUiPinningSignatureRef.current === signature) return;
+
+    let cancelled = false;
+    publishGameUiPinningTarget(
+      normalizedEndpoint,
+      apiToken,
+      companionPreferences.gameUiPinningEnabled,
+      companionPreferences.cookerHighlightEnabled,
+      gameUiPinningTarget,
+    )
+      .then(() => {
+        if (!cancelled) lastUiPinningSignatureRef.current = signature;
+      })
+      .catch(() => {
+        if (!cancelled) lastUiPinningSignatureRef.current = '';
+        // Local API may be unavailable before the game reaches the title screen.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    apiToken,
+    companionPreferences.cookerHighlightEnabled,
+    companionPreferences.gameUiPinningEnabled,
+    gameUiPinningTarget,
+    normalizedEndpoint,
+  ]);
 
   const refresh = useCallback(async () => {
     if (refreshInFlightRef.current) return;
@@ -743,6 +914,7 @@ export function ModWorkbench() {
         favorites={favorites}
         favoriteBusyKey={favoriteBusyKey}
         favoriteError={favoriteError}
+        orderSortMode={companionPreferences.serviceOrderSortMode}
         compact={serviceFocusCompact}
         recipeLimit={serviceFocusRecipeLimit}
         beverageLimit={serviceFocusBeverageLimit}
@@ -863,6 +1035,7 @@ export function ModWorkbench() {
             favorites={favorites}
             favoriteBusyKey={favoriteBusyKey}
             favoriteError={favoriteError}
+            preferences={companionPreferences}
             onPlaceChange={(place) => {
               setManualPlace(place);
               setRareCustomerId(null);
@@ -895,6 +1068,8 @@ export function ModWorkbench() {
             recommendations={orderRecommendations.recommendations}
             recommendationIssues={orderRecommendations.recommendationIssues}
             runtimeSets={runtimeSets}
+            uiPinningStatus={snapshot?.runtimeUiPinningStatus ?? ''}
+            uiPinningTarget={gameUiPinningTarget}
             favorites={favorites}
             favoriteBusyKey={favoriteBusyKey}
             favoriteError={favoriteError}
@@ -927,13 +1102,9 @@ export function ModWorkbench() {
             preferences={companionPreferences}
             themeMode={themeMode}
             serviceFocusCompact={serviceFocusCompact}
-            serviceFocusRecipeLimit={serviceFocusRecipeLimit}
-            serviceFocusBeverageLimit={serviceFocusBeverageLimit}
             onPreferenceChange={updateCompanionPreferences}
             onThemeModeChange={setThemeMode}
             onServiceFocusCompactChange={setServiceFocusCompact}
-            onServiceFocusRecipeLimitChange={setServiceFocusRecipeLimit}
-            onServiceFocusBeverageLimitChange={setServiceFocusBeverageLimit}
           />
         </TabsContent>
       </Tabs>
@@ -1136,6 +1307,7 @@ function ModRarePanel({
   favorites,
   favoriteBusyKey,
   favoriteError,
+  preferences,
   onPlaceChange,
   onFollowDetectedPlace,
   onRareCustomerChange,
@@ -1155,6 +1327,7 @@ function ModRarePanel({
   favorites: FavoriteData;
   favoriteBusyKey: string;
   favoriteError: string;
+  preferences: CompanionPreferences;
   onPlaceChange: (place: TPlace) => void;
   onFollowDetectedPlace: () => void;
   onRareCustomerChange: (customerId: number | null) => void;
@@ -1209,18 +1382,30 @@ function ModRarePanel({
       runtimeSets.ownedIngredientQty,
       runtime.famousShopEnabled,
     )
-      .sort((a, b) => compareRareRecipesForService(a, b, runtimeSets.ownedIngredientQty))
+      .filter((recipe) => shouldKeepRecipeForCooker(recipe, runtimeSets, preferences.filterMissingCookers))
+      .sort((a, b) => compareRareRecipesForService(
+        a,
+        b,
+        runtimeSets.ownedIngredientQty,
+        preferences.recipeSortRules,
+        runtimeSets,
+      ))
       .sort((a, b) => compareFavoriteRecipeResults(a, b, favorites, selectedCustomer.id, foodTag))
       .slice(0, MAX_RECOMMENDATION_ROWS);
-  }, [beverageTag, favorites, foodTag, runtime, runtimeSets, selectedCustomer]);
+  }, [beverageTag, favorites, foodTag, preferences, runtime, runtimeSets, selectedCustomer]);
 
   const beverages = useMemo(() => {
     if (!runtimeSets || !selectedCustomer || !beverageTag) return [];
     return rankBeveragesForRare(selectedCustomer, beverageTag, runtimeSets.beverageIds)
-      .sort(compareRareBeveragesForService)
+      .sort((a, b) => compareRareBeveragesForService(
+        a,
+        b,
+        runtimeSets.ownedBeverageQty,
+        preferences.beverageSortRules,
+      ))
       .sort((a, b) => compareFavoriteBeverageResults(a, b, favorites, selectedCustomer.id, beverageTag))
       .slice(0, MAX_RECOMMENDATION_ROWS);
-  }, [beverageTag, favorites, runtimeSets, selectedCustomer]);
+  }, [beverageTag, favorites, preferences.beverageSortRules, runtimeSets, selectedCustomer]);
 
   if (!runtime || !runtimeSets) return <RuntimeUnavailable />;
 
@@ -1340,6 +1525,8 @@ function ModServicePanel({
   recommendations,
   recommendationIssues,
   runtimeSets,
+  uiPinningStatus,
+  uiPinningTarget,
   favorites,
   favoriteBusyKey,
   favoriteError,
@@ -1357,6 +1544,8 @@ function ModServicePanel({
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
   runtimeSets: RuntimeSets | null;
+  uiPinningStatus: string;
+  uiPinningTarget: GameUiPinningTarget | null;
   favorites: FavoriteData;
   favoriteBusyKey: string;
   favoriteError: string;
@@ -1369,7 +1558,10 @@ function ModServicePanel({
   onEnterFocusMode: () => void;
 }) {
   const activeGuests = night?.activeRareGuests ?? [];
-  const orders = useMemo(() => sortNightOrders(night?.orders ?? []), [night?.orders]);
+  const orders = useMemo(
+    () => sortNightOrders(night?.orders ?? [], autoPrepPreferences.serviceOrderSortMode),
+    [autoPrepPreferences.serviceOrderSortMode, night?.orders],
+  );
 
   return (
     <div className="space-y-4">
@@ -1393,18 +1585,32 @@ function ModServicePanel({
           <InfoLine label="经营场景" value={detectedPlace ?? night?.placeLabel ?? '无经营场景'} />
           <InfoLine label="扫描状态" value={night?.source || '暂无'} />
           <InfoLine label="推荐数据" value={runtime ? '已就绪' : '暂不可用'} />
+          <InfoLine
+            label="已摆放厨具"
+            value={runtimeSets?.hasCookerSnapshot
+              ? [...runtimeSets.placedCookerNames].join('、') || '已读取'
+              : runtime?.placedCookerStatus ? `未读取 · ${runtime.placedCookerStatus}` : '未读取'}
+          />
+          <InfoLine label="目标厨具" value={uiPinningTarget?.cookerName || '暂无'} />
+          <InfoLine label="界面置顶" value={uiPinningStatus || '暂无'} />
         </CardContent>
       </Card>
 
       <div className={DENSE_TWO_COLUMN_GRID}>
         <ListPanel title="当前稀客">
           {activeGuests.length === 0 && <EmptyRow text="暂无稀客" />}
-          {activeGuests.map((guest) => (
-            <div key={`${guest.deskCode}-${guest.guestId}-${guest.source}`} className="flex items-center justify-between border-b py-2 text-sm last:border-b-0">
-              <span className="font-medium">{guest.guestName}</span>
-              <span className="text-muted-foreground">桌 {formatDesk(guest.deskCode)} · {guest.source}</span>
-            </div>
-          ))}
+          {activeGuests.map((guest) => {
+            const fund = formatGuestFund(guest);
+            return (
+              <div key={`${guest.deskCode}-${guest.guestId}-${guest.source}`} className="flex items-center justify-between border-b py-2 text-sm last:border-b-0">
+                <span className="min-w-0 font-medium">
+                  <span>{guest.guestName}</span>
+                  {fund && <span className="ml-1 text-muted-foreground">· 金钱 {fund}</span>}
+                </span>
+                <span className="text-muted-foreground">桌 {formatDesk(guest.deskCode)} · {guest.source}</span>
+              </div>
+            );
+          })}
         </ListPanel>
 
         <ListPanel title="当前稀客点单">
@@ -1430,6 +1636,7 @@ function ModServicePanel({
           recommendations={recommendations}
           recommendationIssues={recommendationIssues}
           runtimeSets={runtimeSets}
+          orderSortMode={autoPrepPreferences.serviceOrderSortMode}
           favorites={favorites}
           favoriteBusyKey={favoriteBusyKey}
           favoriteError={favoriteError}
@@ -1445,6 +1652,7 @@ function ServiceFocusPage({
   recommendations,
   recommendationIssues,
   runtimeSets,
+  orderSortMode,
   favorites,
   favoriteBusyKey,
   favoriteError,
@@ -1461,6 +1669,7 @@ function ServiceFocusPage({
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
   runtimeSets: RuntimeSets | null;
+  orderSortMode: ServiceOrderSortMode;
   favorites: FavoriteData;
   favoriteBusyKey: string;
   favoriteError: string;
@@ -1508,6 +1717,7 @@ function ServiceFocusPage({
           recommendations={recommendations}
           recommendationIssues={recommendationIssues}
           runtimeSets={runtimeSets}
+          orderSortMode={orderSortMode}
           favorites={favorites}
           favoriteBusyKey={favoriteBusyKey}
           favoriteError={favoriteError}
@@ -1528,6 +1738,7 @@ function CurrentOrderRecommendations({
   recommendations,
   recommendationIssues,
   runtimeSets,
+  orderSortMode,
   favorites,
   favoriteBusyKey,
   favoriteError,
@@ -1540,6 +1751,7 @@ function CurrentOrderRecommendations({
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
   runtimeSets: RuntimeSets | null;
+  orderSortMode: ServiceOrderSortMode;
   favorites: FavoriteData;
   favoriteBusyKey: string;
   favoriteError: string;
@@ -1550,11 +1762,11 @@ function CurrentOrderRecommendations({
   onToggleBeverageFavorite: ToggleBeverageFavorite;
 }) {
   const rows = useMemo(
-    () => [
+    () => sortNightOrderRows([
       ...recommendationIssues.map((issue) => ({ kind: 'issue' as const, order: issue.order, issue })),
       ...recommendations.map((item) => ({ kind: 'recommendation' as const, order: item.order, item })),
-    ].sort((left, right) => compareNightOrders(left.order, right.order)),
-    [recommendationIssues, recommendations],
+    ], orderSortMode),
+    [orderSortMode, recommendationIssues, recommendations],
   );
 
   return (
@@ -1928,24 +2140,16 @@ function ModSettingsPanel({
   preferences,
   themeMode,
   serviceFocusCompact,
-  serviceFocusRecipeLimit,
-  serviceFocusBeverageLimit,
   onPreferenceChange,
   onThemeModeChange,
   onServiceFocusCompactChange,
-  onServiceFocusRecipeLimitChange,
-  onServiceFocusBeverageLimitChange,
 }: {
   preferences: CompanionPreferences;
   themeMode: ThemeMode;
   serviceFocusCompact: boolean;
-  serviceFocusRecipeLimit: number;
-  serviceFocusBeverageLimit: number;
   onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
   onThemeModeChange: (mode: ThemeMode) => void;
   onServiceFocusCompactChange: (value: boolean) => void;
-  onServiceFocusRecipeLimitChange: (value: number) => void;
-  onServiceFocusBeverageLimitChange: (value: number) => void;
 }) {
   return (
     <div className={DENSE_TWO_COLUMN_GRID}>
@@ -2006,22 +2210,66 @@ function ModSettingsPanel({
             checked={serviceFocusCompact}
             onCheckedChange={onServiceFocusCompactChange}
           />
-          <div className="grid grid-cols-2 gap-3">
-            <FocusLimitInput
-              label="料理显示数"
-              value={serviceFocusRecipeLimit}
-              onChange={onServiceFocusRecipeLimitChange}
-            />
-            <FocusLimitInput
-              label="酒水显示数"
-              value={serviceFocusBeverageLimit}
-              onChange={onServiceFocusBeverageLimitChange}
-            />
-          </div>
           <div className="text-xs text-muted-foreground">
-            显示数量包含收藏项；收藏项仍会优先出现在推荐列表前面。
+            料理和酒水显示数量在进入专注模式后直接调整，设置会自动记住。
           </div>
         </div>
+      </ListPanel>
+
+      <ListPanel title="推荐">
+        <div className="space-y-4">
+          <SwitchControl
+            label="排除缺失厨具"
+            checked={preferences.filterMissingCookers}
+            onCheckedChange={(filterMissingCookers) => onPreferenceChange({ filterMissingCookers })}
+          />
+          <div className="text-xs text-muted-foreground">
+            进入经营场景后，若读取到已摆放厨具，推荐列表会隐藏当前场景无法制作的料理。
+          </div>
+          <SettingChoice
+            label="经营中订单排序"
+            value={preferences.serviceOrderSortMode}
+            options={[
+              { value: 'ordered', label: '点单顺序', description: '按订单首次出现时间排列，保持当前默认行为。' },
+              { value: 'guest', label: '稀客分组', description: '同一稀客的订单放在一起，组内仍按点单先后排列。' },
+            ]}
+            onChange={(serviceOrderSortMode) => onPreferenceChange({ serviceOrderSortMode })}
+          />
+          <SwitchControl
+            label="游戏界面置顶推荐（实验性）"
+            checked={preferences.gameUiPinningEnabled}
+            onCheckedChange={(gameUiPinningEnabled) => onPreferenceChange({ gameUiPinningEnabled })}
+          />
+          <div className="text-xs text-muted-foreground">
+            打开料理或酒水选择界面时，尝试把当前第一笔订单的推荐材料、料理和酒水排到前面；失败时只记录诊断，不修改库存。
+          </div>
+          <SwitchControl
+            label="目标厨具高亮（实验性）"
+            checked={preferences.cookerHighlightEnabled}
+            onCheckedChange={(cookerHighlightEnabled) => onPreferenceChange({ cookerHighlightEnabled })}
+          />
+          <div className="text-xs text-muted-foreground">
+            经营中有推荐目标厨具时，尝试让对应已摆放厨具显示黄色脉冲高亮；只改变可见提示，不自动操作厨具。
+          </div>
+        </div>
+      </ListPanel>
+
+      <ListPanel title="料理排序">
+        <SortRulesControl
+          rules={preferences.recipeSortRules}
+          options={RECIPE_SORT_OPTIONS}
+          onChange={(recipeSortRules) => onPreferenceChange({ recipeSortRules })}
+          onReset={() => onPreferenceChange({ recipeSortRules: buildDefaultSortRules(RECIPE_SORT_OPTIONS) })}
+        />
+      </ListPanel>
+
+      <ListPanel title="酒水排序">
+        <SortRulesControl
+          rules={preferences.beverageSortRules}
+          options={BEVERAGE_SORT_OPTIONS}
+          onChange={(beverageSortRules) => onPreferenceChange({ beverageSortRules })}
+          onReset={() => onPreferenceChange({ beverageSortRules: buildDefaultSortRules(BEVERAGE_SORT_OPTIONS) })}
+        />
       </ListPanel>
 
       <ListPanel title="自动化">
@@ -2085,6 +2333,20 @@ function ServiceAutomationPanel({
           onCheckedChange={(autoPrepStopOnError) => onPreferenceChange({ autoPrepStopOnError })}
         />
       </div>
+      {preferences.autoPrepStartCooking && (
+        <div className="mt-3 rounded-md border border-border bg-muted/30 p-3">
+          <SwitchControl
+            label="自动完成原生 QTE"
+            checked={preferences.autoPrepCompleteQte}
+            onCheckedChange={(autoPrepCompleteQte) => onPreferenceChange({ autoPrepCompleteQte })}
+          />
+          <div className="mt-2 text-xs text-muted-foreground">
+            {preferences.autoPrepCompleteQte
+              ? '不会打开音游面板，会直接尝试完成原生 QTE 奖励结算，并继续开始料理。'
+              : '跳过原生 QTE 会保持当前自动料理速度，但不会累计音游数值或触发对应 Buff。'}
+          </div>
+        </div>
+      )}
       <div className="mt-3 text-xs text-muted-foreground">
         自动化只处理当前排序第一笔稀客订单；子选项关闭时不会执行对应动作。
       </div>
@@ -2112,6 +2374,11 @@ function AutoPrepStatus({
         <Badge variant={preferences.autoPrepCompleteOrder ? 'secondary' : 'outline'}>完成 {preferences.autoPrepCompleteOrder ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepTakeBeverage ? 'secondary' : 'outline'}>取酒 {preferences.autoPrepTakeBeverage ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepStartCooking ? 'secondary' : 'outline'}>料理 {preferences.autoPrepStartCooking ? '开' : '关'}</Badge>
+        {preferences.autoPrepStartCooking && (
+          <Badge variant={preferences.autoPrepCompleteQte ? 'secondary' : 'outline'}>
+            QTE {preferences.autoPrepCompleteQte ? '自动完成' : '跳过'}
+          </Badge>
+        )}
         <Badge variant={preferences.autoPrepCollectCooking ? 'secondary' : 'outline'}>收取 {preferences.autoPrepCollectCooking ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepFavoritesOnly ? 'secondary' : 'outline'}>收藏限定 {preferences.autoPrepFavoritesOnly ? '开' : '关'}</Badge>
       </div>
@@ -2163,6 +2430,11 @@ function InfoLine({ label, value, mono = false }: { label: string; value: string
       <div className={`mt-1 truncate text-sm ${mono ? 'font-mono text-xs' : 'font-medium'}`} title={value}>{value}</div>
     </div>
   );
+}
+
+function formatGuestFund(guest: NightBusinessGuest): string {
+  if (typeof guest.fund !== 'number' || !Number.isFinite(guest.fund)) return '';
+  return String(Math.trunc(guest.fund));
 }
 
 function ListPanel({ title, children }: { title: string; children: ReactNode }) {
@@ -2386,6 +2658,101 @@ function SettingChoice<TValue extends string>({
   );
 }
 
+function SortRulesControl<K extends string>({
+  rules,
+  options,
+  onChange,
+  onReset,
+}: {
+  rules: SortRule<K>[];
+  options: SortOption<K>[];
+  onChange: (rules: SortRule<K>[]) => void;
+  onReset: () => void;
+}) {
+  const normalizedRules = normalizeSortRules(rules, options);
+  const updateRule = (key: K, next: Partial<SortRule<K>>) => {
+    onChange(normalizedRules.map((rule) => (rule.key === key ? { ...rule, ...next } : rule)));
+  };
+  const moveRule = (index: number, offset: number) => {
+    const nextIndex = index + offset;
+    if (nextIndex < 0 || nextIndex >= normalizedRules.length) return;
+    const next = [...normalizedRules];
+    const [item] = next.splice(index, 1);
+    next.splice(nextIndex, 0, item);
+    onChange(next);
+  };
+
+  return (
+    <div className="space-y-2">
+      {normalizedRules.map((rule, index) => {
+        const label = getSortOptionLabel(options, rule.key);
+        return (
+          <div
+            key={rule.key}
+            className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 rounded-md border border-border bg-background/50 p-2 text-sm"
+          >
+            <label className="flex min-w-0 items-center gap-2">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={rule.enabled}
+                onClick={() => updateRule(rule.key, { enabled: !rule.enabled })}
+                className={`relative h-5 w-9 shrink-0 rounded-full border transition-colors ${
+                  rule.enabled ? 'border-primary bg-primary' : 'border-border bg-muted'
+                }`}
+              >
+                <span
+                  className={`absolute left-0 top-1/2 size-4 -translate-y-1/2 rounded-full bg-background shadow-sm transition-transform ${
+                    rule.enabled ? 'translate-x-4' : 'translate-x-0.5'
+                  }`}
+                />
+              </button>
+              <span className="truncate">{label}</span>
+            </label>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 px-2"
+              onClick={() => updateRule(rule.key, { direction: rule.direction === 'desc' ? 'asc' : 'desc' })}
+            >
+              {rule.direction === 'desc' ? '降序' : '升序'}
+            </Button>
+            <div className="flex gap-1">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-8 w-8 p-0"
+                title="上移"
+                disabled={index === 0}
+                onClick={() => moveRule(index, -1)}
+              >
+                <ArrowUp className="size-3.5" />
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-8 w-8 p-0"
+                title="下移"
+                disabled={index === normalizedRules.length - 1}
+                onClick={() => moveRule(index, 1)}
+              >
+                <ArrowDown className="size-3.5" />
+              </Button>
+            </div>
+          </div>
+        );
+      })}
+      <Button type="button" size="sm" variant="outline" className="mt-1 gap-1.5" onClick={onReset}>
+        <RotateCcw className="size-3.5" />
+        恢复默认排序
+      </Button>
+    </div>
+  );
+}
+
 function PlaceToolbar({
   selectedPlace,
   detectedPlace,
@@ -2495,6 +2862,15 @@ function OrderRecommendationPanel({
 }) {
   const visibleRecipes = item.recipes.slice(0, normalizeFocusRecommendationLimit(recipeLimit));
   const visibleBeverages = item.beverages.slice(0, normalizeFocusRecommendationLimit(beverageLimit));
+  const visiblePreferenceRecipes = visibleRecipes.length >= 3
+    ? []
+    : item.preferenceRecipes.slice(0, Math.max(0, normalizeFocusRecommendationLimit(recipeLimit) - visibleRecipes.length));
+  const visiblePreferenceBeverages = visibleBeverages.length >= 3
+    ? []
+    : item.preferenceBeverages.slice(0, Math.max(0, normalizeFocusRecommendationLimit(beverageLimit) - visibleBeverages.length));
+  const targetCookerName = visibleRecipes[0]?.recipe.cooker
+    ?? visiblePreferenceRecipes[0]?.recipe.cooker
+    ?? '';
 
   return (
     <div className={compact ? 'rounded-md border border-border p-2' : 'rounded-md border border-border p-3'}>
@@ -2504,6 +2880,11 @@ function OrderRecommendationPanel({
           <div className="mt-1 flex flex-wrap gap-1.5">
             <Badge variant="outline">料理 {item.order.foodTag || '无'}</Badge>
             <Badge variant="outline">酒水 {item.order.beverageTag || '无'}</Badge>
+            {targetCookerName && (
+              <Badge className="border-amber-300/70 bg-amber-300/18 text-amber-100">
+                目标厨具 {targetCookerName}
+              </Badge>
+            )}
             <Badge variant="secondary">{item.order.source}</Badge>
           </div>
         </div>
@@ -2527,6 +2908,22 @@ function OrderRecommendationPanel({
                 onToggleFavorite={() => onToggleRecipeFavorite(item.customer, item.order.foodTag, recipe)}
               />
             ))}
+            {visiblePreferenceRecipes.length > 0 && (
+              <div className={compact ? 'pt-1' : 'pt-2'}>
+                <div className="mb-1 text-xs font-medium text-muted-foreground">喜好备选（不满足点单）</div>
+                <div className={compact ? 'space-y-1.5' : 'space-y-2'}>
+                  {visiblePreferenceRecipes.map((recipe, index) => (
+                    <RecipeRecommendationRow
+                      key={`fallback-${recipe.recipe.id}-${index}`}
+                      recipe={recipe}
+                      index={visibleRecipes.length + index}
+                      ownedIngredientQty={runtimeSets?.ownedIngredientQty ?? {}}
+                      compact={compact}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -2547,6 +2944,22 @@ function OrderRecommendationPanel({
                 onToggleFavorite={() => onToggleBeverageFavorite(item.customer, item.order.beverageTag, beverage)}
               />
             ))}
+            {visiblePreferenceBeverages.length > 0 && (
+              <div className={compact ? 'pt-1' : 'pt-2'}>
+                <div className="mb-1 text-xs font-medium text-muted-foreground">喜好备选（不满足点单）</div>
+                <div className={compact ? 'space-y-1.5' : 'space-y-2'}>
+                  {visiblePreferenceBeverages.map((beverage, index) => (
+                    <BeverageRecommendationRow
+                      key={`fallback-${beverage.beverage.id}`}
+                      beverage={beverage}
+                      index={visibleBeverages.length + index}
+                      ownedBeverageQty={runtimeSets?.ownedBeverageQty ?? {}}
+                      compact={compact}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -2769,6 +3182,39 @@ async function writeInventoryQuantity(
   }
 }
 
+async function publishGameUiPinningTarget(
+  endpoint: string,
+  apiToken: string,
+  enabled: boolean,
+  highlightEnabled: boolean,
+  target: GameUiPinningTarget | null,
+): Promise<void> {
+  const params = new URLSearchParams({
+    enabled: String(enabled),
+    highlightEnabled: String(highlightEnabled),
+    recipeId: target ? String(target.recipeId) : '-1',
+    recipeName: target?.recipeName ?? '',
+    ingredientIds: target ? target.ingredientIds.join(',') : '',
+    beverageId: target ? String(target.beverageId) : '-1',
+    beverageName: target?.beverageName ?? '',
+    cookerTypeId: target ? String(target.cookerTypeId) : '-1',
+    cookerName: target?.cookerName ?? '',
+  });
+  const abortController = new AbortController();
+  const timeoutId = window.setTimeout(() => abortController.abort(), 2200);
+
+  try {
+    await readLocalApiJson<{ ok: boolean }>(
+      endpoint,
+      apiToken,
+      `/ui-pinning/target?${params.toString()}`,
+      abortController.signal,
+    );
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
 async function prepareNextRareOrder(
   endpoint: string,
   apiToken: string,
@@ -2840,6 +3286,7 @@ async function rareOrderAction(
     autoTakeBeverage: String(preferences.autoPrepTakeBeverage),
     autoStartCooking: String(preferences.autoPrepStartCooking),
     autoCollectCooking: String(preferences.autoPrepCollectCooking),
+    completeQte: String(preferences.autoPrepStartCooking && preferences.autoPrepCompleteQte),
     favoritesOnly: String(preferences.autoPrepFavoritesOnly),
     stopOnError: String(preferences.autoPrepStopOnError),
     recipeFavorite: String(Boolean(recipeFavorite)),
@@ -2963,7 +3410,53 @@ function buildRuntimeSets(runtime: RecommendationStateSnapshot | null): RuntimeS
     unavailableIngredientIds,
     ownedIngredientQty: normalizeOwnedIngredientQty(runtime.ownedIngredientQty),
     ownedBeverageQty: normalizeOwnedIngredientQty(runtime.ownedBeverageQty ?? {}),
+    placedCookerTypeIds: new Set(runtime.placedCookerTypeIds ?? []),
+    placedCookerNames: buildPlacedCookerNameSet(runtime),
+    hasCookerSnapshot: (runtime.placedCookers?.length ?? 0) > 0 || (runtime.placedCookerTypeIds?.length ?? 0) > 0,
   };
+}
+
+function buildPlacedCookerNameSet(runtime: RecommendationStateSnapshot): Set<string> {
+  const names = new Set<string>();
+  for (const typeId of runtime.placedCookerTypeIds ?? []) {
+    const mapped = COOKER_TYPE_NAME_BY_ID.get(typeId);
+    if (mapped) names.add(normalizeCookerName(mapped));
+  }
+  for (const cooker of runtime.placedCookers ?? []) {
+    for (const name of [cooker.name, ...(cooker.typeNames ?? [])]) {
+      const normalized = normalizeCookerName(name);
+      if (normalized) names.add(normalized);
+    }
+  }
+  return names;
+}
+
+function shouldKeepRecipeForCooker(
+  recipe: IRareRecipeResult,
+  runtimeSets: RuntimeSets | null,
+  filterMissingCookers: boolean,
+): boolean {
+  if (!filterMissingCookers || !runtimeSets?.hasCookerSnapshot) return true;
+  const requiredCooker = normalizeCookerName(recipe.recipe.cooker);
+  if (!requiredCooker) return true;
+  return runtimeSets.placedCookerNames.has(requiredCooker);
+}
+
+function normalizeCookerName(value: string | null | undefined): string {
+  const normalized = (value ?? '').trim();
+  if (!normalized) return '';
+  return COOKER_NAME_ALIASES.get(normalized) ?? normalized;
+}
+
+function resolveCookerTypeId(value: string | null | undefined): number {
+  const normalized = normalizeCookerName(value);
+  if (!normalized) return -1;
+
+  for (const [typeId, name] of COOKER_TYPE_NAME_BY_ID) {
+    if (normalizeCookerName(name) === normalized) return typeId;
+  }
+
+  return -1;
 }
 
 function toRuntimeRareCustomer(customer: RuntimeRareCustomer): ICustomerRare {
@@ -3019,16 +3512,76 @@ function mergeRareCustomers(localCustomers: ICustomerRare[], runtimeRareCustomer
   return result;
 }
 
-function sortNightOrders(orders: NightBusinessOrder[]): NightBusinessOrder[] {
-  return [...orders].sort(compareNightOrders);
+function sortNightOrders(
+  orders: NightBusinessOrder[],
+  mode: ServiceOrderSortMode = 'ordered',
+): NightBusinessOrder[] {
+  const groupFirstSeen = buildOrderGroupFirstSeen(orders);
+  return [...orders].sort((left, right) => compareNightOrders(left, right, mode, groupFirstSeen));
 }
 
-function compareNightOrders(left: NightBusinessOrder, right: NightBusinessOrder): number {
+function sortNightOrderRows<T extends { order: NightBusinessOrder }>(
+  rows: T[],
+  mode: ServiceOrderSortMode,
+): T[] {
+  const groupFirstSeen = buildOrderGroupFirstSeen(rows.map((row) => row.order));
+  return [...rows].sort((left, right) => compareNightOrders(left.order, right.order, mode, groupFirstSeen));
+}
+
+function compareNightOrders(
+  left: NightBusinessOrder,
+  right: NightBusinessOrder,
+  mode: ServiceOrderSortMode = 'ordered',
+  groupFirstSeen: Map<string, number> | null = null,
+): number {
+  if (mode === 'guest') {
+    const leftGroupKey = getOrderGuestGroupKey(left);
+    const rightGroupKey = getOrderGuestGroupKey(right);
+    if (leftGroupKey !== rightGroupKey) {
+      const leftGroupSeenAt = groupFirstSeen?.get(leftGroupKey) ?? getOrderSeenTime(left);
+      const rightGroupSeenAt = groupFirstSeen?.get(rightGroupKey) ?? getOrderSeenTime(right);
+      if (leftGroupSeenAt !== rightGroupSeenAt) return leftGroupSeenAt - rightGroupSeenAt;
+      const groupCompare = compareOrderGroupIdentity(left, right);
+      if (groupCompare !== 0) return groupCompare;
+    }
+  }
+
+  return compareNightOrdersByTime(left, right);
+}
+
+function compareNightOrdersByTime(left: NightBusinessOrder, right: NightBusinessOrder): number {
   const leftSeenAt = getOrderSeenTime(left);
   const rightSeenAt = getOrderSeenTime(right);
   if (leftSeenAt !== rightSeenAt) return leftSeenAt - rightSeenAt;
   if (left.deskCode !== right.deskCode) return left.deskCode - right.deskCode;
   return left.guestName.localeCompare(right.guestName, 'zh-Hans-CN');
+}
+
+function buildOrderGroupFirstSeen(orders: NightBusinessOrder[]): Map<string, number> {
+  const result = new Map<string, number>();
+  for (const order of orders) {
+    const key = getOrderGuestGroupKey(order);
+    const seenAt = getOrderSeenTime(order);
+    const current = result.get(key);
+    if (current === undefined || seenAt < current) result.set(key, seenAt);
+  }
+  return result;
+}
+
+function getOrderGuestGroupKey(order: NightBusinessOrder): string {
+  if (order.guestId !== null && order.guestId !== undefined && order.guestId >= 0) {
+    return `id:${order.guestId}`;
+  }
+  return `name:${order.guestName.trim()}|desk:${order.deskCode}`;
+}
+
+function compareOrderGroupIdentity(left: NightBusinessOrder, right: NightBusinessOrder): number {
+  const nameCompare = left.guestName.localeCompare(right.guestName, 'zh-Hans-CN');
+  if (nameCompare !== 0) return nameCompare;
+  const leftGuestId = left.guestId ?? Number.MAX_SAFE_INTEGER;
+  const rightGuestId = right.guestId ?? Number.MAX_SAFE_INTEGER;
+  if (leftGuestId !== rightGuestId) return leftGuestId - rightGuestId;
+  return left.deskCode - right.deskCode;
 }
 
 function getOrderSeenTime(order: NightBusinessOrder): number {
@@ -3067,9 +3620,10 @@ function buildOrderRecommendations(
   rareCustomersById: Map<number, ICustomerRare>,
   cache: Map<string, CachedRecommendation>,
   favorites: FavoriteData,
+  preferences: CompanionPreferences,
 ): { recommendations: OrderRecommendation[]; recommendationIssues: RecommendationIssue[] } {
   if (orders.length === 0) return { recommendations: [], recommendationIssues: [] };
-  const sortedOrders = sortNightOrders(orders);
+  const sortedOrders = sortNightOrders(orders, preferences.serviceOrderSortMode);
   if (!runtime) {
     return {
       recommendations: [],
@@ -3080,7 +3634,7 @@ function buildOrderRecommendations(
   const runtimeSets = buildRuntimeSets(runtime);
   if (!runtimeSets) return { recommendations: [], recommendationIssues: [] };
 
-  const stateSignature = buildRecommendationStateSignature(runtime);
+  const stateSignature = buildRecommendationStateSignature(runtime, preferences);
   const recommendations: OrderRecommendation[] = [];
   const recommendationIssues: RecommendationIssue[] = [];
 
@@ -3114,12 +3668,58 @@ function buildOrderRecommendations(
         runtimeSets.ownedIngredientQty,
         runtime.famousShopEnabled,
       )
-        .sort((a, b) => compareRareRecipesForService(a, b, runtimeSets.ownedIngredientQty));
+        .filter((recipe) => shouldKeepRecipeForCooker(recipe, runtimeSets, preferences.filterMissingCookers))
+        .sort((a, b) => compareRareRecipesForService(
+          a,
+          b,
+          runtimeSets.ownedIngredientQty,
+          preferences.recipeSortRules,
+          runtimeSets,
+        ));
+
+      const preferenceRecipes = recipes.length >= 3
+        ? []
+        : rankPreferenceRecipesForRare(
+          customer,
+          foodTag,
+          beverageTag,
+          runtimeSets.recipeIds,
+          runtimeSets.ingredientIds,
+          new Set<number>(),
+          runtime.popularFoodTag,
+          runtime.popularHateFoodTag,
+          4,
+          runtimeSets.ownedIngredientQty,
+          runtime.famousShopEnabled,
+        )
+          .filter((recipe) => shouldKeepRecipeForCooker(recipe, runtimeSets, preferences.filterMissingCookers))
+          .sort((a, b) => compareRareRecipesForService(
+            a,
+            b,
+            runtimeSets.ownedIngredientQty,
+            preferences.recipeSortRules,
+            runtimeSets,
+          ));
 
       const beverages = rankBeveragesForRare(customer, beverageTag, runtimeSets.beverageIds)
-        .sort(compareRareBeveragesForService);
+        .sort((a, b) => compareRareBeveragesForService(
+          a,
+          b,
+          runtimeSets.ownedBeverageQty,
+          preferences.beverageSortRules,
+        ));
 
-      cached = { customer, recipes, beverages };
+      const preferenceBeverages = beverages.length >= 3
+        ? []
+        : rankPreferenceBeveragesForRare(customer, beverageTag, runtimeSets.beverageIds)
+          .sort((a, b) => compareRareBeveragesForService(
+            a,
+            b,
+            runtimeSets.ownedBeverageQty,
+            preferences.beverageSortRules,
+          ));
+
+      cached = { customer, recipes, beverages, preferenceRecipes, preferenceBeverages };
       cache.set(cacheKey, cached);
       trimRecommendationCache(cache);
     }
@@ -3129,6 +3729,8 @@ function buildOrderRecommendations(
       customer: cached.customer,
       recipes: promoteFavoriteRecipes(cached.recipes, favorites, customer.id, foodTag).slice(0, MAX_FOCUS_RECOMMENDATION_ROWS),
       beverages: promoteFavoriteBeverages(cached.beverages, favorites, customer.id, beverageTag).slice(0, MAX_FOCUS_RECOMMENDATION_ROWS),
+      preferenceRecipes: cached.preferenceRecipes.slice(0, MAX_FOCUS_RECOMMENDATION_ROWS),
+      preferenceBeverages: cached.preferenceBeverages.slice(0, MAX_FOCUS_RECOMMENDATION_ROWS),
     });
   }
 
@@ -3154,12 +3756,15 @@ function selectNextOrderPreparation(
   favorites: FavoriteData,
   preferences: CompanionPreferences,
 ): OrderPreparationSelection {
-  const rows = [...recommendations].sort((left, right) => compareNightOrders(left.order, right.order));
+  const rows = sortNightOrderRows(
+    recommendations.map((item) => ({ order: item.order, item })),
+    preferences.serviceOrderSortMode,
+  );
   if (rows.length === 0) {
     return { ok: false, message: '暂无可准备的稀客订单。' };
   }
 
-  const item = rows[0];
+  const item = rows[0].item;
   const recipePick = pickRecipeForPreparation(item, favorites, preferences);
   const beveragePick = pickBeverageForPreparation(item, favorites, preferences);
   if (!recipePick.ok && (preferences.autoPrepStartCooking || preferences.autoPrepFavoritesOnly)) {
@@ -3186,6 +3791,53 @@ function selectNextOrderPreparation(
     beverage: beveragePick.ok ? beveragePick.beverage : null,
     recipeFavorite: recipePick.ok ? recipePick.favorite : null,
     beverageFavorite: beveragePick.ok ? beveragePick.favorite : null,
+  };
+}
+
+function buildGameUiPinningTarget(
+  recommendations: OrderRecommendation[],
+  orderSortMode: ServiceOrderSortMode,
+): GameUiPinningTarget | null {
+  const item = sortNightOrderRows(
+    recommendations.map((recommendation) => ({ order: recommendation.order, recommendation })),
+    orderSortMode,
+  )[0]?.recommendation;
+  if (!item) return null;
+  const recipe = item.recipes[0] ?? null;
+  const beverage = item.beverages[0] ?? null;
+  if (!recipe && !beverage) return null;
+
+  const baseIngredientIds = recipe
+    ? recipe.recipe.ingredients
+      .map((name) => INGREDIENT_BY_NAME.get(name)?.id ?? -1)
+      .filter((id) => id >= 0)
+    : [];
+  const ingredientIds = normalizeIdList([
+    ...baseIngredientIds,
+    ...(recipe?.extraIngredients.map((ingredient) => ingredient.id) ?? []),
+  ]);
+  const recipeId = recipe?.recipe.id ?? -1;
+  const beverageId = beverage?.beverage.id ?? -1;
+  const cookerName = recipe?.recipe.cooker ?? '';
+  const cookerTypeId = resolveCookerTypeId(cookerName);
+
+  return {
+    signature: [
+      item.order.firstSeenAtUtc ?? item.order.lastSeenAtUtc ?? '',
+      item.order.deskCode,
+      item.order.guestId ?? item.order.guestName,
+      recipeId,
+      ingredientIds.join(','),
+      beverageId,
+      cookerTypeId,
+    ].join('|'),
+    recipeId,
+    recipeName: recipe?.recipe.name ?? '',
+    ingredientIds,
+    beverageId,
+    beverageName: beverage?.beverage.name ?? '',
+    cookerTypeId,
+    cookerName,
   };
 }
 
@@ -3481,18 +4133,76 @@ function compareRareRecipesForService(
   a: IRareRecipeResult,
   b: IRareRecipeResult,
   ownedIngredientQty: Record<number, number> = {},
+  rules: SortRule<RecipeSortKey>[] = DEFAULT_RECIPE_SORT_RULES,
+  runtimeSets: RuntimeSets | null = null,
 ) {
-  if (a.meetsRequiredFood !== b.meetsRequiredFood) return a.meetsRequiredFood ? -1 : 1;
-  if (a.foodScore !== b.foodScore) return b.foodScore - a.foodScore;
-  if (a.extraIngredients.length !== b.extraIngredients.length) {
-    return a.extraIngredients.length - b.extraIngredients.length;
+  const sortRules = rules.length > 0 ? rules : DEFAULT_RECIPE_SORT_RULES;
+  for (const rule of sortRules) {
+    if (!rule.enabled) continue;
+    const diff = getRecipeSortValue(a, rule.key, ownedIngredientQty, runtimeSets)
+      - getRecipeSortValue(b, rule.key, ownedIngredientQty, runtimeSets);
+    if (diff !== 0) return rule.direction === 'asc' ? diff : -diff;
   }
-  const aPressure = getRareRecipeResourcePressure(a, ownedIngredientQty);
-  const bPressure = getRareRecipeResourcePressure(b, ownedIngredientQty);
-  if (aPressure !== bPressure) return aPressure - bPressure;
-  if (a.recipe.price !== b.recipe.price) return b.recipe.price - a.recipe.price;
-  if (a.extraCost !== b.extraCost) return a.extraCost - b.extraCost;
   return a.recipe.id - b.recipe.id;
+}
+
+function getRecipeSortValue(
+  result: IRareRecipeResult,
+  key: RecipeSortKey,
+  ownedIngredientQty: Record<number, number>,
+  runtimeSets: RuntimeSets | null,
+): number {
+  switch (key) {
+    case 'requiredTag':
+      return result.meetsRequiredFood ? 1 : 0;
+    case 'foodScore':
+      return result.foodScore;
+    case 'rating':
+      return getRatingRank(result.rating);
+    case 'extraCount':
+      return result.extraIngredients.length;
+    case 'resourcePressure':
+      return getRareRecipeResourcePressure(result, ownedIngredientQty);
+    case 'recipePrice':
+      return result.recipe.price;
+    case 'extraCost':
+      return result.extraCost;
+    case 'baseCost':
+      return result.baseCost;
+    case 'totalCost':
+      return result.baseCost + result.extraCost;
+    case 'profit':
+      return result.recipe.price - result.baseCost - result.extraCost;
+    case 'cookerAvailable':
+      return isRecipeCookerAvailableForSort(result, runtimeSets) ? 1 : 0;
+    case 'recipeId':
+      return result.recipe.id;
+  }
+  return 0;
+}
+
+function getRatingRank(rating: TRating): number {
+  switch (rating) {
+    case 'ExGood':
+      return 5;
+    case 'Good':
+      return 4;
+    case 'Normal':
+      return 3;
+    case 'Bad':
+      return 2;
+    case 'ExBad':
+      return 1;
+  }
+  return 0;
+}
+
+function isRecipeCookerAvailableForSort(
+  result: IRareRecipeResult,
+  runtimeSets: RuntimeSets | null,
+): boolean {
+  if (!runtimeSets?.hasCookerSnapshot) return true;
+  return shouldKeepRecipeForCooker(result, runtimeSets, true);
 }
 
 function getRareRecipeResourcePressure(
@@ -3523,11 +4233,40 @@ function getIngredientResourcePressure(
   return stockPenalty + ingredient.price;
 }
 
-function compareRareBeveragesForService(a: IRareBeverageResult, b: IRareBeverageResult) {
-  if (a.meetsRequiredBev !== b.meetsRequiredBev) return a.meetsRequiredBev ? -1 : 1;
-  if (a.bevScore !== b.bevScore) return b.bevScore - a.bevScore;
-  if (a.beverage.price !== b.beverage.price) return b.beverage.price - a.beverage.price;
+function compareRareBeveragesForService(
+  a: IRareBeverageResult,
+  b: IRareBeverageResult,
+  ownedBeverageQty: Record<number, number> = {},
+  rules: SortRule<BeverageSortKey>[] = DEFAULT_BEVERAGE_SORT_RULES,
+) {
+  const sortRules = rules.length > 0 ? rules : DEFAULT_BEVERAGE_SORT_RULES;
+  for (const rule of sortRules) {
+    if (!rule.enabled) continue;
+    const diff = getBeverageSortValue(a, rule.key, ownedBeverageQty)
+      - getBeverageSortValue(b, rule.key, ownedBeverageQty);
+    if (diff !== 0) return rule.direction === 'asc' ? diff : -diff;
+  }
   return a.beverage.id - b.beverage.id;
+}
+
+function getBeverageSortValue(
+  result: IRareBeverageResult,
+  key: BeverageSortKey,
+  ownedBeverageQty: Record<number, number>,
+): number {
+  switch (key) {
+    case 'requiredTag':
+      return result.meetsRequiredBev ? 1 : 0;
+    case 'bevScore':
+      return result.bevScore;
+    case 'beveragePrice':
+      return result.beverage.price;
+    case 'ownedQuantity':
+      return ownedBeverageQty[result.beverage.id] ?? 0;
+    case 'beverageId':
+      return result.beverage.id;
+  }
+  return 0;
 }
 
 function normalizeOwnedIngredientQty(ownedIngredientQty: Record<string, number>): Record<number, number> {
@@ -3561,20 +4300,35 @@ function buildLowStockEntries(
     .slice(0, limit);
 }
 
-function buildRecommendationStateSignature(runtime: RecommendationStateSnapshot) {
+function buildRecommendationStateSignature(runtime: RecommendationStateSnapshot, preferences: CompanionPreferences) {
   const ownedQty = Object.entries(runtime.ownedIngredientQty)
     .sort(([a], [b]) => Number(a) - Number(b))
     .map(([id, qty]) => `${id}:${qty}`)
     .join(',');
+  const ownedBeverageQty = Object.entries(runtime.ownedBeverageQty)
+    .sort(([a], [b]) => Number(a) - Number(b))
+    .map(([id, qty]) => `${id}:${qty}`)
+    .join(',');
+  const placedCookers = [
+    ...(runtime.placedCookerTypeIds ?? []).map((id) => `id:${id}`),
+    ...(runtime.placedCookers ?? []).flatMap((cooker) =>
+      [cooker.name, ...(cooker.typeNames ?? [])].map((name) => `name:${normalizeCookerName(name)}`),
+    ),
+  ].filter(Boolean).sort().join(',');
 
   return [
     runtime.availableRecipeIds.join(','),
     runtime.availableBeverageIds.join(','),
     runtime.availableIngredientIds.join(','),
     ownedQty,
+    ownedBeverageQty,
     runtime.popularFoodTag ?? '',
     runtime.popularHateFoodTag ?? '',
     runtime.famousShopEnabled ? '1' : '0',
+    preferences.filterMissingCookers ? 'filterCooker:1' : 'filterCooker:0',
+    `recipeSort:${serializeSortRules(preferences.recipeSortRules)}`,
+    `beverageSort:${serializeSortRules(preferences.beverageSortRules)}`,
+    placedCookers,
   ].join('|');
 }
 
@@ -3643,6 +4397,13 @@ function readStoredCompanionPreferences(): CompanionPreferences {
     autoPrepCollectCooking: readStoredBoolean(AUTO_PREP_COLLECT_COOKING_STORAGE_KEY, false),
     autoPrepFavoritesOnly: readStoredBoolean(AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY, false),
     autoPrepStopOnError: readStoredBoolean(AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY, false),
+    autoPrepCompleteQte: readStoredBoolean(AUTO_PREP_COMPLETE_QTE_STORAGE_KEY, false),
+    filterMissingCookers: readStoredBoolean(FILTER_MISSING_COOKERS_STORAGE_KEY, true),
+    gameUiPinningEnabled: readStoredBoolean(GAME_UI_PINNING_STORAGE_KEY, false),
+    cookerHighlightEnabled: readStoredBoolean(COOKER_HIGHLIGHT_STORAGE_KEY, false),
+    recipeSortRules: readStoredSortRules(RECIPE_SORT_RULES_STORAGE_KEY, RECIPE_SORT_OPTIONS),
+    beverageSortRules: readStoredSortRules(BEVERAGE_SORT_RULES_STORAGE_KEY, BEVERAGE_SORT_OPTIONS),
+    serviceOrderSortMode: readStoredServiceOrderSortMode(),
   });
 }
 
@@ -3651,11 +4412,83 @@ function readStoredFocusSwitchBehavior(): FocusSwitchBehavior {
   return value === 'keep-visible' ? 'keep-visible' : 'hide';
 }
 
-function normalizeCompanionPreferences(value: CompanionPreferences): CompanionPreferences {
+function readStoredServiceOrderSortMode(): ServiceOrderSortMode {
+  const value = localStorage.getItem(SERVICE_ORDER_SORT_MODE_STORAGE_KEY);
+  return value === 'guest' ? 'guest' : 'ordered';
+}
+
+function readStoredSortRules<K extends string>(key: string, options: SortOption<K>[]): SortRule<K>[] {
+  const raw = localStorage.getItem(key);
+  if (!raw) return buildDefaultSortRules(options);
+
+  try {
+    return normalizeSortRules(JSON.parse(raw) as unknown, options);
+  } catch {
+    return buildDefaultSortRules(options);
+  }
+}
+
+function buildDefaultSortRules<K extends string>(options: SortOption<K>[]): SortRule<K>[] {
+  return options.map((option) => ({
+    key: option.key,
+    direction: option.defaultDirection,
+    enabled: option.defaultEnabled,
+  }));
+}
+
+function normalizeSortRules<K extends string>(
+  value: unknown,
+  options: SortOption<K>[],
+): SortRule<K>[] {
+  if (!Array.isArray(value)) return buildDefaultSortRules(options);
+
+  const optionByKey = new Map(options.map((option) => [option.key, option]));
+  const usedKeys = new Set<K>();
+  const rules: SortRule<K>[] = [];
+
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    const key = record.key;
+    if (typeof key !== 'string') continue;
+    const option = optionByKey.get(key as K);
+    if (!option || usedKeys.has(option.key)) continue;
+
+    rules.push({
+      key: option.key,
+      direction: record.direction === 'asc' || record.direction === 'desc'
+        ? record.direction
+        : option.defaultDirection,
+      enabled: typeof record.enabled === 'boolean' ? record.enabled : option.defaultEnabled,
+    });
+    usedKeys.add(option.key);
+  }
+
+  for (const option of options) {
+    if (usedKeys.has(option.key)) continue;
+    rules.push({
+      key: option.key,
+      direction: option.defaultDirection,
+      enabled: option.defaultEnabled,
+    });
+  }
+
+  return rules;
+}
+
+function serializeSortRules<K extends string>(rules: SortRule<K>[]): string {
+  return rules.map((rule) => `${rule.key}:${rule.enabled ? '1' : '0'}:${rule.direction}`).join(',');
+}
+
+function getSortOptionLabel<K extends string>(options: SortOption<K>[], key: K): string {
+  return options.find((option) => option.key === key)?.label ?? key;
+}
+
+function normalizeCompanionPreferences(value: Partial<CompanionPreferences>): CompanionPreferences {
   return {
-    windowOpacity: normalizeWindowOpacity(value.windowOpacity),
+    windowOpacity: normalizeWindowOpacity(value.windowOpacity ?? DEFAULT_WINDOW_OPACITY),
     focusSwitchBehavior: value.focusSwitchBehavior === 'keep-visible' ? 'keep-visible' : 'hide',
-    focusSwitchCooldownMs: normalizeFocusSwitchCooldownMs(value.focusSwitchCooldownMs),
+    focusSwitchCooldownMs: normalizeFocusSwitchCooldownMs(value.focusSwitchCooldownMs ?? DEFAULT_FOCUS_SWITCH_COOLDOWN_MS),
     alwaysOnTop: Boolean(value.alwaysOnTop),
     gamepadNavigationEnabled: Boolean(value.gamepadNavigationEnabled),
     automationEnabled: Boolean(value.automationEnabled),
@@ -3665,6 +4498,13 @@ function normalizeCompanionPreferences(value: CompanionPreferences): CompanionPr
     autoPrepCollectCooking: Boolean(value.autoPrepCollectCooking),
     autoPrepFavoritesOnly: Boolean(value.autoPrepFavoritesOnly),
     autoPrepStopOnError: Boolean(value.autoPrepStopOnError),
+    autoPrepCompleteQte: Boolean(value.autoPrepCompleteQte),
+    filterMissingCookers: value.filterMissingCookers !== false,
+    gameUiPinningEnabled: Boolean(value.gameUiPinningEnabled),
+    cookerHighlightEnabled: Boolean(value.cookerHighlightEnabled),
+    recipeSortRules: normalizeSortRules(value.recipeSortRules, RECIPE_SORT_OPTIONS),
+    beverageSortRules: normalizeSortRules(value.beverageSortRules, BEVERAGE_SORT_OPTIONS),
+    serviceOrderSortMode: value.serviceOrderSortMode === 'guest' ? 'guest' : 'ordered',
   };
 }
 
@@ -3695,6 +4535,13 @@ function persistCompanionPreferences(preferences: CompanionPreferences) {
   localStorage.setItem(AUTO_PREP_COLLECT_COOKING_STORAGE_KEY, normalized.autoPrepCollectCooking ? '1' : '0');
   localStorage.setItem(AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY, normalized.autoPrepFavoritesOnly ? '1' : '0');
   localStorage.setItem(AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY, normalized.autoPrepStopOnError ? '1' : '0');
+  localStorage.setItem(AUTO_PREP_COMPLETE_QTE_STORAGE_KEY, normalized.autoPrepCompleteQte ? '1' : '0');
+  localStorage.setItem(FILTER_MISSING_COOKERS_STORAGE_KEY, normalized.filterMissingCookers ? '1' : '0');
+  localStorage.setItem(GAME_UI_PINNING_STORAGE_KEY, normalized.gameUiPinningEnabled ? '1' : '0');
+  localStorage.setItem(COOKER_HIGHLIGHT_STORAGE_KEY, normalized.cookerHighlightEnabled ? '1' : '0');
+  localStorage.setItem(RECIPE_SORT_RULES_STORAGE_KEY, JSON.stringify(normalized.recipeSortRules));
+  localStorage.setItem(BEVERAGE_SORT_RULES_STORAGE_KEY, JSON.stringify(normalized.beverageSortRules));
+  localStorage.setItem(SERVICE_ORDER_SORT_MODE_STORAGE_KEY, normalized.serviceOrderSortMode);
 }
 
 function applyCompanionVisualPreferences(preferences: CompanionPreferences) {
