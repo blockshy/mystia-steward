@@ -19,7 +19,7 @@
 - 独立伴随窗口通过 `127.0.0.1:32145` 读取运行态；除 `/health` 外，本地 API 使用 `X-Mystia-Steward-Companion-Token` 授权。
 - 伴随窗口控制端口固定为 `127.0.0.1:32146`，支持 `show`、`toggle`、`exit` 消息；Mod 热键应先通知已有窗口，控制端口不可达时才启动新进程。
 - 伴随窗口会在 Tauri app data 目录保存 `window-state.txt`，记录外框位置和内框尺寸；启动时恢复大小和仍在显示器范围内的位置，防止换显示器后窗口离屏。
-- 伴随窗口 `设置` 页负责窗口透明度、焦点切换行为、切换冷却时间、置顶、主题、手柄导航、稀客专注模式显示数量、缺失厨具过滤、实验性游戏界面置顶和实验性自动化总开关。透明度通过 Tauri transparent window + CSS 背景 alpha 实现，文字不随背景变淡。
+- 伴随窗口 `设置` 页负责窗口透明度、焦点切换行为、切换冷却时间、置顶、主题、手柄导航、缺失厨具过滤、实验性游戏界面置顶、目标厨具高亮和实验性自动化总开关。透明度通过 Tauri transparent window + CSS 背景 alpha 实现，文字不随背景变淡；稀客专注模式的料理/酒水显示数量在专注模式浮层内调整。
 - 伴随窗口根滚动区域固定预留纵向滚动条槽位，避免页面高度变化时滚动条挤占宽度造成内容横向跳动；窗口、下拉和日志滚动条使用主题色并跟随透明度。
 - 焦点切换支持两种模式：隐藏伴随窗口再聚焦游戏，或保持伴随窗口悬浮并只聚焦游戏。保持悬浮依赖窗口置顶，独占全屏游戏可能覆盖置顶窗口，推荐窗口化或无边框窗口化。
 - 伴随窗口退出跟随不只依赖本地 API `/health` 失联，还会监控启动参数中的 `--game-pid`。游戏窗口 X、游戏内退出按钮、或 Unity 退出阶段未及时发送 `exit` 控制消息时，都应由 PID 监控兜底关闭伴随窗口。
@@ -31,8 +31,8 @@
 - 默认热键 `F8` 和 `RS Click` 的主语义是游戏与伴随窗口焦点切换；伴随窗口聚焦时由 Tauri 前端处理热键并按设置切回游戏。手柄切换需要释放锁存和可配置后端防抖，防止同一次长按连续 toggle；默认冷却时间为 800ms。
 - 伴随窗口内手柄导航由 `apps/companion/src/companion/use-gamepad-navigation.ts` 管理：左摇杆/十字键移动焦点，`A` 确认，`B` 返回或退出专注模式，`LB/RB` 切页，`LT/RT` 滚动，`Y` 进入专注模式或切换精简模式，`X` 收藏当前推荐行。导航采用 `data-gamepad-scope` 分区，顶部页签栏左右键只在页签之间移动，向下进入当前页面内容；行内控件左右移动优先在当前 `data-gamepad-row` 内完成，range 滑杆左右键直接调值，推荐行和收藏按钮需要稳定 `data-gamepad-focus-key` 以便状态变化后回焦。
 - 经营中稀客订单按首次捕获时间稳定排序；运行时捕获订单保留到明确移除、稀客离场或 6 小时硬上限，避免长时间未上菜时从伴随窗口消失。
-- 运行时推荐状态会尝试读取当前夜间经营场景已摆放的全部厨具，快照来自 `CookSystemManager.Instance.AllCookerControllers` 和 `Cooker.AllAvailableCookerType`；读不到快照时不要过滤料理。
-- 经营中概览会显示厨具快照读取状态和 `RuntimeUiPinningService.Status`。排查“缺失厨具过滤/游戏界面置顶”时，优先让用户提供这两行状态和 `BepInEx/LogOutput.log`。
+- 运行时推荐状态会尝试读取当前夜间经营场景已摆放的全部厨具，优先读取 `CookSystemManager.Instance.AllCookers` 中的控制器和 `Cooker.AllAvailableCookerType`，再兜底读取 `IzakayaConfigure.CookerConfigure` 与 `RunTimeStorage.GetAllCookers()`；读不到快照时不要过滤料理。目标厨具高亮会复用当前推荐目标，并扫描 `AllCookers`、`AllCookerControllers` 和场景中的 `CookController` 兜底寻找可高亮对象。
+- 经营中概览会显示厨具快照读取状态和 `RuntimeUiPinningService.Status`。排查“缺失厨具过滤/游戏界面置顶/目标厨具高亮”时，优先让用户提供这两行状态和 `BepInEx/LogOutput.log`。
 - 运行时捕获订单维护 `ChangeVersion`；UI 控制器在版本变化后延迟 0.2 秒强制刷新经营数据并发布本地 API 快照。伴随窗口在 `经营中` 和稀客专注模式下以 750ms 轮询快照，其他页面保持 2 秒。
 - 运行时稀客 ID 会先归一化为本地 `customer_rare.json` 身份；优先读取游戏 `DataBaseCharacter.GetAllMappedGuests()` 固定映射和 `GetSpecialGuestsAndMappedGuests()` 完整运行时稀客表，运行时表按游戏语言名称匹配本地唯一同名稀客，手工事件变体只作为兜底。本地缺失但运行时具备有效喜好 Tag 的稀客会合成为临时 `RuntimeRareCustomer`，供经营中订单推荐和伴随窗口稀客页使用；剧情 Intro/Parallel/Current、问号占位、隐藏图鉴、NeverCome、无喜好数据的角色不合成。带具体桌号的捕获订单只允许匹配同一桌活跃稀客，未入座 `desk=-1` 稀客不能保活旧订单。
 - 诊断开启且经营数据扫描触发时，运行时固定数据会按主题写到诊断目录：`runtime-static-data.log` 映射稀客与 `aliasSource`、`runtime-tags.log` 标签和 TagRule、`runtime-database-diff.log` 核心食材/酒水/料理表对照与读取方式、`runtime-guests.log` 普客/稀客/事件变体、`runtime-izakayas.log` 场景和客人池。游戏数据库未初始化时每 5 秒重试，日志头部 `Complete: True` 表示读取成功。

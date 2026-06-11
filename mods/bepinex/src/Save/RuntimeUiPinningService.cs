@@ -20,6 +20,7 @@ internal static class RuntimeUiPinningService
     private static Harmony? _harmony;
     private static ManualLogSource? _log;
     private static bool _enabled;
+    private static bool _highlightEnabled;
     private static int _recipeId = -1;
     private static int _beverageId = -1;
     private static int[] _ingredientIds = EmptyIngredientIds;
@@ -36,7 +37,7 @@ internal static class RuntimeUiPinningService
         {
             lock (SyncRoot)
             {
-                return $"{_status}; target=recipe:{_recipeId}/{_recipeName}, beverage:{_beverageId}/{_beverageName}, cooker:{_cookerTypeId}/{_cookerName}, ingredients:{string.Join(",", _ingredientIds)}; highlight={RuntimeCookerHighlightService.Status}; last={_lastAction}";
+                return $"{_status}; pinning={(_enabled ? "on" : "off")}; cookerHighlight={(_highlightEnabled ? "on" : "off")}; target=recipe:{_recipeId}/{_recipeName}, beverage:{_beverageId}/{_beverageName}, cooker:{_cookerTypeId}/{_cookerName}, ingredients:{string.Join(",", _ingredientIds)}; highlight={RuntimeCookerHighlightService.Status}; last={_lastAction}";
             }
         }
     }
@@ -84,6 +85,7 @@ internal static class RuntimeUiPinningService
 
     public static string UpdateTarget(
         bool enabled,
+        bool highlightEnabled,
         int recipeId,
         int beverageId,
         IEnumerable<int> ingredientIds,
@@ -94,21 +96,23 @@ internal static class RuntimeUiPinningService
     {
         lock (SyncRoot)
         {
+            var hasTarget = enabled || highlightEnabled;
             _enabled = enabled;
-            _recipeId = enabled ? recipeId : -1;
-            _beverageId = enabled ? beverageId : -1;
-            _cookerTypeId = enabled ? cookerTypeId : -1;
-            _ingredientIds = enabled
+            _highlightEnabled = highlightEnabled;
+            _recipeId = hasTarget ? recipeId : -1;
+            _beverageId = hasTarget ? beverageId : -1;
+            _cookerTypeId = hasTarget ? cookerTypeId : -1;
+            _ingredientIds = hasTarget
                 ? ingredientIds.Where(id => id >= 0).Distinct().Take(12).ToArray()
                 : EmptyIngredientIds;
-            _recipeName = enabled ? recipeName.Trim() : "";
-            _beverageName = enabled ? beverageName.Trim() : "";
-            _cookerName = enabled ? cookerName.Trim() : "";
-            _lastAction = enabled ? "target updated" : "disabled";
-            _log?.LogInfo(enabled
-                ? $"Runtime UI pinning target updated: recipe={_recipeId}/{_recipeName}, beverage={_beverageId}/{_beverageName}, cooker={_cookerTypeId}/{_cookerName}, ingredients={string.Join(",", _ingredientIds)}."
-                : "Runtime UI pinning target disabled.");
-            RuntimeCookerHighlightService.UpdateTarget(enabled, _cookerTypeId, _cookerName);
+            _recipeName = hasTarget ? recipeName.Trim() : "";
+            _beverageName = hasTarget ? beverageName.Trim() : "";
+            _cookerName = hasTarget ? cookerName.Trim() : "";
+            _lastAction = hasTarget ? "target updated" : "disabled";
+            _log?.LogInfo(hasTarget
+                ? $"Runtime UI target updated: pinning={enabled}, cookerHighlight={highlightEnabled}, recipe={_recipeId}/{_recipeName}, beverage={_beverageId}/{_beverageName}, cooker={_cookerTypeId}/{_cookerName}, ingredients={string.Join(",", _ingredientIds)}."
+                : "Runtime UI target disabled.");
+            RuntimeCookerHighlightService.UpdateTarget(highlightEnabled && hasTarget, _cookerTypeId, _cookerName);
             return Status;
         }
     }

@@ -393,8 +393,10 @@ internal sealed class LocalApiServer : IDisposable
         try
         {
             var enabled = ReadBoolQuery(query, "enabled") ?? false;
+            var highlightEnabled = ReadBoolQuery(query, "highlightEnabled") ?? false;
             var status = RuntimeUiPinningService.UpdateTarget(
                 enabled,
+                highlightEnabled,
                 ReadIntQuery(query, "recipeId", -1),
                 ReadIntQuery(query, "beverageId", -1),
                 ReadIntListQuery(query, "ingredientIds"),

@@ -71,6 +71,7 @@ const AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-favori
 const AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-stop-on-error`;
 const FILTER_MISSING_COOKERS_STORAGE_KEY = `${STORAGE_PREFIX}-filter-missing-cookers`;
 const GAME_UI_PINNING_STORAGE_KEY = `${STORAGE_PREFIX}-game-ui-pinning`;
+const COOKER_HIGHLIGHT_STORAGE_KEY = `${STORAGE_PREFIX}-cooker-highlight`;
 const LEGACY_ENDPOINT_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-endpoint`;
 const LEGACY_TOKEN_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-token`;
 const LEGACY_TAB_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-tab`;
@@ -355,6 +356,7 @@ interface CompanionPreferences {
   autoPrepStopOnError: boolean;
   filterMissingCookers: boolean;
   gameUiPinningEnabled: boolean;
+  cookerHighlightEnabled: boolean;
 }
 
 interface AutoFirstOrderState {
@@ -440,19 +442,29 @@ export function ModWorkbench() {
     [night?.orders, runtime, rareCustomersById, favorites, companionPreferences],
   );
   const gameUiPinningTarget = useMemo(
-    () => companionPreferences.gameUiPinningEnabled
+    () => companionPreferences.gameUiPinningEnabled || companionPreferences.cookerHighlightEnabled
       ? buildGameUiPinningTarget(orderRecommendations.recommendations)
       : null,
-    [companionPreferences.gameUiPinningEnabled, orderRecommendations.recommendations],
+    [
+      companionPreferences.cookerHighlightEnabled,
+      companionPreferences.gameUiPinningEnabled,
+      orderRecommendations.recommendations,
+    ],
   );
   const snapshotRefreshIntervalMs = tab === 'service' || serviceFocusMode ? 750 : 2000;
 
   useEffect(() => {
-    const signature = `${companionPreferences.gameUiPinningEnabled ? '1' : '0'}|${gameUiPinningTarget?.signature ?? 'disabled'}`;
+    const signature = `${companionPreferences.gameUiPinningEnabled ? '1' : '0'}|${companionPreferences.cookerHighlightEnabled ? '1' : '0'}|${gameUiPinningTarget?.signature ?? 'disabled'}`;
     if (lastUiPinningSignatureRef.current === signature) return;
 
     let cancelled = false;
-    publishGameUiPinningTarget(normalizedEndpoint, apiToken, companionPreferences.gameUiPinningEnabled, gameUiPinningTarget)
+    publishGameUiPinningTarget(
+      normalizedEndpoint,
+      apiToken,
+      companionPreferences.gameUiPinningEnabled,
+      companionPreferences.cookerHighlightEnabled,
+      gameUiPinningTarget,
+    )
       .then(() => {
         if (!cancelled) lastUiPinningSignatureRef.current = signature;
       })
@@ -466,6 +478,7 @@ export function ModWorkbench() {
     };
   }, [
     apiToken,
+    companionPreferences.cookerHighlightEnabled,
     companionPreferences.gameUiPinningEnabled,
     gameUiPinningTarget,
     normalizedEndpoint,
@@ -1016,13 +1029,9 @@ export function ModWorkbench() {
             preferences={companionPreferences}
             themeMode={themeMode}
             serviceFocusCompact={serviceFocusCompact}
-            serviceFocusRecipeLimit={serviceFocusRecipeLimit}
-            serviceFocusBeverageLimit={serviceFocusBeverageLimit}
             onPreferenceChange={updateCompanionPreferences}
             onThemeModeChange={setThemeMode}
             onServiceFocusCompactChange={setServiceFocusCompact}
-            onServiceFocusRecipeLimitChange={setServiceFocusRecipeLimit}
-            onServiceFocusBeverageLimitChange={setServiceFocusBeverageLimit}
           />
         </TabsContent>
       </Tabs>
@@ -2032,24 +2041,16 @@ function ModSettingsPanel({
   preferences,
   themeMode,
   serviceFocusCompact,
-  serviceFocusRecipeLimit,
-  serviceFocusBeverageLimit,
   onPreferenceChange,
   onThemeModeChange,
   onServiceFocusCompactChange,
-  onServiceFocusRecipeLimitChange,
-  onServiceFocusBeverageLimitChange,
 }: {
   preferences: CompanionPreferences;
   themeMode: ThemeMode;
   serviceFocusCompact: boolean;
-  serviceFocusRecipeLimit: number;
-  serviceFocusBeverageLimit: number;
   onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
   onThemeModeChange: (mode: ThemeMode) => void;
   onServiceFocusCompactChange: (value: boolean) => void;
-  onServiceFocusRecipeLimitChange: (value: number) => void;
-  onServiceFocusBeverageLimitChange: (value: number) => void;
 }) {
   return (
     <div className={DENSE_TWO_COLUMN_GRID}>
@@ -2110,20 +2111,8 @@ function ModSettingsPanel({
             checked={serviceFocusCompact}
             onCheckedChange={onServiceFocusCompactChange}
           />
-          <div className="grid grid-cols-2 gap-3">
-            <FocusLimitInput
-              label="料理显示数"
-              value={serviceFocusRecipeLimit}
-              onChange={onServiceFocusRecipeLimitChange}
-            />
-            <FocusLimitInput
-              label="酒水显示数"
-              value={serviceFocusBeverageLimit}
-              onChange={onServiceFocusBeverageLimitChange}
-            />
-          </div>
           <div className="text-xs text-muted-foreground">
-            显示数量包含收藏项；收藏项仍会优先出现在推荐列表前面。
+            料理和酒水显示数量在进入专注模式后直接调整，设置会自动记住。
           </div>
         </div>
       </ListPanel>
@@ -2145,6 +2134,14 @@ function ModSettingsPanel({
           />
           <div className="text-xs text-muted-foreground">
             打开料理或酒水选择界面时，尝试把当前第一笔订单的推荐材料、料理和酒水排到前面；失败时只记录诊断，不修改库存。
+          </div>
+          <SwitchControl
+            label="目标厨具高亮（实验性）"
+            checked={preferences.cookerHighlightEnabled}
+            onCheckedChange={(cookerHighlightEnabled) => onPreferenceChange({ cookerHighlightEnabled })}
+          />
+          <div className="text-xs text-muted-foreground">
+            经营中有推荐目标厨具时，尝试让对应已摆放厨具显示黄色脉冲高亮；只改变可见提示，不自动操作厨具。
           </div>
         </div>
       </ListPanel>
@@ -2944,10 +2941,12 @@ async function publishGameUiPinningTarget(
   endpoint: string,
   apiToken: string,
   enabled: boolean,
+  highlightEnabled: boolean,
   target: GameUiPinningTarget | null,
 ): Promise<void> {
   const params = new URLSearchParams({
     enabled: String(enabled),
+    highlightEnabled: String(highlightEnabled),
     recipeId: target ? String(target.recipeId) : '-1',
     recipeName: target?.recipeName ?? '',
     ingredientIds: target ? target.ingredientIds.join(',') : '',
@@ -3969,6 +3968,7 @@ function readStoredCompanionPreferences(): CompanionPreferences {
     autoPrepStopOnError: readStoredBoolean(AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY, false),
     filterMissingCookers: readStoredBoolean(FILTER_MISSING_COOKERS_STORAGE_KEY, true),
     gameUiPinningEnabled: readStoredBoolean(GAME_UI_PINNING_STORAGE_KEY, false),
+    cookerHighlightEnabled: readStoredBoolean(COOKER_HIGHLIGHT_STORAGE_KEY, false),
   });
 }
 
@@ -3993,6 +3993,7 @@ function normalizeCompanionPreferences(value: CompanionPreferences): CompanionPr
     autoPrepStopOnError: Boolean(value.autoPrepStopOnError),
     filterMissingCookers: value.filterMissingCookers !== false,
     gameUiPinningEnabled: Boolean(value.gameUiPinningEnabled),
+    cookerHighlightEnabled: Boolean(value.cookerHighlightEnabled),
   };
 }
 
@@ -4025,6 +4026,7 @@ function persistCompanionPreferences(preferences: CompanionPreferences) {
   localStorage.setItem(AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY, normalized.autoPrepStopOnError ? '1' : '0');
   localStorage.setItem(FILTER_MISSING_COOKERS_STORAGE_KEY, normalized.filterMissingCookers ? '1' : '0');
   localStorage.setItem(GAME_UI_PINNING_STORAGE_KEY, normalized.gameUiPinningEnabled ? '1' : '0');
+  localStorage.setItem(COOKER_HIGHLIGHT_STORAGE_KEY, normalized.cookerHighlightEnabled ? '1' : '0');
 }
 
 function applyCompanionVisualPreferences(preferences: CompanionPreferences) {
