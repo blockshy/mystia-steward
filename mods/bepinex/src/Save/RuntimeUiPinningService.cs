@@ -11,6 +11,7 @@ internal static class RuntimeUiPinningService
     private const string CookingSelectionPanelTypeName = "NightScene.UI.CookingUtility.WorkSceneCookingSelectionPannel";
     private const string StoragePanelTypeName = "NightScene.UI.CookingUtility.WorkSceneStoragePannel";
     private const string RunTimePlayerDataTypeName = "GameData.RunTime.Common.RunTimePlayerData";
+    private const string DataBaseCoreTypeName = "GameData.Core.Collections.DataBaseCore";
 
     private static readonly object SyncRoot = new();
     private static readonly HashSet<string> PatchedMethods = new(StringComparer.Ordinal);
@@ -22,8 +23,10 @@ internal static class RuntimeUiPinningService
     private static int _recipeId = -1;
     private static int _beverageId = -1;
     private static int[] _ingredientIds = EmptyIngredientIds;
+    private static int _cookerTypeId = -1;
     private static string _recipeName = "";
     private static string _beverageName = "";
+    private static string _cookerName = "";
     private static string _status = "not attached";
     private static string _lastAction = "";
 
@@ -33,7 +36,7 @@ internal static class RuntimeUiPinningService
         {
             lock (SyncRoot)
             {
-                return $"{_status}; target=recipe:{_recipeId}/{_recipeName}, beverage:{_beverageId}/{_beverageName}, ingredients:{string.Join(",", _ingredientIds)}; last={_lastAction}";
+                return $"{_status}; target=recipe:{_recipeId}/{_recipeName}, beverage:{_beverageId}/{_beverageName}, cooker:{_cookerTypeId}/{_cookerName}, ingredients:{string.Join(",", _ingredientIds)}; last={_lastAction}";
             }
         }
     }
@@ -79,21 +82,31 @@ internal static class RuntimeUiPinningService
         }
     }
 
-    public static string UpdateTarget(bool enabled, int recipeId, int beverageId, IEnumerable<int> ingredientIds, string recipeName, string beverageName)
+    public static string UpdateTarget(
+        bool enabled,
+        int recipeId,
+        int beverageId,
+        IEnumerable<int> ingredientIds,
+        string recipeName,
+        string beverageName,
+        int cookerTypeId,
+        string cookerName)
     {
         lock (SyncRoot)
         {
             _enabled = enabled;
             _recipeId = enabled ? recipeId : -1;
             _beverageId = enabled ? beverageId : -1;
+            _cookerTypeId = enabled ? cookerTypeId : -1;
             _ingredientIds = enabled
                 ? ingredientIds.Where(id => id >= 0).Distinct().Take(12).ToArray()
                 : EmptyIngredientIds;
             _recipeName = enabled ? recipeName.Trim() : "";
             _beverageName = enabled ? beverageName.Trim() : "";
+            _cookerName = enabled ? cookerName.Trim() : "";
             _lastAction = enabled ? "target updated" : "disabled";
             _log?.LogInfo(enabled
-                ? $"Runtime UI pinning target updated: recipe={_recipeId}/{_recipeName}, beverage={_beverageId}/{_beverageName}, ingredients={string.Join(",", _ingredientIds)}."
+                ? $"Runtime UI pinning target updated: recipe={_recipeId}/{_recipeName}, beverage={_beverageId}/{_beverageName}, cooker={_cookerTypeId}/{_cookerName}, ingredients={string.Join(",", _ingredientIds)}."
                 : "Runtime UI pinning target disabled.");
             return Status;
         }
@@ -135,14 +148,14 @@ internal static class RuntimeUiPinningService
 
     private static void OnRecipeFieldUpdated(object __instance)
     {
-        if (!ReadTarget(out var recipeId, out _, out _, out _, out _)) return;
+        if (!ReadTarget(out var recipeId, out _, out _, out _, out _, out _, out _)) return;
         if (recipeId < 0) return;
         TryMoveFirst(__instance, "RecipeInstances", item => ReadObjectId(item) == recipeId, "recipe");
     }
 
     private static void OnIngredientFieldUpdated(object __instance)
     {
-        if (!ReadTarget(out _, out _, out var ingredientIds, out _, out _)) return;
+        if (!ReadTarget(out _, out _, out var ingredientIds, out _, out _, out _, out _)) return;
         if (ingredientIds.Length == 0) return;
 
         foreach (var fieldName in new[]
@@ -159,14 +172,14 @@ internal static class RuntimeUiPinningService
 
     private static void OnBeverageFieldUpdated(object __instance)
     {
-        if (!ReadTarget(out _, out var beverageId, out _, out _, out _)) return;
+        if (!ReadTarget(out _, out var beverageId, out _, out _, out _, out _, out _)) return;
         if (beverageId < 0) return;
         TryMoveFirst(__instance, "Beverages", item => ReadObjectId(ReadPairKey(item) ?? item) == beverageId, "beverage");
     }
 
     private static void OnCheckPinned(int pinnedType, int pinnedID, ref bool __result)
     {
-        if (!ReadTarget(out var recipeId, out var beverageId, out var ingredientIds, out _, out _)) return;
+        if (!ReadTarget(out var recipeId, out var beverageId, out var ingredientIds, out _, out _, out var cookerTypeId, out var cookerName)) return;
         if (pinnedType == 1 && recipeId >= 0 && pinnedID == recipeId)
         {
             __result = true;
@@ -186,6 +199,13 @@ internal static class RuntimeUiPinningService
         {
             __result = true;
             NoteAction($"checkPinned ingredient hit: {pinnedType}/{pinnedID}");
+            return;
+        }
+
+        if (pinnedType == 3 && cookerTypeId > 0 && IsTargetCooker(pinnedID, cookerTypeId, cookerName))
+        {
+            __result = true;
+            NoteAction($"checkPinned cooker hit: {pinnedID}/{cookerTypeId}");
         }
     }
 
@@ -194,7 +214,9 @@ internal static class RuntimeUiPinningService
         out int beverageId,
         out int[] ingredientIds,
         out string recipeName,
-        out string beverageName)
+        out string beverageName,
+        out int cookerTypeId,
+        out string cookerName)
     {
         lock (SyncRoot)
         {
@@ -203,8 +225,76 @@ internal static class RuntimeUiPinningService
             ingredientIds = _ingredientIds.ToArray();
             recipeName = _recipeName;
             beverageName = _beverageName;
+            cookerTypeId = _cookerTypeId;
+            cookerName = _cookerName;
             return _enabled;
         }
+    }
+
+    private static bool IsTargetCooker(int cookerId, int targetCookerTypeId, string targetCookerName)
+    {
+        var cooker = ResolveCookerById(cookerId);
+        if (cooker == null) return false;
+
+        var typeIds = ReadCookerTypeIds(cooker);
+        if (typeIds.Contains(targetCookerTypeId)) return true;
+
+        if (string.IsNullOrWhiteSpace(targetCookerName)) return false;
+        var normalizedTarget = NormalizeCookerName(targetCookerName);
+        var name = NormalizeCookerName(ReadName(cooker));
+        return name.Length > 0 && string.Equals(name, normalizedTarget, StringComparison.Ordinal);
+    }
+
+    private static object? ResolveCookerById(int cookerId)
+    {
+        try
+        {
+            var cooker = InvokeStatic(DataBaseCoreTypeName, "RefCooker", new object?[] { cookerId });
+            return cooker == Missing.Value ? null : cooker;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static List<int> ReadCookerTypeIds(object cooker)
+    {
+        try
+        {
+            var directType = ToInt(TryInvokeInstanceValue(cooker, "get_Type")
+                ?? ReadMember(cooker, "Type")
+                ?? ReadMember(cooker, "type"));
+            if (directType > 0) return new List<int> { directType };
+        }
+        catch
+        {
+            // Fall back to all available cooker types below.
+        }
+
+        var cookerTypes = TryInvokeInstanceValue(cooker, "get_AllAvailableCookerType");
+        return ReadIntEnumerable(cookerTypes).Where(id => id > 0).Distinct().ToList();
+    }
+
+    private static string ReadName(object value)
+    {
+        return TryInvokeInstanceValue(value, "get_Name")?.ToString()
+            ?? TryInvokeInstanceValue(value, "get_name")?.ToString()
+            ?? ReadMember(value, "Name")?.ToString()
+            ?? ReadMember(value, "name")?.ToString()
+            ?? "";
+    }
+
+    private static string NormalizeCookerName(string value)
+    {
+        return value.Trim() switch
+        {
+            "烤架" => "烧烤架",
+            "烧烤台" => "烧烤架",
+            "锅" => "煮锅",
+            "炸锅" => "油锅",
+            var normalized => normalized,
+        };
     }
 
     private static void TrySortPinnedIngredients(object target, string fieldName, int[] ingredientIds)
@@ -300,6 +390,16 @@ internal static class RuntimeUiPinningService
             if (item == null) continue;
             if (!seen.Add(ReadObjectPointer(item))) continue;
             yield return item;
+        }
+    }
+
+    private static IEnumerable<int> ReadIntEnumerable(object? value)
+    {
+        if (value == null || value is string) yield break;
+
+        foreach (var item in EnumerateManaged(value).Concat(EnumerateByIndexer(value)))
+        {
+            yield return ToInt(item);
         }
     }
 
@@ -433,6 +533,19 @@ internal static class RuntimeUiPinningService
                 && CanUseParameters(candidate.GetParameters(), args));
         if (method == null) return Missing.Value;
         var result = method.Invoke(target, args);
+        return method.ReturnType == typeof(void) ? Missing.Value : result;
+    }
+
+    private static object? InvokeStatic(string typeName, string methodName, object?[] args)
+    {
+        var type = FindType(typeName);
+        if (type == null) return Missing.Value;
+
+        var method = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+            .FirstOrDefault(candidate => string.Equals(candidate.Name, methodName, StringComparison.Ordinal)
+                && CanUseParameters(candidate.GetParameters(), args));
+        if (method == null) return Missing.Value;
+        var result = method.Invoke(null, args);
         return method.ReturnType == typeof(void) ? Missing.Value : result;
     }
 

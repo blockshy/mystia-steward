@@ -8,7 +8,10 @@ namespace MystiaStewardCompanion.Save;
 internal static class RuntimeCookerSnapshotService
 {
     private const string CookSystemManagerTypeName = "NightScene.CookingUtility.CookSystemManager";
+    private const string GuestsManagerTypeName = "NightScene.GuestManagementUtility.GuestsManager";
+    private const string IzakayaConfigureTypeName = "GameData.RunTime.NightSceneUtility.IzakayaConfigure";
     private const string RunTimeStorageTypeName = "GameData.RunTime.Common.RunTimeStorage";
+    private const string DataBaseCoreTypeName = "GameData.Core.Collections.DataBaseCore";
 
     private static readonly object SyncRoot = new();
 
@@ -48,6 +51,19 @@ internal static class RuntimeCookerSnapshotService
         }
     }
 
+    public static bool HasNightBusinessContext()
+    {
+        try
+        {
+            if (GetSingletonInstance(GuestsManagerTypeName) == null) return false;
+            return ReadConfiguredCookerIds(out _).Any(id => id >= 0);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static List<PlacedCookerInfo> ReadPlacedCookers()
     {
         var managerResult = ReadCookSystemCookers(out var managerStatus);
@@ -57,10 +73,17 @@ internal static class RuntimeCookerSnapshotService
             return managerResult;
         }
 
+        var configureResult = ReadIzakayaConfiguredCookers(out var configureStatus);
+        if (configureResult.Count > 0)
+        {
+            SetStatus($"{configureStatus}; fallback={managerStatus}");
+            return configureResult;
+        }
+
         var storageResult = ReadStorageCookers(out var storageStatus);
         SetStatus(storageResult.Count > 0
-            ? $"{storageStatus}; fallback={managerStatus}"
-            : $"{managerStatus}; {storageStatus}");
+            ? $"{storageStatus}; fallback={managerStatus}; {configureStatus}"
+            : $"{managerStatus}; {configureStatus}; {storageStatus}");
         return storageResult;
     }
 
@@ -139,6 +162,61 @@ internal static class RuntimeCookerSnapshotService
         return result;
     }
 
+    private static List<PlacedCookerInfo> ReadIzakayaConfiguredCookers(out string status)
+    {
+        var result = new List<PlacedCookerInfo>();
+        status = "configure not read";
+
+        IReadOnlyList<int> cookerIds;
+        try
+        {
+            cookerIds = ReadConfiguredCookerIds(out var sourceType).ToList();
+            if (cookerIds.Count == 0)
+            {
+                status = $"configure empty; sourceType={sourceType}";
+                return result;
+            }
+        }
+        catch (Exception ex)
+        {
+            status = $"configure error: {ex.InnerException?.Message ?? ex.Message}";
+            return result;
+        }
+
+        for (var index = 0; index < cookerIds.Count; index++)
+        {
+            var cookerId = cookerIds[index];
+            if (cookerId < 0) continue;
+
+            var cooker = ResolveCookerById(cookerId);
+            if (cooker == null) continue;
+
+            var typeIds = ReadCookerTypeIds(cooker).Where(id => id > 0).Distinct().OrderBy(id => id).ToList();
+            if (typeIds.Count == 0) continue;
+
+            var typeNames = typeIds.Select(ResolveCookerTypeName).Where(name => name.Length > 0).Distinct().ToList();
+            result.Add(new PlacedCookerInfo
+            {
+                ControllerIndex = index,
+                TypeIds = typeIds,
+                TypeNames = typeNames,
+                Name = typeNames.Count > 0 ? string.Join("/", typeNames) : cooker.GetType().Name,
+                IsOpen = true,
+                Source = "IzakayaConfigure",
+            });
+        }
+
+        var typeSummary = result
+            .SelectMany(cooker => cooker.TypeNames)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct()
+            .ToArray();
+        status = result.Count == 0
+            ? $"configure unresolved; slots={cookerIds.Count}; ids={string.Join(",", cookerIds.Take(12))}"
+            : $"configure ok; slots={cookerIds.Count}; cookers={result.Count}; ids={string.Join(",", cookerIds.Where(id => id >= 0).Take(12))}; types={string.Join("/", typeSummary)}";
+        return result;
+    }
+
     private static List<PlacedCookerInfo> ReadStorageCookers(out string status)
     {
         var result = new List<PlacedCookerInfo>();
@@ -158,12 +236,8 @@ internal static class RuntimeCookerSnapshotService
         var index = 0;
         foreach (var pair in ReadRawObjectEnumerable(cookerPairs))
         {
-            var cooker = ReadMember(pair, "Key")
-                ?? ReadMember(pair, "key")
-                ?? ReadMember(pair, "Item1");
-            var count = ToInt(ReadMember(pair, "Value")
-                ?? ReadMember(pair, "value")
-                ?? ReadMember(pair, "Item2"));
+            var cooker = ReadPairKey(pair);
+            var count = ReadPairValueInt(pair);
             if (cooker == null || count <= 0) continue;
 
             var typeIds = ReadCookerTypeIds(cooker).Where(id => id > 0).Distinct().OrderBy(id => id).ToList();
@@ -192,6 +266,26 @@ internal static class RuntimeCookerSnapshotService
         return result;
     }
 
+    private static List<int> ReadConfiguredCookerIds(out string sourceType)
+    {
+        sourceType = "null";
+        var result = new List<int>();
+        var configure = GetSingletonInstance(IzakayaConfigureTypeName);
+        if (configure == null) return result;
+
+        var cookerConfigure = TryInvokeInstanceValue(configure, "get_CookerConfigure")
+            ?? ReadMember(configure, "CookerConfigure");
+        sourceType = cookerConfigure?.GetType().FullName ?? "null";
+        if (cookerConfigure == null) return result;
+
+        foreach (var id in ReadIntEnumerable(cookerConfigure))
+        {
+            result.Add(id);
+        }
+
+        return result;
+    }
+
     private static IEnumerable<object> ReadCookerControllers(object? allCookers)
     {
         var dictionaryValues = ReadDictionaryValues(allCookers).Where(value => value != null).Cast<object>().ToList();
@@ -208,7 +302,9 @@ internal static class RuntimeCookerSnapshotService
     {
         try
         {
-            var directType = ToInt(ReadMember(cooker, "type"));
+            var directType = ToInt(TryInvokeInstanceValue(cooker, "get_Type")
+                ?? ReadMember(cooker, "Type")
+                ?? ReadMember(cooker, "type"));
             if (directType > 0) return new List<int> { directType };
         }
         catch
@@ -218,6 +314,18 @@ internal static class RuntimeCookerSnapshotService
 
         var cookerTypes = TryInvokeInstanceValue(cooker, "get_AllAvailableCookerType");
         return ReadIntEnumerable(cookerTypes).Where(id => id > 0).ToList();
+    }
+
+    private static object? ResolveCookerById(int cookerId)
+    {
+        try
+        {
+            return InvokeStatic(DataBaseCoreTypeName, "RefCooker", new object?[] { cookerId });
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static string ResolveCookerTypeName(int typeId)
@@ -271,6 +379,22 @@ internal static class RuntimeCookerSnapshotService
             .FirstOrDefault(candidate => string.Equals(candidate.Name, methodName, StringComparison.Ordinal)
                 && CanUseParameters(candidate.GetParameters(), args));
         return method == null ? null : method.Invoke(null, args);
+    }
+
+    private static object? ReadPairKey(object item)
+    {
+        return TryInvokeInstanceValue(item, "get_Key")
+            ?? ReadMember(item, "Key")
+            ?? ReadMember(item, "key")
+            ?? ReadMember(item, "Item1");
+    }
+
+    private static int ReadPairValueInt(object item)
+    {
+        return ToInt(TryInvokeInstanceValue(item, "get_Value")
+            ?? ReadMember(item, "Value")
+            ?? ReadMember(item, "value")
+            ?? ReadMember(item, "Item2"));
     }
 
     private static bool CanUseParameters(ParameterInfo[] parameters, object?[] args)

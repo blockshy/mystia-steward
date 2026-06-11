@@ -399,7 +399,9 @@ internal sealed class LocalApiServer : IDisposable
                 ReadIntQuery(query, "beverageId", -1),
                 ReadIntListQuery(query, "ingredientIds"),
                 ReadStringQuery(query, "recipeName"),
-                ReadStringQuery(query, "beverageName"));
+                ReadStringQuery(query, "beverageName"),
+                ReadIntQuery(query, "cookerTypeId", -1),
+                ReadStringQuery(query, "cookerName"));
             return "{\"ok\":true,\"status\":\"" + EscapeJson(status) + "\",\"error\":null}";
         }
         catch (Exception ex)

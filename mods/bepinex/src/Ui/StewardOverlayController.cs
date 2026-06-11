@@ -1074,7 +1074,8 @@ internal sealed class StewardOverlayController
 
             if (RuntimeReflectionRecommendationStateProvider.CanReadRuntimeState(out var runtimeReason))
             {
-                var includePlacedCookers = IsNightBusinessScene(_activeSceneName);
+                var includePlacedCookers = IsNightBusinessScene(_activeSceneName)
+                    || RuntimeCookerSnapshotService.HasNightBusinessContext();
                 IRecommendationStateProvider runtimeProvider = new RuntimeReflectionRecommendationStateProvider(_repository, includePlacedCookers);
                 var previousSource = _runtimeSource;
                 var nextRuntimeState = runtimeProvider.LoadState();

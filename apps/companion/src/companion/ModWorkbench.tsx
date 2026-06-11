@@ -336,6 +336,8 @@ interface GameUiPinningTarget {
   ingredientIds: number[];
   beverageId: number;
   beverageName: string;
+  cookerTypeId: number;
+  cookerName: string;
 }
 
 interface CompanionPreferences {
@@ -437,17 +439,20 @@ export function ModWorkbench() {
     ),
     [night?.orders, runtime, rareCustomersById, favorites, companionPreferences],
   );
+  const gameUiPinningTarget = useMemo(
+    () => companionPreferences.gameUiPinningEnabled
+      ? buildGameUiPinningTarget(orderRecommendations.recommendations)
+      : null,
+    [companionPreferences.gameUiPinningEnabled, orderRecommendations.recommendations],
+  );
   const snapshotRefreshIntervalMs = tab === 'service' || serviceFocusMode ? 750 : 2000;
 
   useEffect(() => {
-    const target = companionPreferences.gameUiPinningEnabled
-      ? buildGameUiPinningTarget(orderRecommendations.recommendations)
-      : null;
-    const signature = `${companionPreferences.gameUiPinningEnabled ? '1' : '0'}|${target?.signature ?? 'disabled'}`;
+    const signature = `${companionPreferences.gameUiPinningEnabled ? '1' : '0'}|${gameUiPinningTarget?.signature ?? 'disabled'}`;
     if (lastUiPinningSignatureRef.current === signature) return;
 
     let cancelled = false;
-    publishGameUiPinningTarget(normalizedEndpoint, apiToken, companionPreferences.gameUiPinningEnabled, target)
+    publishGameUiPinningTarget(normalizedEndpoint, apiToken, companionPreferences.gameUiPinningEnabled, gameUiPinningTarget)
       .then(() => {
         if (!cancelled) lastUiPinningSignatureRef.current = signature;
       })
@@ -462,8 +467,8 @@ export function ModWorkbench() {
   }, [
     apiToken,
     companionPreferences.gameUiPinningEnabled,
+    gameUiPinningTarget,
     normalizedEndpoint,
-    orderRecommendations.recommendations,
   ]);
 
   const refresh = useCallback(async () => {
@@ -978,6 +983,7 @@ export function ModWorkbench() {
             recommendationIssues={orderRecommendations.recommendationIssues}
             runtimeSets={runtimeSets}
             uiPinningStatus={snapshot?.runtimeUiPinningStatus ?? ''}
+            uiPinningTarget={gameUiPinningTarget}
             favorites={favorites}
             favoriteBusyKey={favoriteBusyKey}
             favoriteError={favoriteError}
@@ -1427,6 +1433,7 @@ function ModServicePanel({
   recommendationIssues,
   runtimeSets,
   uiPinningStatus,
+  uiPinningTarget,
   favorites,
   favoriteBusyKey,
   favoriteError,
@@ -1445,6 +1452,7 @@ function ModServicePanel({
   recommendationIssues: RecommendationIssue[];
   runtimeSets: RuntimeSets | null;
   uiPinningStatus: string;
+  uiPinningTarget: GameUiPinningTarget | null;
   favorites: FavoriteData;
   favoriteBusyKey: string;
   favoriteError: string;
@@ -1487,6 +1495,7 @@ function ModServicePanel({
               ? [...runtimeSets.placedCookerNames].join('、') || '已读取'
               : runtime?.placedCookerStatus ? `未读取 · ${runtime.placedCookerStatus}` : '未读取'}
           />
+          <InfoLine label="目标厨具" value={uiPinningTarget?.cookerName || '暂无'} />
           <InfoLine label="界面置顶" value={uiPinningStatus || '暂无'} />
         </CardContent>
       </Card>
@@ -2936,6 +2945,8 @@ async function publishGameUiPinningTarget(
     ingredientIds: target ? target.ingredientIds.join(',') : '',
     beverageId: target ? String(target.beverageId) : '-1',
     beverageName: target?.beverageName ?? '',
+    cookerTypeId: target ? String(target.cookerTypeId) : '-1',
+    cookerName: target?.cookerName ?? '',
   });
   const abortController = new AbortController();
   const timeoutId = window.setTimeout(() => abortController.abort(), 2200);
@@ -3182,6 +3193,17 @@ function normalizeCookerName(value: string | null | undefined): string {
   const normalized = (value ?? '').trim();
   if (!normalized) return '';
   return COOKER_NAME_ALIASES.get(normalized) ?? normalized;
+}
+
+function resolveCookerTypeId(value: string | null | undefined): number {
+  const normalized = normalizeCookerName(value);
+  if (!normalized) return -1;
+
+  for (const [typeId, name] of COOKER_TYPE_NAME_BY_ID) {
+    if (normalizeCookerName(name) === normalized) return typeId;
+  }
+
+  return -1;
 }
 
 function toRuntimeRareCustomer(customer: RuntimeRareCustomer): ICustomerRare {
@@ -3452,6 +3474,8 @@ function buildGameUiPinningTarget(recommendations: OrderRecommendation[]): GameU
   ]);
   const recipeId = recipe?.recipe.id ?? -1;
   const beverageId = beverage?.beverage.id ?? -1;
+  const cookerName = recipe?.recipe.cooker ?? '';
+  const cookerTypeId = resolveCookerTypeId(cookerName);
 
   return {
     signature: [
@@ -3461,12 +3485,15 @@ function buildGameUiPinningTarget(recommendations: OrderRecommendation[]): GameU
       recipeId,
       ingredientIds.join(','),
       beverageId,
+      cookerTypeId,
     ].join('|'),
     recipeId,
     recipeName: recipe?.recipe.name ?? '',
     ingredientIds,
     beverageId,
     beverageName: beverage?.beverage.name ?? '',
+    cookerTypeId,
+    cookerName,
   };
 }
 
