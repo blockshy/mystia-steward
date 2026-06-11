@@ -231,15 +231,21 @@ internal static class RuntimeOrderPreparationService
 
         var trayItems = ReadTrayItems(tray).ToList();
         var serveItems = SelectTrayServeItems(runtimeOrder.Order, trayItems, expectedFoodId, request.BeverageId);
+        var missingTrayItem = false;
         if (serveItems.Food == null)
         {
             AddFailure(result, "匹配送餐盘料理", $"送餐盘中没有找到目标料理 {request.RecipeName}（料理 #{expectedFoodId}）。{FormatTraySummary(trayItems)}");
-            return Finish(result);
+            missingTrayItem = true;
         }
 
         if (serveItems.Beverage == null)
         {
             AddFailure(result, "匹配送餐盘酒水", $"送餐盘中没有找到目标酒水 {request.BeverageName}（酒水 #{request.BeverageId}）。{FormatTraySummary(trayItems)}");
+            missingTrayItem = true;
+        }
+
+        if (missingTrayItem)
+        {
             return Finish(result);
         }
 
@@ -541,6 +547,13 @@ internal static class RuntimeOrderPreparationService
             return CookingStartResult.Failed($"无法从配方创建料理对象：{recipeName} #{recipeId}。");
         }
 
+        var targetFoodId = ToInt(ReadMember(recipe, "foodID"));
+        var target = collectionTarget ?? CookingCollectionTarget.ForTrayFood(targetFoodId, recipeName);
+        if (autoCollect && target.Kind == CookingCollectionTargetKind.Tray && target.FoodId >= 0 && HasPendingTrayCooking(target.FoodId, out var pendingTrayMessage))
+        {
+            return CookingStartResult.Succeeded(pendingTrayMessage, "", true);
+        }
+
         var cookerSelection = TryGetCookerForOrder(baseFood, recipe);
         if (!cookerSelection.Ok || cookerSelection.CookController == null)
         {
@@ -584,7 +597,7 @@ internal static class RuntimeOrderPreparationService
 
         if (autoCollect)
         {
-            RegisterPendingCookingCollection(cookController, recipeName, collectionTarget ?? CookingCollectionTarget.Tray());
+            RegisterPendingCookingCollection(cookController, recipeName, target);
         }
 
         var extraText = extraIngredientIds.Count == 0 ? "不加料" : string.Join(",", extraIngredientIds);
@@ -687,9 +700,34 @@ internal static class RuntimeOrderPreparationService
         return false;
     }
 
+    private static bool HasPendingTrayCooking(int foodId, out string message)
+    {
+        lock (PendingCookingLock)
+        {
+            foreach (var pending in PendingCookingCollections)
+            {
+                if (pending.Target.Kind != CookingCollectionTargetKind.Tray) continue;
+                if (pending.Target.FoodId != foodId) continue;
+                var pendingAge = DateTime.UtcNow - pending.CreatedAtUtc;
+                if (pendingAge >= PendingCookingIdleTimeout) continue;
+
+                message = $"目标料理 {pending.Target.FoodName} 已在制作中，等待完成后会自动收入送餐盘。";
+                return true;
+            }
+        }
+
+        message = "";
+        return false;
+    }
+
     private static bool IsSameCookingCollectionTarget(CookingCollectionTarget left, CookingCollectionTarget right)
     {
         if (left.Kind != right.Kind) return false;
+        if (left.Kind == CookingCollectionTargetKind.Tray)
+        {
+            return left.FoodId >= 0 && left.FoodId == right.FoodId;
+        }
+
         if (left.Kind != CookingCollectionTargetKind.NormalOrder) return false;
         if (left.FoodId != right.FoodId) return false;
         if (left.Order != null && right.Order != null && IsSameObject(left.Order, right.Order)) return true;
@@ -2317,6 +2355,16 @@ internal static class RuntimeOrderPreparationService
             return new CookingCollectionTarget
             {
                 Kind = CookingCollectionTargetKind.Tray,
+            };
+        }
+
+        public static CookingCollectionTarget ForTrayFood(int foodId, string foodName)
+        {
+            return new CookingCollectionTarget
+            {
+                Kind = CookingCollectionTargetKind.Tray,
+                FoodId = foodId,
+                FoodName = foodName,
             };
         }
 

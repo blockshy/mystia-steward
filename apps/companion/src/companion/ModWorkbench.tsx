@@ -98,7 +98,6 @@ const AUTO_FIRST_ORDER_TICK_MS = 1500;
 const MAX_RARE_AUTO_ORDERS_PER_TICK = 2;
 const MAX_NORMAL_AUTO_ORDERS_PER_TICK = 3;
 const NORMAL_AUTO_PREPARED_RETRY_MS = 15000;
-const AUTO_STEP_RETRY_MS = 15000;
 const AUTO_STEP_ROLLBACK_MS = 30000;
 const AUTO_JOB_STALL_MS = 90000;
 const MAX_AUTO_STEP_RETRIES = 3;
@@ -886,7 +885,7 @@ export function ModWorkbench() {
           continue;
         }
 
-        let missingTrayPart: 'food' | 'beverage' | null = null;
+        let missingTrayParts = emptyMissingTrayParts();
         if (companionPreferences.autoPrepCompleteOrder && !completedOrderThisTick) {
           const completeResponse = await completeFirstRareOrder(
             normalizedEndpoint,
@@ -906,8 +905,8 @@ export function ModWorkbench() {
             continue;
           }
 
-          missingTrayPart = getMissingTrayPart(completeResponse);
-          if (!missingTrayPart) {
+          missingTrayParts = getMissingTrayParts(completeResponse);
+          if (!missingTrayParts.food && !missingTrayParts.beverage) {
             const nextState = updateAutomationAfterResponse(
               currentState,
               completeResponse,
@@ -920,7 +919,19 @@ export function ModWorkbench() {
             continue;
           }
 
-          if (missingTrayPart === 'food' && currentState.prepared) {
+          if (missingTrayParts.beverage && currentState.beverageHandled) {
+            currentState = {
+              ...currentState,
+              beverageHandled: false,
+              beverageHandledAtMs: 0,
+              step: 'ensure-beverage',
+              stepStartedAtMs: now,
+              retryCount: currentState.retryCount + 1,
+              lastError: '目标酒水未在送餐盘中，重新校验取酒。',
+            };
+          }
+
+          if (missingTrayParts.food && currentState.prepared) {
             const shouldRollback = isAutomationTimestampStale(currentState.preparedAtMs, now, AUTO_STEP_ROLLBACK_MS);
             if (shouldRollback && currentState.rollbackCount >= MAX_AUTO_ROLLBACKS) {
               const pausedState = pauseAutomationState(
@@ -937,37 +948,24 @@ export function ModWorkbench() {
               const waitingState = markAutomationWaiting(currentState, 'wait-food-tray', now, '等待目标料理进入送餐盘。');
               rareOrderStatesRef.current.set(orderKey, waitingState);
               messages.push(`${prefix}\n${formatOrderPreparationResponse(completeResponse)}\n${formatAutomationState(waitingState)}`);
-              continue;
+              if (!missingTrayParts.beverage) continue;
+              currentState = waitingState;
             }
 
-            currentState = {
-              ...currentState,
-              prepared: false,
-              preparedAtMs: 0,
-              step: 'ensure-cooking',
-              stepStartedAtMs: now,
-              rollbackCount: currentState.rollbackCount + 1,
-              retryCount: 0,
-              lastError: '目标料理未进入送餐盘，回退到重新开始料理。',
-            };
-          } else if (missingTrayPart === 'beverage' && currentState.beverageHandled) {
-            const shouldRetryBeverage = isAutomationTimestampStale(currentState.beverageHandledAtMs, now, AUTO_STEP_RETRY_MS);
-            if (!shouldRetryBeverage) {
-              const waitingState = markAutomationWaiting(currentState, 'ensure-beverage', now, '等待目标酒水进入送餐盘。');
-              rareOrderStatesRef.current.set(orderKey, waitingState);
-              messages.push(`${prefix}\n${formatOrderPreparationResponse(completeResponse)}\n${formatAutomationState(waitingState)}`);
-              continue;
+            if (shouldRollback) {
+              currentState = {
+                ...currentState,
+                prepared: false,
+                preparedAtMs: 0,
+                beverageHandled: false,
+                beverageHandledAtMs: 0,
+                step: 'ensure-cooking',
+                stepStartedAtMs: now,
+                rollbackCount: currentState.rollbackCount + 1,
+                retryCount: 0,
+                lastError: '目标料理未进入送餐盘，回退到重新开始料理，并重新校验酒水。',
+              };
             }
-
-            currentState = {
-              ...currentState,
-              beverageHandled: false,
-              beverageHandledAtMs: 0,
-              step: 'ensure-beverage',
-              stepStartedAtMs: now,
-              retryCount: currentState.retryCount + 1,
-              lastError: '目标酒水未进入送餐盘，重新取酒。',
-            };
           }
         } else if (companionPreferences.autoPrepCompleteOrder && completedOrderThisTick && currentState.prepared && currentState.beverageHandled) {
           const waitingState = markAutomationWaiting(currentState, 'complete-order', now, '本轮已完成一笔稀客订单，等待下一轮完成。');
@@ -976,14 +974,8 @@ export function ModWorkbench() {
           continue;
         }
 
-        const shouldPrepareFood = companionPreferences.autoPrepStartCooking
-          && (companionPreferences.autoPrepCompleteOrder
-            ? missingTrayPart === 'food' || !currentState.prepared
-            : !currentState.prepared);
-        const shouldPrepareBeverage = companionPreferences.autoPrepTakeBeverage
-          && (companionPreferences.autoPrepCompleteOrder
-            ? missingTrayPart === 'beverage' || !currentState.beverageHandled
-            : !currentState.beverageHandled);
+        const shouldPrepareFood = companionPreferences.autoPrepStartCooking && !currentState.prepared;
+        const shouldPrepareBeverage = companionPreferences.autoPrepTakeBeverage && !currentState.beverageHandled;
 
         if (!shouldPrepareFood && !shouldPrepareBeverage) {
           const waitingState = markAutomationWaiting(
@@ -4997,12 +4989,19 @@ function isMeaningfulAutomationProgressStep(step: OrderPreparationStep): boolean
     || step.name.includes('触发上菜评价');
 }
 
-function getMissingTrayPart(response: OrderPreparationResponse): 'food' | 'beverage' | null {
-  if (response.ok) return null;
-  const failedStep = response.steps.find((step) => !step.ok && !step.skipped);
-  if (failedStep?.name.includes('匹配送餐盘料理')) return 'food';
-  if (failedStep?.name.includes('匹配送餐盘酒水')) return 'beverage';
-  return null;
+function emptyMissingTrayParts() {
+  return { food: false, beverage: false };
+}
+
+function getMissingTrayParts(response: OrderPreparationResponse) {
+  const missing = emptyMissingTrayParts();
+  if (response.ok) return missing;
+  for (const step of response.steps) {
+    if (step.ok || step.skipped) continue;
+    if (step.name.includes('匹配送餐盘料理')) missing.food = true;
+    if (step.name.includes('匹配送餐盘酒水')) missing.beverage = true;
+  }
+  return missing;
 }
 
 function didCompleteStep(response: OrderPreparationResponse, name: string): boolean {
@@ -5044,8 +5043,8 @@ function isTransientAutoPreparationFailure(response: OrderPreparationResponse): 
     || text.includes('未找到当前第一笔')
     || text.includes('暂存容器不可用')
     || text.includes('等待下一轮重试')
-    || text.includes('已在制作中')
     || text.includes('已有待收取任务')
+    || text.includes('已在制作中')
     || text.includes('长时间未读取到成品对象');
 }
 
