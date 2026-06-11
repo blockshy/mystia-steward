@@ -93,7 +93,7 @@ public sealed class NightBusinessDiagnosticSink
         foreach (var guest in guests.Take(24))
         {
             builder.AppendLine(
-                $"  - source={guest.Source}; desk={guest.DeskCode}; guestId={FormatNullable(guest.GuestId)}; guest={guest.GuestName}");
+                $"  - source={guest.Source}; desk={guest.DeskCode}; guestId={FormatNullable(guest.GuestId)}; guest={guest.GuestName}; fund={FormatNullable(guest.Fund)}; baseFund={FormatNullable(guest.BaseFundCarry)}; maxFund={FormatNullable(guest.MaxFundCarry)}; extraFund={FormatNullable(guest.ExtraFundByBuff)}; willPayMoney={FormatNullableBool(guest.WillPayMoney)}");
         }
     }
 
@@ -129,6 +129,11 @@ public sealed class NightBusinessDiagnosticSink
     private static string FormatNullable(int? value)
     {
         return value.HasValue ? value.Value.ToString() : "";
+    }
+
+    private static string FormatNullableBool(bool? value)
+    {
+        return value.HasValue ? (value.Value ? "true" : "false") : "";
     }
 }
 

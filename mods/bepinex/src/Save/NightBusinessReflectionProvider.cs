@@ -446,6 +446,11 @@ public sealed class NightBusinessReflectionProvider
             GuestId = identity?.Id ?? guestId,
             GuestName = identity?.Name ?? ReadGuestName(guest, guestId),
             Source = source,
+            Fund = ReadNullableIntMember(controller, "GetFund"),
+            BaseFundCarry = ReadNullableIntMember(controller, "BaseFundCarry"),
+            MaxFundCarry = ReadNullableIntMember(controller, "MaxFundCarry"),
+            ExtraFundByBuff = ReadNullableIntMember(controller, "ExtraFundByBuff"),
+            WillPayMoney = ReadNullableBoolMember(controller, "WillPayMoney"),
         };
         RecordCandidate("GuestController", source, accepted: true, "accepted rare guest", DescribeControllerCandidate(controller));
         return result;
@@ -477,6 +482,11 @@ public sealed class NightBusinessReflectionProvider
             GuestId = identity?.Id ?? guestId,
             GuestName = identity?.Name ?? ReadGuestName(specialGuest, guestId),
             Source = source,
+            Fund = ReadNullableIntMember(controller, "GetFund"),
+            BaseFundCarry = ReadNullableIntMember(controller, "BaseFundCarry"),
+            MaxFundCarry = ReadNullableIntMember(controller, "MaxFundCarry"),
+            ExtraFundByBuff = ReadNullableIntMember(controller, "ExtraFundByBuff"),
+            WillPayMoney = ReadNullableBoolMember(controller, "WillPayMoney"),
         };
         RecordCandidate("GuestFromOrder", source, accepted: true, "accepted rare guest from order", DescribeOrderCandidate(order, controller));
         return result;
@@ -831,19 +841,39 @@ public sealed class NightBusinessReflectionProvider
     private static List<NightBusinessGuest> DeduplicateGuests(IEnumerable<NightBusinessGuest> guests)
     {
         var result = new List<NightBusinessGuest>();
-        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var indexByKey = new Dictionary<string, int>(StringComparer.Ordinal);
 
         foreach (var guest in guests)
         {
             var key = $"{guest.DeskCode}:{guest.GuestId}:{guest.GuestName}";
-            if (!seen.Add(key)) continue;
-            result.Add(guest);
+            if (!indexByKey.TryGetValue(key, out var index))
+            {
+                indexByKey[key] = result.Count;
+                result.Add(guest);
+                continue;
+            }
+
+            if (GetGuestRuntimeInfoScore(guest) > GetGuestRuntimeInfoScore(result[index]))
+            {
+                result[index] = guest;
+            }
         }
 
         return result
             .OrderBy(guest => guest.DeskCode)
             .ThenBy(guest => guest.GuestName)
             .ToList();
+    }
+
+    private static int GetGuestRuntimeInfoScore(NightBusinessGuest guest)
+    {
+        var score = 0;
+        if (guest.Fund.HasValue) score += 8;
+        if (guest.MaxFundCarry.HasValue) score += 4;
+        if (guest.BaseFundCarry.HasValue) score += 2;
+        if (guest.ExtraFundByBuff.HasValue) score += 1;
+        if (guest.WillPayMoney.HasValue) score += 1;
+        return score;
     }
 
     private static bool IsSpecialOrder(object order)
@@ -1849,6 +1879,20 @@ public sealed class NightBusinessReflectionProvider
         if (value is long longValue) return (int)longValue;
         if (value is short shortValue) return shortValue;
         return int.TryParse(value.ToString(), out var parsed) ? parsed : null;
+    }
+
+    private static int? ReadNullableIntMember(object? instance, string name)
+    {
+        return ToNullableInt(GetMemberValue(instance, name));
+    }
+
+    private static bool? ReadNullableBoolMember(object? instance, string name)
+    {
+        var value = GetMemberValue(instance, name);
+        if (value == null) return null;
+        if (value is bool boolValue) return boolValue;
+        if (bool.TryParse(value.ToString(), out var parsed)) return parsed;
+        return null;
     }
 
     private static int ToInt(object? value)

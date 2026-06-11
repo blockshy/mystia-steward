@@ -175,6 +175,11 @@ public sealed class NightBusinessGuest
     public int? GuestId { get; init; }
     public string GuestName { get; init; } = "";
     public string Source { get; init; } = "";
+    public int? Fund { get; init; }
+    public int? BaseFundCarry { get; init; }
+    public int? MaxFundCarry { get; init; }
+    public int? ExtraFundByBuff { get; init; }
+    public bool? WillPayMoney { get; init; }
 }
 
 public sealed class NightBusinessContext
