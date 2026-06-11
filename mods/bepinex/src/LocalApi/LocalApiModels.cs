@@ -14,6 +14,8 @@ internal sealed class LocalApiSnapshot
     public string RuntimeUiPinningStatus { get; init; } = "";
     public RecommendationStateSnapshot? RecommendationState { get; init; }
     public NightBusinessContext? NightBusiness { get; init; }
+    public RuntimeMissionContext? RuntimeMissions { get; init; }
+    public NormalBusinessContext? NormalBusiness { get; init; }
     public List<RuntimeRareCustomer> RuntimeRareCustomers { get; init; } = new();
 }
 

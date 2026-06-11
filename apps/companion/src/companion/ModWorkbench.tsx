@@ -119,8 +119,8 @@ const DENSE_CARD_HEADER_GRID = 'grid grid-cols-[minmax(0,1fr)_auto] gap-3';
 const DENSE_ITEM_GRID = 'grid grid-cols-[repeat(auto-fit,minmax(11rem,1fr))] gap-2';
 const MOD_TAB_TRIGGER_CLASS = 'min-w-0 flex-1 data-active:bg-primary data-active:text-primary-foreground dark:data-active:bg-primary dark:data-active:text-primary-foreground';
 
-type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'inventory' | 'logs' | 'settings';
-const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'service', 'inventory', 'logs', 'settings'];
+type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'tasks' | 'inventory' | 'logs' | 'settings';
+const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'service', 'tasks', 'inventory', 'logs', 'settings'];
 type FocusSwitchBehavior = 'hide' | 'keep-visible';
 type ServiceOrderSortMode = 'ordered' | 'guest';
 type SortDirection = 'asc' | 'desc';
@@ -246,6 +246,41 @@ interface NightBusinessContext {
   error: string | null;
 }
 
+interface RuntimeMissionInfo {
+  label: string;
+  title: string;
+  characterLabel: string;
+  characterName: string;
+  source: string;
+  started: boolean;
+  finished: boolean;
+}
+
+interface RuntimeMissionContext {
+  availableMissions: RuntimeMissionInfo[];
+  source: string;
+  error: string | null;
+}
+
+interface NormalBusinessOrder {
+  deskCode: number;
+  guestName: string;
+  foodId: number;
+  foodName: string;
+  beverageId: number;
+  beverageName: string;
+  hasServedFood: boolean;
+  hasServedBeverage: boolean;
+  isFulfilled: boolean;
+  source: string;
+}
+
+interface NormalBusinessContext {
+  orders: NormalBusinessOrder[];
+  source: string;
+  error: string | null;
+}
+
 interface RuntimeRareCustomer {
   id: number;
   runtimeStringId: string;
@@ -268,6 +303,8 @@ interface LocalApiSnapshot {
   runtimeUiPinningStatus?: string;
   recommendationState: RecommendationStateSnapshot | null;
   nightBusiness: NightBusinessContext | null;
+  runtimeMissions?: RuntimeMissionContext | null;
+  normalBusiness?: NormalBusinessContext | null;
   runtimeRareCustomers?: RuntimeRareCustomer[];
 }
 
@@ -989,6 +1026,9 @@ export function ModWorkbench() {
           <TabsTrigger value="service" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="service">
             经营中
           </TabsTrigger>
+          <TabsTrigger value="tasks" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="tasks">
+            任务
+          </TabsTrigger>
           <TabsTrigger value="inventory" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="inventory">
             修改
           </TabsTrigger>
@@ -1080,6 +1120,14 @@ export function ModWorkbench() {
             onToggleRecipeFavorite={toggleRecipeFavorite}
             onToggleBeverageFavorite={toggleBeverageFavorite}
             onEnterFocusMode={() => setServiceFocusMode(true)}
+            normalBusiness={snapshot?.normalBusiness ?? null}
+          />
+        </TabsContent>
+
+        <TabsContent value="tasks" data-gamepad-scope="content">
+          <ModTasksPanel
+            runtimeLoaded={snapshot?.runtimeLoaded ?? false}
+            missions={snapshot?.runtimeMissions ?? null}
           />
         </TabsContent>
 
@@ -1533,6 +1581,7 @@ function ModServicePanel({
   autoPrepBusy,
   autoPrepMessage,
   autoPrepPreferences,
+  normalBusiness,
   onPreferenceChange,
   onToggleRecipeFavorite,
   onToggleBeverageFavorite,
@@ -1552,6 +1601,7 @@ function ModServicePanel({
   autoPrepBusy: boolean;
   autoPrepMessage: string;
   autoPrepPreferences: CompanionPreferences;
+  normalBusiness: NormalBusinessContext | null;
   onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
   onToggleRecipeFavorite: ToggleRecipeFavorite;
   onToggleBeverageFavorite: ToggleBeverageFavorite;
@@ -1630,6 +1680,35 @@ function ModServicePanel({
           ))}
         </ListPanel>
       </div>
+
+      <ListPanel title={`普通客订单诊断 (${normalBusiness?.orders.length ?? 0})`}>
+        {!normalBusiness && <EmptyRow text="普通客订单只在经营场景中读取" />}
+        {normalBusiness?.error && <EmptyRow text={normalBusiness.error} />}
+        {normalBusiness?.orders.length === 0 && !normalBusiness.error && (
+          <EmptyRow text={normalBusiness.source || '暂无普通客订单'} />
+        )}
+        {normalBusiness?.orders.map((order) => (
+          <div
+            key={`${order.deskCode}-${order.guestName}-${order.foodId}-${order.beverageId}`}
+            className="border-b py-2 text-sm last:border-b-0"
+          >
+            <div className="flex items-center justify-between gap-3">
+              <span className="min-w-0 truncate font-medium" title={order.guestName || '普通客'}>
+                {order.guestName || '普通客'}
+              </span>
+              <span className="shrink-0 text-muted-foreground">桌 {formatDesk(order.deskCode)}</span>
+            </div>
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              <Badge variant="outline">料理 {order.foodName || `#${order.foodId}`}</Badge>
+              <Badge variant="outline">酒水 {order.beverageName || `#${order.beverageId}`}</Badge>
+              {order.hasServedFood && <Badge variant="secondary">已有料理</Badge>}
+              {order.hasServedBeverage && <Badge variant="secondary">已有酒水</Badge>}
+              {order.isFulfilled && <Badge variant="secondary">已满足</Badge>}
+              <Badge variant="secondary">{order.source}</Badge>
+            </div>
+          </div>
+        ))}
+      </ListPanel>
 
       {(recommendations.length > 0 || recommendationIssues.length > 0) && (
         <CurrentOrderRecommendations
@@ -1914,6 +1993,61 @@ function ModInventoryPanel({
   );
 }
 
+function ModTasksPanel({
+  runtimeLoaded,
+  missions,
+}: {
+  runtimeLoaded: boolean;
+  missions: RuntimeMissionContext | null;
+}) {
+  if (!runtimeLoaded) {
+    return <RuntimeUnavailable />;
+  }
+
+  const rows = missions?.availableMissions ?? [];
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardContent className={`${DENSE_THREE_COLUMN_GRID} p-4 text-sm`}>
+          <InfoLine label="任务数据" value={missions ? '已读取' : '暂不可用'} />
+          <InfoLine label="可接未接" value={`${rows.length} 个`} />
+          <InfoLine label="扫描状态" value={missions?.source || missions?.error || '暂无'} />
+        </CardContent>
+      </Card>
+
+      <ListPanel title={`可接任务 (${rows.length})`}>
+        {!missions && <EmptyRow text="任务快照暂不可用" />}
+        {missions?.error && <EmptyRow text={missions.error} />}
+        {rows.length === 0 && missions && !missions.error && (
+          <EmptyRow text="当前进度未读取到可接但未接的任务" />
+        )}
+        {rows.map((mission) => (
+          <div
+            key={`${mission.characterLabel}-${mission.label}`}
+            className="border-b py-2 text-sm last:border-b-0"
+            data-gamepad-row="true"
+            data-gamepad-row-key={`task:${mission.characterLabel}:${mission.label}`}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <span className="min-w-0 truncate font-medium" title={mission.title || mission.label}>
+                {mission.title || mission.label}
+              </span>
+              <span className="shrink-0 text-muted-foreground">{mission.characterName || mission.characterLabel}</span>
+            </div>
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              <Badge variant="outline">{mission.label}</Badge>
+              <Badge variant="secondary">{mission.source}</Badge>
+              <Badge variant={mission.started ? 'default' : 'outline'}>{mission.started ? '已开始' : '未接取'}</Badge>
+              {mission.finished && <Badge variant="secondary">已完成</Badge>}
+            </div>
+          </div>
+        ))}
+      </ListPanel>
+    </div>
+  );
+}
+
 function InventoryEditColumn<TItem extends IIngredient | IBeverage>({
   title,
   kind,
@@ -1956,6 +2090,15 @@ function InventoryEditColumn<TItem extends IIngredient | IBeverage>({
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!editable || busy}
+                    data-gamepad-focus-key={`inventory:${key}:sub10`}
+                    onClick={() => onApply(kind, item.id, quantity - 10)}
+                  >
+                    -10
+                  </Button>
                   <Button
                     size="sm"
                     variant="outline"
@@ -4364,6 +4507,7 @@ function readStoredTab(): ModTab {
     || value === 'normal'
     || value === 'rare'
     || value === 'service'
+    || value === 'tasks'
     || value === 'inventory'
     || value === 'logs'
     || value === 'settings'

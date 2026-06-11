@@ -23,7 +23,7 @@
 - 伴随窗口根滚动区域固定预留纵向滚动条槽位，避免页面高度变化时滚动条挤占宽度造成内容横向跳动；窗口、下拉和日志滚动条使用主题色并跟随透明度。
 - 焦点切换支持两种模式：隐藏伴随窗口再聚焦游戏，或保持伴随窗口悬浮并只聚焦游戏。保持悬浮依赖窗口置顶，独占全屏游戏可能覆盖置顶窗口，推荐窗口化或无边框窗口化。
 - 伴随窗口退出跟随不只依赖本地 API `/health` 失联，还会监控启动参数中的 `--game-pid`。游戏窗口 X、游戏内退出按钮、或 Unity 退出阶段未及时发送 `exit` 控制消息时，都应由 PID 监控兜底关闭伴随窗口。
-- `修改` 页通过 `/inventory/set` 在 Unity 主线程写入当前运行时材料和酒水库存；页面只保留 `+10` 和 `99` 快捷按钮，用户仍需在游戏内保存才能持久化。
+- `修改` 页通过 `/inventory/set` 在 Unity 主线程写入当前运行时材料和酒水库存；页面只保留 `-10`、`+10` 和 `99` 快捷按钮，用户仍需在游戏内保存才能持久化。
 - `BepInEx/LogOutput.log` 通过伴随窗口 `日志` 页读取，接口按 `LocalApi.MaxLogLines` 和 `LocalApi.MaxLogBytes` 裁剪尾部内容，前端也只保留有限行数显示。
 - Mod 默认写入 `BepInEx/config/BepInEx.cfg` 将 `[Logging.Console] Enabled=false`，并在 Windows 当前会话尝试隐藏控制台窗口；配置对下一次启动完全生效。
 - 旧游戏内 IMGUI 面板默认关闭，仅作为回退方案。
@@ -34,6 +34,8 @@
 - 运行时推荐状态会尝试读取当前夜间经营场景已摆放的全部厨具，优先读取 `CookSystemManager.Instance.AllCookers` 中的控制器和 `Cooker.AllAvailableCookerType`，再兜底读取 `IzakayaConfigure.CookerConfigure` 与 `RunTimeStorage.GetAllCookers()`；读不到快照时不要过滤料理。目标厨具高亮会复用当前推荐目标，并扫描 `AllCookers`、`AllCookerControllers` 和场景中的 `CookController` 兜底寻找可高亮对象。
 - 经营中概览会显示厨具快照读取状态和 `RuntimeUiPinningService.Status`。排查“缺失厨具过滤/游戏界面置顶/目标厨具高亮”时，优先让用户提供这两行状态和 `BepInEx/LogOutput.log`。
 - 运行时捕获订单维护 `ChangeVersion`；UI 控制器在版本变化后延迟 0.2 秒强制刷新经营数据并发布本地 API 快照。伴随窗口在 `经营中` 和稀客专注模式下以 750ms 轮询快照，其他页面保持 2 秒。
+- `任务` 页通过 `RunTimeScheduler.GetAvailableInteractMissionForCharacter()` 读取当前进度可接但未接的交互任务，并按 NPC 短缓存展示；读取失败只显示诊断，不回退静态全任务。
+- 普通客订单目前只做只读诊断，来源为 `OrderController.GetShowInUIOrders()` 中的 `NormalOrder`，用于验证桌位、料理、酒水和完成状态。普通客自动化执行入口尚未接入。
 - 运行时稀客 ID 会先归一化为本地 `customer_rare.json` 身份；优先读取游戏 `DataBaseCharacter.GetAllMappedGuests()` 固定映射和 `GetSpecialGuestsAndMappedGuests()` 完整运行时稀客表，运行时表按游戏语言名称匹配本地唯一同名稀客，手工事件变体只作为兜底。本地缺失但运行时具备有效喜好 Tag 的稀客会合成为临时 `RuntimeRareCustomer`，供经营中订单推荐和伴随窗口稀客页使用；剧情 Intro/Parallel/Current、问号占位、隐藏图鉴、NeverCome、无喜好数据的角色不合成。带具体桌号的捕获订单只允许匹配同一桌活跃稀客，未入座 `desk=-1` 稀客不能保活旧订单。
 - 诊断开启且经营数据扫描触发时，运行时固定数据会按主题写到诊断目录：`runtime-static-data.log` 映射稀客与 `aliasSource`、`runtime-tags.log` 标签和 TagRule、`runtime-database-diff.log` 核心食材/酒水/料理表对照与读取方式、`runtime-guests.log` 普客/稀客/事件变体、`runtime-izakayas.log` 场景和客人池。游戏数据库未初始化时每 5 秒重试，日志头部 `Complete: True` 表示读取成功。
 - 稀客订单专注模式支持精简模式和料理/酒水显示数量配置；精简模式隐藏推荐料理 Tag 并压缩推荐面板间距，显示数量包含收藏置顶项。

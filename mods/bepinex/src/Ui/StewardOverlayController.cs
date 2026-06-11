@@ -1262,6 +1262,8 @@ internal sealed class StewardOverlayController
                 RuntimeUiPinningStatus = RuntimeUiPinningService.Status,
                 RecommendationState = publishedState == null ? null : RecommendationStateSnapshot.From(publishedState),
                 NightBusiness = _businessContext,
+                RuntimeMissions = ReadRuntimeMissionsForSnapshot(),
+                NormalBusiness = ReadNormalBusinessForSnapshot(),
                 RuntimeRareCustomers = _repository == null
                     ? new List<RuntimeRareCustomer>()
                     : new RuntimeMappedGuestCatalog(_repository).Snapshot().RuntimeRareCustomers.ToList(),
@@ -1274,6 +1276,42 @@ internal sealed class StewardOverlayController
             if (_localApiSnapshotErrorLogged) return;
             _localApiSnapshotErrorLogged = true;
             _log?.LogWarning($"Local API snapshot publish failed: {ex.Message}");
+        }
+    }
+
+    private RuntimeMissionContext? ReadRuntimeMissionsForSnapshot()
+    {
+        if (!_runtimeLoaded) return null;
+
+        try
+        {
+            return RuntimeMissionSnapshotService.Load();
+        }
+        catch (Exception ex)
+        {
+            return new RuntimeMissionContext
+            {
+                Source = "error",
+                Error = ex.Message,
+            };
+        }
+    }
+
+    private NormalBusinessContext? ReadNormalBusinessForSnapshot()
+    {
+        if (_repository == null || !HasActiveNightBusinessContext(_businessContext)) return null;
+
+        try
+        {
+            return new RuntimeNormalOrderSnapshotService(_repository).Load();
+        }
+        catch (Exception ex)
+        {
+            return new NormalBusinessContext
+            {
+                Source = "error",
+                Error = ex.Message,
+            };
         }
     }
 

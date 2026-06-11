@@ -192,6 +192,45 @@ public sealed class NightBusinessContext
     public string? Error { get; init; }
 }
 
+public sealed class RuntimeMissionInfo
+{
+    public string Label { get; init; } = "";
+    public string Title { get; init; } = "";
+    public string CharacterLabel { get; init; } = "";
+    public string CharacterName { get; init; } = "";
+    public string Source { get; init; } = "";
+    public bool Started { get; init; }
+    public bool Finished { get; init; }
+}
+
+public sealed class RuntimeMissionContext
+{
+    public List<RuntimeMissionInfo> AvailableMissions { get; init; } = new();
+    public string Source { get; init; } = "";
+    public string? Error { get; init; }
+}
+
+public sealed class NormalBusinessOrder
+{
+    public int DeskCode { get; init; }
+    public string GuestName { get; init; } = "";
+    public int FoodId { get; init; }
+    public string FoodName { get; init; } = "";
+    public int BeverageId { get; init; }
+    public string BeverageName { get; init; } = "";
+    public bool HasServedFood { get; init; }
+    public bool HasServedBeverage { get; init; }
+    public bool IsFulfilled { get; init; }
+    public string Source { get; init; } = "";
+}
+
+public sealed class NormalBusinessContext
+{
+    public List<NormalBusinessOrder> Orders { get; init; } = new();
+    public string Source { get; init; } = "";
+    public string? Error { get; init; }
+}
+
 public sealed class ParsedSaveData
 {
     public List<int> RecipeGameIds { get; init; } = new();
