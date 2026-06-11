@@ -2626,6 +2626,9 @@ function OrderRecommendationPanel({
   const visiblePreferenceBeverages = visibleBeverages.length >= 3
     ? []
     : item.preferenceBeverages.slice(0, Math.max(0, normalizeFocusRecommendationLimit(beverageLimit) - visibleBeverages.length));
+  const targetCookerName = visibleRecipes[0]?.recipe.cooker
+    ?? visiblePreferenceRecipes[0]?.recipe.cooker
+    ?? '';
 
   return (
     <div className={compact ? 'rounded-md border border-border p-2' : 'rounded-md border border-border p-3'}>
@@ -2635,6 +2638,11 @@ function OrderRecommendationPanel({
           <div className="mt-1 flex flex-wrap gap-1.5">
             <Badge variant="outline">料理 {item.order.foodTag || '无'}</Badge>
             <Badge variant="outline">酒水 {item.order.beverageTag || '无'}</Badge>
+            {targetCookerName && (
+              <Badge className="border-amber-300/70 bg-amber-300/18 text-amber-100">
+                目标厨具 {targetCookerName}
+              </Badge>
+            )}
             <Badge variant="secondary">{item.order.source}</Badge>
           </div>
         </div>

@@ -161,8 +161,8 @@ internal sealed class StewardOverlayController
 
         if (Input.GetKeyDown(_config.ReloadKey.Value))
         {
-            RefreshRuntimeState(true);
             RefreshBusinessContext(true);
+            RefreshRuntimeState(true);
         }
 
         if (!_config.EnableInGameOverlay.Value && _visible)
@@ -178,8 +178,8 @@ internal sealed class StewardOverlayController
 
         if (!_config.AutoRefreshRuntime.Value || Time.realtimeSinceStartup < _nextAutoRefreshAt) return;
         _nextAutoRefreshAt = Time.realtimeSinceStartup + Math.Max(1f, _config.AutoRefreshSeconds.Value);
-        RefreshRuntimeState(false);
         RefreshBusinessContext(false);
+        RefreshRuntimeState(false);
     }
 
     private void RefreshBusinessContextOnSpecialOrderChange()
@@ -221,8 +221,8 @@ internal sealed class StewardOverlayController
             return;
         }
 
-        RefreshRuntimeState(false);
         RefreshBusinessContext(false, force: true);
+        RefreshRuntimeState(false);
     }
 
     private bool IsTogglePressed()
@@ -1648,6 +1648,15 @@ internal sealed class StewardOverlayController
                 hash = (hash * 31) + item.Value;
             }
 
+            hash = HashIds(hash, state.PlacedCookerTypeIds);
+            foreach (var cooker in state.PlacedCookers.OrderBy(cooker => cooker.ControllerIndex))
+            {
+                hash = (hash * 31) + cooker.ControllerIndex;
+                hash = HashIds(hash, cooker.TypeIds);
+                hash = (hash * 31) + cooker.Source.GetHashCode();
+            }
+
+            hash = (hash * 31) + state.PlacedCookerStatus.GetHashCode();
             hash = (hash * 31) + (state.PopularFoodTag?.GetHashCode() ?? 0);
             hash = (hash * 31) + (state.PopularHateFoodTag?.GetHashCode() ?? 0);
             hash = (hash * 31) + (state.FamousShopEnabled ? 1 : 0);
