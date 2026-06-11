@@ -9,6 +9,7 @@ namespace MystiaStewardCompanion.Save;
 internal static class RuntimeOrderPreparationService
 {
     private const string DataBaseCoreTypeName = "GameData.Core.Collections.DataBaseCore";
+    private const string IzakayaConfigureTypeName = "GameData.RunTime.NightSceneUtility.IzakayaConfigure";
     private const string IzakayaTrayTypeName = "GameData.RunTime.NightSceneUtility.IzakayaTray";
     private const string RuntimeStorageTypeName = "GameData.RunTime.Common.RunTimeStorage";
     private const string PartnerManagerTypeName = "NightScene.PartnerUtility.PartnerManager";
@@ -771,13 +772,7 @@ internal static class RuntimeOrderPreparationService
             return (false, $"{pending.RecipeName} 已完成，但订单已有其他待送达料理，等待玩家处理后再自动收取。");
         }
 
-        var warmer = TryFindEmptyWarmerController(pending.CookController);
-        if (!warmer.Ok || warmer.Controller == null)
-        {
-            return (false, $"{pending.RecipeName} 已完成，但{warmer.Message}，等待下一轮重试。");
-        }
-
-        if (!TryStoreFoodInWarmer(warmer.Controller, cookedFood, pending.Target.FoodId, out var storeMessage))
+        if (!TryStoreFoodInNormalStorage(cookedFood, pending.Target.FoodId, out var storeMessage))
         {
             return (false, $"{pending.RecipeName} 已完成，但{storeMessage}，等待下一轮重试。");
         }
@@ -787,134 +782,77 @@ internal static class RuntimeOrderPreparationService
         return (true, $"{pending.RecipeName} 已自动收至普客保温箱，等待玩家手动送达。{storeMessage}");
     }
 
-    private static (bool Ok, object? Controller, string Message) TryFindEmptyWarmerController(object sourceController)
+    private static bool TryStoreFoodInNormalStorage(object cookedFood, int expectedFoodId, out string message)
     {
-        object? cookSystem;
         try
         {
-            cookSystem = GetSingletonInstance(CookSystemManagerTypeName);
+            var configure = GetSingletonInstance(IzakayaConfigureTypeName);
+            if (configure == null)
+            {
+                message = "当前料理暂存容器不可用";
+                return false;
+            }
+
+            var beforeCount = CountStoredFoods(configure, expectedFoodId);
+            if (!TryInvokeStoreFood(configure, cookedFood))
+            {
+                message = "写入料理暂存容器失败：未找到可用的 StoreFood 入口";
+                return false;
+            }
+
+            var afterCount = CountStoredFoods(configure, expectedFoodId);
+            if (beforeCount >= 0 && afterCount >= 0 && afterCount <= beforeCount)
+            {
+                message = $"写入料理暂存容器后数量未增加（料理 #{expectedFoodId}: {beforeCount}->{afterCount}）";
+                return false;
+            }
+
+            message = beforeCount >= 0 && afterCount >= 0
+                ? $"料理暂存数量 {beforeCount}->{afterCount}。"
+                : "已调用游戏料理暂存入口。";
+            return true;
         }
         catch (Exception ex)
         {
-            return (false, null, $"当前厨具管理器不可用：{ex.GetBaseException().Message}");
+            message = $"写入料理暂存容器失败：{ex.GetBaseException().Message}";
+            return false;
         }
-
-        if (cookSystem == null)
-        {
-            return (false, null, "当前厨具管理器不可用");
-        }
-
-        var controllers = ReadCookControllers(cookSystem, out var sourceStatus);
-        var totalCount = 0;
-        var warmerCount = 0;
-        var occupiedResultCount = 0;
-        var occupiedRecipeCount = 0;
-        var nonWarmerCount = 0;
-        var sameSourceCount = 0;
-        var errorCount = 0;
-        foreach (var controller in controllers)
-        {
-            try
-            {
-                totalCount++;
-                if (IsSameObject(controller, sourceController))
-                {
-                    sameSourceCount++;
-                    continue;
-                }
-
-                if (!IsWarmerController(controller))
-                {
-                    nonWarmerCount++;
-                    continue;
-                }
-
-                warmerCount++;
-
-                if (ReadCookControllerResult(controller) != null)
-                {
-                    occupiedResultCount++;
-                    continue;
-                }
-
-                if (ReadCookControllerChosenRecipe(controller) != null)
-                {
-                    occupiedRecipeCount++;
-                    continue;
-                }
-
-                return (true, controller, $"找到空保温位（扫描 {totalCount} 个控制器，保温位 {warmerCount} 个）");
-            }
-            catch
-            {
-                // Stale IL2CPP controllers can appear while the scene is changing; keep scanning.
-                errorCount++;
-            }
-        }
-
-        if (totalCount == 0)
-        {
-            return (false, null, $"当前没有读取到任何厨具控制器（{sourceStatus}）");
-        }
-
-        if (warmerCount == 0)
-        {
-            return (false, null, $"没有读取到保温位（读取到 {totalCount} 个控制器，非保温位 {nonWarmerCount} 个，同源 {sameSourceCount} 个，异常 {errorCount} 个；{sourceStatus}）");
-        }
-
-        return (false, null, $"没有空闲保温位（读取到 {totalCount} 个控制器，保温位 {warmerCount} 个，已有成品 {occupiedResultCount} 个，正在制作 {occupiedRecipeCount} 个，同源 {sameSourceCount} 个，异常 {errorCount} 个；{sourceStatus}）");
     }
 
-    private static IReadOnlyList<object> ReadCookControllers(object cookSystem, out string status)
+    private static bool TryInvokeStoreFood(object configure, object cookedFood)
     {
-        var result = new List<object>();
-        var seen = new HashSet<nint>();
-        var sourceParts = new List<string>();
-
-        object? controllers = null;
-        try
-        {
-            controllers = InvokeInstance(cookSystem, "get_AllCookerControllers", Array.Empty<object?>());
-        }
-        catch
-        {
-            // The backing dictionary and Unity object scan below are more tolerant.
-        }
-
-        AddCookControllers("AllCookerControllers", ReadObjectEnumerable(controllers), result, seen, sourceParts);
-        AddCookControllers("AllCookers", ReadDictionaryValues(ReadMember(cookSystem, "AllCookers")), result, seen, sourceParts);
-
-        var controllerType = FindType("NightScene.CookingUtility.CookController");
-        if (controllerType != null)
-        {
-            AddCookControllers("UnityFind", FindUnityObjects(controllerType), result, seen, sourceParts);
-        }
-
-        status = $"sources={string.Join(",", sourceParts)}";
-        return result;
+        return TryInvokeInstance(configure, "StoreFood", new object?[] { cookedFood, -1 })
+            || TryInvokeInstance(configure, "StoreFood", new object?[] { cookedFood });
     }
 
-    private static void AddCookControllers(
-        string source,
-        IEnumerable<object?> controllers,
-        ICollection<object> result,
-        HashSet<nint> seen,
-        ICollection<string> sourceParts)
+    private static int CountStoredFoods(object configure, int expectedFoodId)
     {
+        if (expectedFoodId < 0) return -1;
+
+        var storedFoods = ReadMember(configure, "StoredFoods")
+            ?? TryInvokeInstanceValue(configure, "GetStoredFoods");
+        if (storedFoods == null) return -1;
+
+        var rawCount = ToInt(TryInvokeInstanceValue(storedFoods, "get_Count")
+            ?? ReadMember(storedFoods, "Count")
+            ?? ReadMember(storedFoods, "_size"), -1);
+        var count = 0;
         var scanned = 0;
-        var added = 0;
-
-        foreach (var controller in controllers)
+        foreach (var food in ReadObjectEnumerable(storedFoods))
         {
             scanned++;
-            if (controller == null) continue;
-            if (!TryRememberObject(controller, seen)) continue;
-
-            result.Add(controller);
-            added++;
+            if (IsSellable(food, sellableType: 0, id: expectedFoodId))
+            {
+                count++;
+            }
         }
 
-        sourceParts.Add($"{source}:{scanned}/{added}");
+        if (scanned == 0 && rawCount > 0)
+        {
+            return -1;
+        }
+
+        return count;
     }
 
     private static bool TryRememberObject(object value, HashSet<nint> seen)
@@ -927,68 +865,6 @@ internal static class RuntimeOrderPreparationService
         {
             return seen.Add(new IntPtr(RuntimeHelpers.GetHashCode(value)));
         }
-    }
-
-    private static bool TryStoreFoodInWarmer(object warmerController, object cookedFood, int expectedFoodId, out string message)
-    {
-        try
-        {
-            if (!TryInvokeInstance(warmerController, "Store", new object?[] { cookedFood }))
-            {
-                WriteMember(warmerController, "Result", cookedFood);
-            }
-
-            var storedFood = ReadCookControllerResult(warmerController);
-            if (storedFood == null)
-            {
-                message = "写入保温箱失败：写入后未读取到成品";
-                return false;
-            }
-
-            if (expectedFoodId >= 0 && !IsSellable(storedFood, sellableType: 0, id: expectedFoodId))
-            {
-                message = $"写入保温箱后读取到的料理不匹配（读取到 type={ReadSellableType(storedFood)}, id={ReadSellableId(storedFood)}）";
-                return false;
-            }
-
-            message = "";
-            return true;
-        }
-        catch (Exception ex)
-        {
-            message = $"写入保温箱失败：{ex.GetBaseException().Message}";
-            return false;
-        }
-    }
-
-    private static object? ReadCookControllerResult(object cookController)
-    {
-        return TryInvokeInstanceValue(cookController, "get_Result") ?? ReadMember(cookController, "Result");
-    }
-
-    private static object? ReadCookControllerChosenRecipe(object cookController)
-    {
-        return TryInvokeInstanceValue(cookController, "get_ChosenRecipe") ?? ReadMember(cookController, "ChosenRecipe");
-    }
-
-    private static bool IsWarmerController(object cookController)
-    {
-        if (ReadBool(TryInvokeInstanceValue(cookController, "get_IsEmptyDesk") ?? ReadMember(cookController, "IsEmptyDesk")))
-        {
-            return true;
-        }
-
-        var cooker = TryInvokeInstanceValue(cookController, "get_Cooker") ?? ReadMember(cookController, "Cooker");
-        if (cooker == null) return false;
-
-        var directType = ToInt(TryInvokeInstanceValue(cooker, "get_Type")
-            ?? ReadMember(cooker, "Type")
-            ?? ReadMember(cooker, "type"), -1);
-        if (directType == 0) return true;
-        if (directType > 0) return false;
-
-        var cookerTypes = TryInvokeInstanceValue(cooker, "get_AllAvailableCookerType");
-        return !ReadIntEnumerable(cookerTypes).Any(id => id > 0);
     }
 
     private static void TryResetCookControllerAfterNormalWarmerCollect(object cookController, object cookedFood)
