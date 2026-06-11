@@ -198,6 +198,7 @@ public sealed class RuntimeMissionInfo
     public string Title { get; init; } = "";
     public string CharacterLabel { get; init; } = "";
     public string CharacterName { get; init; } = "";
+    public List<string> Places { get; init; } = new();
     public string Source { get; init; } = "";
     public bool Started { get; init; }
     public bool Finished { get; init; }

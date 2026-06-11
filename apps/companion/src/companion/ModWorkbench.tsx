@@ -65,6 +65,7 @@ const FOCUS_SWITCH_COOLDOWN_STORAGE_KEY = `${STORAGE_PREFIX}-focus-switch-cooldo
 const ALWAYS_ON_TOP_STORAGE_KEY = `${STORAGE_PREFIX}-always-on-top`;
 const GAMEPAD_NAVIGATION_STORAGE_KEY = `${STORAGE_PREFIX}-gamepad-navigation`;
 const AUTOMATION_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-automation-enabled`;
+const AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-order-enabled`;
 const AUTO_PREP_COMPLETE_ORDER_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-complete-order`;
 const AUTO_PREP_TAKE_BEVERAGE_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-take-beverage`;
 const AUTO_PREP_START_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-start-cooking`;
@@ -127,6 +128,7 @@ type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'tasks' | 'inventory'
 const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'service', 'tasks', 'inventory', 'logs', 'settings'];
 type FocusSwitchBehavior = 'hide' | 'keep-visible';
 type ServiceOrderSortMode = 'ordered' | 'guest';
+type MissionStatusFilter = 'all' | 'not-started' | 'started' | 'finished';
 type SortDirection = 'asc' | 'desc';
 type RecipeSortKey =
   | 'requiredTag'
@@ -255,6 +257,7 @@ interface RuntimeMissionInfo {
   title: string;
   characterLabel: string;
   characterName: string;
+  places?: string[];
   source: string;
   started: boolean;
   finished: boolean;
@@ -456,6 +459,7 @@ interface CompanionPreferences {
   alwaysOnTop: boolean;
   gamepadNavigationEnabled: boolean;
   automationEnabled: boolean;
+  autoNormalOrderEnabled: boolean;
   autoPrepCompleteOrder: boolean;
   autoPrepTakeBeverage: boolean;
   autoPrepStartCooking: boolean;
@@ -839,6 +843,11 @@ export function ModWorkbench() {
 
   const handleFirstNormalOrder = useCallback(async () => {
     if (normalOrderBusy) return;
+    if (!companionPreferences.automationEnabled || !companionPreferences.autoNormalOrderEnabled) {
+      setNormalOrderMessage('需要先在“经营中”的自动化面板开启普通客订单处理。');
+      return;
+    }
+
     if (!apiToken) {
       setNormalOrderMessage('普通客自动化需要本地 API Token。');
       return;
@@ -1737,7 +1746,7 @@ function ModServicePanel({
       </div>
 
       <ListPanel title={`普通客订单诊断 (${normalBusiness?.orders.length ?? 0})`}>
-        {autoPrepPreferences.automationEnabled ? (
+        {autoPrepPreferences.automationEnabled && autoPrepPreferences.autoNormalOrderEnabled ? (
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
             <span className="text-muted-foreground">
               普通客自动化会处理桌号最靠前且未满足的普通客订单。
@@ -1749,6 +1758,10 @@ function ModServicePanel({
             >
               {normalOrderBusy ? '处理中' : '处理第一笔普通客订单'}
             </Button>
+          </div>
+        ) : autoPrepPreferences.automationEnabled ? (
+          <div className="mb-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+            在自动化面板开启“普通客订单处理”后，可在这里处理第一笔普通客订单。
           </div>
         ) : (
           <div className="mb-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
@@ -1767,7 +1780,7 @@ function ModServicePanel({
         )}
         {normalBusiness?.orders.map((order) => (
           <div
-            key={`${order.deskCode}-${order.guestName}-${order.foodId}-${order.beverageId}`}
+            key={`${order.deskCode}-${order.guestName}-${order.foodId}-${order.beverageId}-${order.source}`}
             className="border-b py-2 text-sm last:border-b-0"
           >
             <div className="flex items-center justify-between gap-3">
@@ -2078,29 +2091,53 @@ function ModTasksPanel({
   runtimeLoaded: boolean;
   missions: RuntimeMissionContext | null;
 }) {
+  const [statusFilter, setStatusFilter] = useState<MissionStatusFilter>('all');
+
   if (!runtimeLoaded) {
     return <RuntimeUnavailable />;
   }
 
   const rows = missions?.availableMissions ?? [];
+  const filteredRows = rows.filter((mission) => matchesMissionStatusFilter(mission, statusFilter));
 
   return (
     <div className="space-y-4">
       <Card>
         <CardContent className={`${DENSE_THREE_COLUMN_GRID} p-4 text-sm`}>
           <InfoLine label="任务数据" value={missions ? '已读取' : '暂不可用'} />
-          <InfoLine label="可推进任务" value={`${rows.length} 个`} />
+          <InfoLine label="可推进任务" value={`${filteredRows.length}/${rows.length} 个`} />
           <InfoLine label="扫描状态" value={missions?.source || missions?.error || '暂无'} />
         </CardContent>
       </Card>
 
-      <ListPanel title={`可接任务 (${rows.length})`}>
+      <ListPanel
+        title={`可接任务 (${filteredRows.length})`}
+        action={(
+          <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as MissionStatusFilter)}>
+            <SelectTrigger className="h-8 w-28" data-gamepad-clickable="true">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部</SelectItem>
+              <SelectItem value="not-started">未接取</SelectItem>
+              <SelectItem value="started">已开始</SelectItem>
+              <SelectItem value="finished">已完成</SelectItem>
+            </SelectContent>
+          </Select>
+        )}
+      >
         {!missions && <EmptyRow text="任务快照暂不可用" />}
         {missions?.error && <EmptyRow text={missions.error} />}
         {rows.length === 0 && missions && !missions.error && (
           <EmptyRow text="当前进度未读取到可接或正在推进的任务" />
         )}
-        {rows.map((mission) => (
+        {rows.length > 0 && filteredRows.length === 0 && (
+          <EmptyRow text="当前筛选条件下没有任务" />
+        )}
+        {filteredRows.map((mission) => {
+          const places = mission.places?.filter(Boolean) ?? [];
+          const shouldShowMissingPlace = places.length === 0 && !mission.started && !mission.finished;
+          return (
           <div
             key={`${mission.characterLabel}-${mission.label}`}
             className="border-b py-2 text-sm last:border-b-0"
@@ -2118,9 +2155,12 @@ function ModTasksPanel({
               <Badge variant="secondary">{mission.source}</Badge>
               <Badge variant={mission.started ? 'default' : 'outline'}>{mission.started ? '已开始' : '未接取'}</Badge>
               {mission.finished && <Badge variant="secondary">已完成</Badge>}
+              {places.map((place) => <Badge key={place} variant="outline">场景 {place}</Badge>)}
+              {shouldShowMissingPlace && <Badge variant="outline">场景 未读取</Badge>}
             </div>
           </div>
-        ))}
+          );
+        })}
       </ListPanel>
     </div>
   );
@@ -2524,6 +2564,11 @@ function ServiceAutomationPanel({
     <ListPanel title="自动化（实验性）">
       <div className={DENSE_TWO_COLUMN_GRID_TIGHT}>
         <SwitchControl
+          label="普通客订单处理"
+          checked={preferences.autoNormalOrderEnabled}
+          onCheckedChange={(autoNormalOrderEnabled) => onPreferenceChange({ autoNormalOrderEnabled })}
+        />
+        <SwitchControl
           label="自动完成订单"
           checked={preferences.autoPrepCompleteOrder}
           onCheckedChange={(autoPrepCompleteOrder) => onPreferenceChange({ autoPrepCompleteOrder })}
@@ -2569,7 +2614,7 @@ function ServiceAutomationPanel({
         </div>
       )}
       <div className="mt-3 text-xs text-muted-foreground">
-        自动化只处理当前排序第一笔稀客订单；子选项关闭时不会执行对应动作。
+        稀客自动化只处理当前排序第一笔稀客订单；普通客处理需要单独开启后手动触发。
       </div>
       <AutoPrepStatus busy={busy} message={message} preferences={preferences} />
     </ListPanel>
@@ -2593,6 +2638,7 @@ function AutoPrepStatus({
       <div className="mt-1 whitespace-pre-line text-muted-foreground">{message}</div>
       <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
         <Badge variant={preferences.autoPrepCompleteOrder ? 'secondary' : 'outline'}>完成 {preferences.autoPrepCompleteOrder ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoNormalOrderEnabled ? 'secondary' : 'outline'}>普通客 {preferences.autoNormalOrderEnabled ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepTakeBeverage ? 'secondary' : 'outline'}>取酒 {preferences.autoPrepTakeBeverage ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepStartCooking ? 'secondary' : 'outline'}>料理 {preferences.autoPrepStartCooking ? '开' : '关'}</Badge>
         {preferences.autoPrepStartCooking && (
@@ -2658,11 +2704,14 @@ function formatGuestFund(guest: NightBusinessGuest): string {
   return String(Math.trunc(guest.fund));
 }
 
-function ListPanel({ title, children }: { title: string; children: ReactNode }) {
+function ListPanel({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
   return (
     <Card>
       <CardContent className="p-4">
-        <h2 className="mb-2 text-base font-semibold">{title}</h2>
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <h2 className="text-base font-semibold">{title}</h2>
+          {action}
+        </div>
         {children}
       </CardContent>
     </Card>
@@ -4617,6 +4666,20 @@ function isOrderableRareFoodTag(tag: string): boolean {
   return !NON_ORDERABLE_RARE_FOOD_TAGS.has(tag);
 }
 
+function matchesMissionStatusFilter(mission: RuntimeMissionInfo, filter: MissionStatusFilter): boolean {
+  switch (filter) {
+    case 'not-started':
+      return !mission.started && !mission.finished;
+    case 'started':
+      return mission.started && !mission.finished;
+    case 'finished':
+      return mission.finished;
+    case 'all':
+    default:
+      return true;
+  }
+}
+
 function readStoredTab(): ModTab {
   const value = readMigratedStorage(TAB_STORAGE_KEY, LEGACY_TAB_STORAGE_KEY, '');
   return value === 'overview'
@@ -4651,6 +4714,7 @@ function readStoredCompanionPreferences(): CompanionPreferences {
     alwaysOnTop: readStoredBoolean(ALWAYS_ON_TOP_STORAGE_KEY, true),
     gamepadNavigationEnabled: readStoredBoolean(GAMEPAD_NAVIGATION_STORAGE_KEY, true),
     automationEnabled: readStoredBoolean(AUTOMATION_ENABLED_STORAGE_KEY, false),
+    autoNormalOrderEnabled: readStoredBoolean(AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY, false),
     autoPrepCompleteOrder: readStoredBoolean(AUTO_PREP_COMPLETE_ORDER_STORAGE_KEY, false),
     autoPrepTakeBeverage: readStoredBoolean(AUTO_PREP_TAKE_BEVERAGE_STORAGE_KEY, false),
     autoPrepStartCooking: readStoredBoolean(AUTO_PREP_START_COOKING_STORAGE_KEY, false),
@@ -4752,6 +4816,7 @@ function normalizeCompanionPreferences(value: Partial<CompanionPreferences>): Co
     alwaysOnTop: Boolean(value.alwaysOnTop),
     gamepadNavigationEnabled: Boolean(value.gamepadNavigationEnabled),
     automationEnabled: Boolean(value.automationEnabled),
+    autoNormalOrderEnabled: Boolean(value.autoNormalOrderEnabled),
     autoPrepCompleteOrder: Boolean(value.autoPrepCompleteOrder),
     autoPrepTakeBeverage: Boolean(value.autoPrepTakeBeverage),
     autoPrepStartCooking: Boolean(value.autoPrepStartCooking),
@@ -4789,6 +4854,7 @@ function persistCompanionPreferences(preferences: CompanionPreferences) {
   localStorage.setItem(ALWAYS_ON_TOP_STORAGE_KEY, normalized.alwaysOnTop ? '1' : '0');
   localStorage.setItem(GAMEPAD_NAVIGATION_STORAGE_KEY, normalized.gamepadNavigationEnabled ? '1' : '0');
   localStorage.setItem(AUTOMATION_ENABLED_STORAGE_KEY, normalized.automationEnabled ? '1' : '0');
+  localStorage.setItem(AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY, normalized.autoNormalOrderEnabled ? '1' : '0');
   localStorage.setItem(AUTO_PREP_COMPLETE_ORDER_STORAGE_KEY, normalized.autoPrepCompleteOrder ? '1' : '0');
   localStorage.setItem(AUTO_PREP_TAKE_BEVERAGE_STORAGE_KEY, normalized.autoPrepTakeBeverage ? '1' : '0');
   localStorage.setItem(AUTO_PREP_START_COOKING_STORAGE_KEY, normalized.autoPrepStartCooking ? '1' : '0');

@@ -1681,6 +1681,16 @@ internal static class RuntimeOrderPreparationService
 
     private static object? ReadMember(object target, string name)
     {
+        try
+        {
+            var utilityValue = RuntimeReflectionUtility.GetMemberValue(target, name);
+            if (utilityValue != null) return utilityValue;
+        }
+        catch
+        {
+            // Fall back to the local exact-field reader below.
+        }
+
         for (var type = target.GetType(); type != null; type = type.BaseType)
         {
             foreach (var fieldName in BuildFieldNameCandidates(name))
@@ -1761,14 +1771,9 @@ internal static class RuntimeOrderPreparationService
 
     private static IEnumerable<object> ReadObjectEnumerable(object? value)
     {
-        if (value == null) yield break;
-        if (value is string) yield break;
-        if (value is IEnumerable enumerable)
+        foreach (var item in RuntimeReflectionUtility.EnumerateObjects(value))
         {
-            foreach (var item in enumerable)
-            {
-                if (item != null) yield return item;
-            }
+            if (item != null) yield return item;
         }
     }
 
@@ -1776,17 +1781,17 @@ internal static class RuntimeOrderPreparationService
     {
         var type = FindType(typeName)
             ?? throw new InvalidOperationException($"{typeName} type is not loaded.");
-        var property = type.GetProperty("Instance", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.FlattenHierarchy);
-        if (property != null) return property.GetValue(null);
-
-        var method = type.GetMethod("get_Instance", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.FlattenHierarchy);
-        return method?.Invoke(null, Array.Empty<object?>());
+        return RuntimeReflectionUtility.GetSingletonInstance(type)
+            ?? RuntimeReflectionUtility.FindUnityObject(type);
     }
 
     private static object? InvokeStatic(string typeName, string methodName, object?[] args)
     {
         var type = FindType(typeName)
             ?? throw new InvalidOperationException($"{typeName} type is not loaded.");
+        var utilityValue = RuntimeReflectionUtility.InvokeStaticMethod(type, methodName, args);
+        if (utilityValue != null) return utilityValue;
+
         var method = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
             .FirstOrDefault(candidate => string.Equals(candidate.Name, methodName, StringComparison.Ordinal)
                 && CanUseParameters(candidate.GetParameters(), args))
