@@ -8,6 +8,7 @@ public static class RuntimeMissionSnapshotService
     private const string RunTimeSchedulerTypeName = "GameData.RunTime.Common.RunTimeScheduler";
     private const string DataBaseLanguageTypeName = "GameData.CoreLanguage.Collections.DataBaseLanguage";
     private const string RunTimeDaySceneTypeName = "GameData.RunTime.DaySceneUtility.RunTimeDayScene";
+    private const string DaySceneMapTypeName = "DayScene.DaySceneMap";
     private const string CharacterConditionComponentTypeName = "DayScene.Interactables.Collections.ConditionComponents.CharacterConditionComponent";
     private const string MissionInteractConditionComponentTypeName = "DayScene.Interactables.Collections.ConditionComponents.MissionInteractConditionComponent";
     private static readonly TimeSpan CacheDuration = TimeSpan.FromSeconds(3);
@@ -41,24 +42,49 @@ public static class RuntimeMissionSnapshotService
             };
         }
 
+        var runtimeDaySceneType = RuntimeReflectionUtility.FindType(RunTimeDaySceneTypeName);
+        var daySceneMapType = RuntimeReflectionUtility.FindType(DaySceneMapTypeName);
+        var characterComponentType = RuntimeReflectionUtility.FindType(CharacterConditionComponentTypeName);
+        var missionInteractType = RuntimeReflectionUtility.FindType(MissionInteractConditionComponentTypeName);
+        source.Add($"types=RuntimeDayScene={(runtimeDaySceneType == null ? "missing" : "ok")}; DaySceneMap={(daySceneMapType == null ? "missing" : "ok")}; CharacterCondition={(characterComponentType == null ? "missing" : "ok")}; MissionInteract={(missionInteractType == null ? "missing" : "ok")}");
+
+        var trackingMissions = ReadTrackingMissions(schedulerType, errors).ToList();
+        source.Add($"trackingMissions={trackingMissions.Count}");
+
         var npcKeys = ReadGlobalNpcKeys(dataBaseDayType, errors).ToList();
         source.Add($"npcKeys={npcKeys.Count}");
         AddAvailableInteractMissions(missions, errors, dataBaseDayType, schedulerType, npcKeys, "InteractMission");
 
-        var trackedNpcLabels = ReadTrackedNpcLabels(errors).Except(npcKeys, StringComparer.Ordinal).ToList();
+        var trackedNpcLabels = ReadTrackedNpcLabels(runtimeDaySceneType, errors).Except(npcKeys, StringComparer.Ordinal).ToList();
         source.Add($"trackedNpcLabels={trackedNpcLabels.Count}");
         AddAvailableInteractMissions(missions, errors, dataBaseDayType, schedulerType, trackedNpcLabels, "TrackedNPC");
 
-        var sceneCharacterLabels = ReadSceneCharacterLabels(errors).Except(npcKeys.Concat(trackedNpcLabels), StringComparer.Ordinal).ToList();
+        var daySceneMapLabels = ReadDaySceneMapCharacterLabels(daySceneMapType, errors)
+            .Except(npcKeys.Concat(trackedNpcLabels), StringComparer.Ordinal)
+            .ToList();
+        source.Add($"daySceneMapCharacters={daySceneMapLabels.Count}");
+        AddAvailableInteractMissions(missions, errors, dataBaseDayType, schedulerType, daySceneMapLabels, "DaySceneMap");
+
+        var sceneCharacterLabels = ReadSceneCharacterLabels(characterComponentType, errors)
+            .Except(npcKeys.Concat(trackedNpcLabels).Concat(daySceneMapLabels), StringComparer.Ordinal)
+            .ToList();
         source.Add($"sceneCharacters={sceneCharacterLabels.Count}");
         AddAvailableInteractMissions(missions, errors, dataBaseDayType, schedulerType, sceneCharacterLabels, "SceneCharacter");
 
-        var sceneInteractableMissions = ReadSceneInteractableMissions(errors).ToList();
+        var trackedInteractableLabels = ReadTrackedInteractableLabels(runtimeDaySceneType, errors).ToList();
+        source.Add($"trackedInteractables={trackedInteractableLabels.Count}");
+        var trackedInteractableMissions = ReadInteractableMissions(schedulerType, trackingMissions, trackedInteractableLabels, "TrackedInteractable", errors).ToList();
+        source.Add($"trackedInteractableMissions={trackedInteractableMissions.Count}");
+        missions.AddRange(trackedInteractableMissions);
+
+        var sceneInteractableLabels = ReadSceneInteractableLabels(missionInteractType, errors).Except(trackedInteractableLabels, StringComparer.Ordinal).ToList();
+        source.Add($"sceneInteractableKeys={sceneInteractableLabels.Count}");
+        var sceneInteractableMissions = ReadInteractableMissions(schedulerType, trackingMissions, sceneInteractableLabels, "SceneInteractable", errors).ToList();
         source.Add($"sceneInteractables={sceneInteractableMissions.Count}");
         missions.AddRange(sceneInteractableMissions);
 
         var deduplicated = missions
-            .GroupBy(mission => $"{mission.Label}|{mission.CharacterLabel}|{mission.Source}", StringComparer.Ordinal)
+            .GroupBy(mission => $"{mission.Label}|{mission.CharacterLabel}", StringComparer.Ordinal)
             .Select(group => group.First())
             .OrderBy(mission => mission.CharacterName, StringComparer.Ordinal)
             .ThenBy(mission => mission.Title, StringComparer.Ordinal)
@@ -141,9 +167,34 @@ public static class RuntimeMissionSnapshotService
         }
     }
 
-    private static IEnumerable<string> ReadTrackedNpcLabels(List<string> errors)
+    private static IEnumerable<object?> ReadTrackingMissions(Type schedulerType, List<string> errors)
     {
-        var runtimeDaySceneType = RuntimeReflectionUtility.FindType(RunTimeDaySceneTypeName);
+        object? trackingMissionMaps;
+        try
+        {
+            trackingMissionMaps = RuntimeReflectionUtility.GetStaticMemberValue(schedulerType, "trackingMissions");
+        }
+        catch (Exception ex)
+        {
+            errors.Add($"tracking missions: {ex.Message}");
+            yield break;
+        }
+
+        if (trackingMissionMaps == null) yield break;
+
+        foreach (var bucketCandidate in RuntimeReflectionUtility.EnumerateObjects(trackingMissionMaps))
+        {
+            var bucket = RuntimeReflectionUtility.NormalizeKeyValueValue(bucketCandidate);
+            foreach (var missionCandidate in RuntimeReflectionUtility.EnumerateObjects(bucket))
+            {
+                var mission = RuntimeReflectionUtility.NormalizeKeyValueValue(missionCandidate);
+                if (mission != null) yield return mission;
+            }
+        }
+    }
+
+    private static IEnumerable<string> ReadTrackedNpcLabels(Type? runtimeDaySceneType, List<string> errors)
+    {
         if (runtimeDaySceneType == null) yield break;
 
         var trackedNpcMaps = RuntimeReflectionUtility.GetStaticMemberValue(runtimeDaySceneType, "trackedNPCs");
@@ -165,13 +216,41 @@ public static class RuntimeMissionSnapshotService
         }
     }
 
-    private static IEnumerable<string> ReadSceneCharacterLabels(List<string> errors)
+    private static IEnumerable<string> ReadDaySceneMapCharacterLabels(Type? daySceneMapType, List<string> errors)
     {
-        var characterComponentType = RuntimeReflectionUtility.FindType(CharacterConditionComponentTypeName);
+        if (daySceneMapType == null) yield break;
+
+        var allCharacters = RuntimeReflectionUtility.GetStaticMemberValue(daySceneMapType, "allCharacters");
+        if (allCharacters == null) yield break;
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var characterCandidate in RuntimeReflectionUtility.EnumerateObjects(allCharacters))
+        {
+            var component = RuntimeReflectionUtility.NormalizeKeyValueValue(characterCandidate);
+            string? label = null;
+            try
+            {
+                label = ReadTextMember(characterCandidate, "Key")
+                    ?? ReadTextMember(component, "CharacterLabel");
+                var trackedNpcData = RuntimeReflectionUtility.GetMemberValue(component, "trackedNPCData");
+                label ??= ReadTextMember(trackedNpcData, "key");
+            }
+            catch (Exception ex)
+            {
+                if (errors.Count < 8) errors.Add($"day scene map character: {ex.Message}");
+            }
+
+            if (string.IsNullOrWhiteSpace(label) || !seen.Add(label)) continue;
+            yield return label;
+        }
+    }
+
+    private static IEnumerable<string> ReadSceneCharacterLabels(Type? characterComponentType, List<string> errors)
+    {
         if (characterComponentType == null) yield break;
 
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var component in RuntimeReflectionUtility.FindUnityObjects(characterComponentType))
+        foreach (var component in RuntimeReflectionUtility.FindUnityObjectsIncludingInactive(characterComponentType))
         {
             string? label = null;
             try
@@ -190,19 +269,49 @@ public static class RuntimeMissionSnapshotService
         }
     }
 
-    private static IEnumerable<RuntimeMissionInfo> ReadSceneInteractableMissions(List<string> errors)
+    private static IEnumerable<string> ReadTrackedInteractableLabels(Type? runtimeDaySceneType, List<string> errors)
     {
-        var missionInteractType = RuntimeReflectionUtility.FindType(MissionInteractConditionComponentTypeName);
+        if (runtimeDaySceneType == null) yield break;
+
+        var trackedInteractables = RuntimeReflectionUtility.GetStaticMemberValue(runtimeDaySceneType, "trackedInteradctables");
+        if (trackedInteractables == null) yield break;
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var interactableCandidate in RuntimeReflectionUtility.EnumerateObjects(trackedInteractables))
+        {
+            var interactable = RuntimeReflectionUtility.NormalizeKeyValueValue(interactableCandidate);
+            string? label = null;
+            try
+            {
+                var openStatusValue = RuntimeReflectionUtility.GetMemberValue(interactable, "openStatus");
+                if (openStatusValue != null && !RuntimeReflectionUtility.ToBool(openStatusValue)) continue;
+
+                label = ReadTextMember(interactableCandidate, "Key")
+                    ?? ReadTextMember(interactable, "label");
+            }
+            catch (Exception ex)
+            {
+                if (errors.Count < 8) errors.Add($"tracked interactable: {ex.Message}");
+            }
+
+            if (string.IsNullOrWhiteSpace(label) || !seen.Add(label)) continue;
+            yield return label;
+        }
+    }
+
+    private static IEnumerable<string> ReadSceneInteractableLabels(Type? missionInteractType, List<string> errors)
+    {
         if (missionInteractType == null) yield break;
 
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var component in RuntimeReflectionUtility.FindUnityObjects(missionInteractType))
+        foreach (var component in RuntimeReflectionUtility.FindUnityObjectsIncludingInactive(missionInteractType))
         {
             string? interactableKey = null;
             var available = true;
             try
             {
-                available = RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.GetMemberValue(component, "CheckAvailability"));
+                var availableValue = RuntimeReflectionUtility.GetMemberValue(component, "CheckAvailability");
+                if (availableValue != null) available = RuntimeReflectionUtility.ToBool(availableValue);
                 interactableKey = ReadTextMember(component, "interactableKey");
             }
             catch (Exception ex)
@@ -211,18 +320,86 @@ public static class RuntimeMissionSnapshotService
             }
 
             if (!available || string.IsNullOrWhiteSpace(interactableKey) || !seen.Add(interactableKey)) continue;
+            yield return interactableKey;
+        }
+    }
 
+    private static IEnumerable<RuntimeMissionInfo> ReadInteractableMissions(
+        Type schedulerType,
+        IReadOnlyList<object?> trackingMissions,
+        IEnumerable<string> interactableLabels,
+        string source,
+        List<string> errors)
+    {
+        var interactables = interactableLabels
+            .Where(label => !string.IsNullOrWhiteSpace(label))
+            .Distinct(StringComparer.Ordinal)
+            .ToHashSet(StringComparer.Ordinal);
+        if (interactables.Count == 0) yield break;
+
+        var matchedInteractables = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var trackedMission in trackingMissions)
+        {
+            var missionLabel = ReadTextMember(trackedMission, "missionLabel");
+            if (string.IsNullOrWhiteSpace(missionLabel)) continue;
+
+            var started = RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.InvokeStaticMethod(schedulerType, "HaveMissionStarted", missionLabel));
+            var finished = RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.InvokeStaticMethod(schedulerType, "HaveMissionFinished", missionLabel));
+            if (started || finished) continue;
+
+            var mission = RuntimeReflectionUtility.InvokeMethod(trackedMission, "GetMissionReference");
+            var finishConditions = RuntimeReflectionUtility.GetMemberValue(mission, "finishCondition");
+            foreach (var condition in RuntimeReflectionUtility.EnumerateObjects(finishConditions))
+            {
+                string? interactableLabel = null;
+                try
+                {
+                    if (!IsConditionType(condition, "InspectInteractable", 2)) continue;
+                    interactableLabel = ReadTextMember(condition, "label");
+                    if (string.IsNullOrWhiteSpace(interactableLabel) || !interactables.Contains(interactableLabel)) continue;
+                }
+                catch (Exception ex)
+                {
+                    if (errors.Count < 8) errors.Add($"interactable mission: {ex.Message}");
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(interactableLabel)) continue;
+                matchedInteractables.Add(interactableLabel);
+                yield return new RuntimeMissionInfo
+                {
+                    Label = missionLabel,
+                    Title = ResolveMissionTitle(missionLabel),
+                    CharacterLabel = interactableLabel,
+                    CharacterName = "场景交互",
+                    Source = source,
+                    Started = started,
+                    Finished = finished,
+                };
+            }
+        }
+
+        foreach (var interactableLabel in interactables.Except(matchedInteractables, StringComparer.Ordinal))
+        {
             yield return new RuntimeMissionInfo
             {
-                Label = interactableKey,
-                Title = ResolveMissionTitle(interactableKey),
-                CharacterLabel = interactableKey,
+                Label = interactableLabel,
+                Title = ResolveMissionTitle(interactableLabel),
+                CharacterLabel = interactableLabel,
                 CharacterName = "场景交互",
-                Source = "SceneInteractable",
+                Source = $"{source}Key",
                 Started = false,
                 Finished = false,
             };
         }
+    }
+
+    private static bool IsConditionType(object? condition, string expectedName, int expectedValue)
+    {
+        var conditionType = RuntimeReflectionUtility.GetMemberValue(condition, "conditionType");
+        if (conditionType == null) return false;
+        if (RuntimeReflectionUtility.ToInt(conditionType, int.MinValue) == expectedValue) return true;
+        return string.Equals(conditionType.ToString(), expectedName, StringComparison.Ordinal);
     }
 
     private static string? ReadTextMember(object? value, string memberName)

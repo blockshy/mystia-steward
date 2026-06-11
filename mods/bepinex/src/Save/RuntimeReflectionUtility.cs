@@ -73,6 +73,49 @@ internal static class RuntimeReflectionUtility
         }
     }
 
+    public static IEnumerable<object?> FindUnityObjectsIncludingInactive(Type type)
+    {
+        foreach (var item in FindUnityObjects(type))
+        {
+            if (IsRuntimeSceneObject(item)) yield return item;
+        }
+
+        var method = typeof(UnityEngine.Resources).GetMethod("FindObjectsOfTypeAll", new[] { typeof(Type) });
+        if (method == null) yield break;
+
+        object? objects;
+        try
+        {
+            objects = method.Invoke(null, new object[] { type });
+        }
+        catch
+        {
+            yield break;
+        }
+
+        foreach (var item in EnumerateObjects(objects))
+        {
+            if (IsRuntimeSceneObject(item)) yield return item;
+        }
+    }
+
+    public static bool IsRuntimeSceneObject(object? value)
+    {
+        if (value == null) return false;
+
+        var gameObject = value is UnityEngine.GameObject ? value : GetMemberValue(value, "gameObject");
+        if (gameObject == null) return true;
+
+        var scene = GetMemberValue(gameObject, "scene");
+        if (scene == null) return true;
+
+        var isLoaded = GetMemberValue(scene, "isLoaded");
+        if (isLoaded != null) return ToBool(isLoaded);
+
+        var sceneName = GetMemberValue(scene, "name")?.ToString();
+        return !string.IsNullOrWhiteSpace(sceneName);
+    }
+
     public static object? InvokeStaticMethod(Type type, string methodName, params object?[] args)
     {
         var method = FindMethod(type, methodName, args, isStatic: true)
