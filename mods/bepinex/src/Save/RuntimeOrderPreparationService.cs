@@ -17,8 +17,11 @@ internal static class RuntimeOrderPreparationService
     private const string GuestsManagerTypeName = "NightScene.GuestManagementUtility.GuestsManager";
     private const string OrderControllerTypeName = "Night.UI.HUD.Ordering.OrderController";
     private const string MatchedCookComboTypeName = "NightScene.UI.CookingUtility.WorkSceneCookingSelectionPannel+MatchedCookCombo";
+    private const string StatusTrackerTypeName = "GameData.RunTime.Common.StatusTracker";
+    private const string GuestTableDisplayerTypeName = "NightScene.GuestManagementUtility.GuestTableDisplayer";
     private const int NormalOrderChangeContextFoodDelivered = 3;
     private const int NormalOrderChangeContextBeverageDelivered = 4;
+    private const int NormalOrderPartialDeliveryPatience = 15;
     private static readonly object PendingCookingLock = new();
     private static readonly List<PendingCookingCollection> PendingCookingCollections = new();
     private enum CookingCollectionTargetKind
@@ -325,7 +328,7 @@ internal static class RuntimeOrderPreparationService
             }
             else
             {
-                var beverageResult = TryServeBeverageDirect(runtimeOrder.Order, request.BeverageId, request.BeverageName);
+                var beverageResult = TryServeBeverageDirect(runtimeOrder.Order, runtimeOrder.Controller, request.BeverageId, request.BeverageName);
                 if (beverageResult.Ok)
                 {
                     result.Steps.Add(new OrderPreparationStep
@@ -361,7 +364,7 @@ internal static class RuntimeOrderPreparationService
         }
         else
         {
-            var inAirResult = TryDeliverNormalFoodInAir(runtimeOrder.Order, expectedFoodId, request.RecipeName);
+            var inAirResult = TryDeliverNormalFoodInAir(runtimeOrder.Order, runtimeOrder.Controller, expectedFoodId, request.RecipeName);
             if (inAirResult.Ok)
             {
                 result.Steps.Add(new OrderPreparationStep
@@ -545,7 +548,7 @@ internal static class RuntimeOrderPreparationService
         return (true, $"{beverageName} 已放入送餐盘（{quantityText}）。");
     }
 
-    private static (bool Ok, bool Skipped, string Message) TryServeBeverageDirect(object order, int beverageId, string beverageName)
+    private static (bool Ok, bool Skipped, string Message) TryServeBeverageDirect(object order, object? controller, int beverageId, string beverageName)
     {
         if (ReadMember(order, "ServBeverage") != null)
         {
@@ -566,7 +569,7 @@ internal static class RuntimeOrderPreparationService
                 return (false, false, $"已读取到待送达酒水 {beverageName}，但写入普客订单失败。");
             }
 
-            NotifyNormalOrderStatusUpdate(order, NormalOrderChangeContextBeverageDelivered);
+            ApplyNormalDeliverySideEffects(order, controller, beverageInAir, isFood: false);
             return (true, true, $"{beverageName} 已从待送达状态写入普客订单。");
         }
 
@@ -594,7 +597,7 @@ internal static class RuntimeOrderPreparationService
             InvokeRuntimeStorageOut("BeverageOut", beverageId);
         }
 
-        NotifyNormalOrderStatusUpdate(order, NormalOrderChangeContextBeverageDelivered);
+        ApplyNormalDeliverySideEffects(order, controller, sellable, isFood: false);
         var quantityText = currentQuantity < 0 ? "无限库存" : $"剩余 {Math.Max(0, currentQuantity - 1)}";
         return (true, false, $"{beverageName} 已按游戏送达状态写入普客订单（{quantityText}）。");
     }
@@ -624,11 +627,12 @@ internal static class RuntimeOrderPreparationService
         }
 
         InvokeInstance(tray, "Deliver", new object?[] { food });
+        ApplyNormalDeliverySideEffects(order, null, food, isFood: true);
         message = $"已将送餐盘中的 {foodName} 写入普客订单。";
         return true;
     }
 
-    private static (bool Ok, bool Blocked, string Message) TryDeliverNormalFoodInAir(object order, int foodId, string foodName)
+    private static (bool Ok, bool Blocked, string Message) TryDeliverNormalFoodInAir(object order, object? controller, int foodId, string foodName)
     {
         var foodInAir = ReadMember(order, "ServedFoodInAir");
         if (foodInAir == null)
@@ -647,7 +651,7 @@ internal static class RuntimeOrderPreparationService
             return (false, true, $"已读取到保温位中的 {foodName}，但写入普客订单失败。");
         }
 
-        NotifyNormalOrderStatusUpdate(order, NormalOrderChangeContextFoodDelivered);
+        ApplyNormalDeliverySideEffects(order, controller, foodInAir, isFood: true);
         return (true, false, $"已将保温位中的 {foodName} 送达普客订单。");
     }
 
@@ -943,7 +947,7 @@ internal static class RuntimeOrderPreparationService
             if (pending.Target.FoodId >= 0 && IsSellable(existingFoodInAir, sellableType: 0, id: pending.Target.FoodId))
             {
                 WriteMember(order, "ServFood", existingFoodInAir);
-                NotifyNormalOrderStatusUpdate(order, NormalOrderChangeContextFoodDelivered);
+                ApplyNormalDeliverySideEffects(order, pending.Target.Controller, existingFoodInAir, isFood: true);
                 TryInvokeInstance(pending.CookController, "AfterPlayerExtract", Array.Empty<object?>());
                 TryInvokeInstance(pending.CookController, "CloseCookingVisual", Array.Empty<object?>());
                 TryClearCookController(pending.CookController, cookedFood);
@@ -965,12 +969,275 @@ internal static class RuntimeOrderPreparationService
             return (true, $"{pending.RecipeName} 已完成，但写入目标普客订单失败，已停止自动收取。");
         }
 
-        NotifyNormalOrderStatusUpdate(order, NormalOrderChangeContextFoodDelivered);
+        ApplyNormalDeliverySideEffects(order, pending.Target.Controller, cookedFood, isFood: true);
         TryInvokeInstance(pending.CookController, "AfterPlayerExtract", Array.Empty<object?>());
         TryInvokeInstance(pending.CookController, "CloseCookingVisual", Array.Empty<object?>());
         TryClearCookController(pending.CookController, cookedFood);
 
         return (true, BuildNormalOrderDeliveryMessage(pending, $"{pending.RecipeName} 已自动送达普客订单"));
+    }
+
+    private static void ApplyNormalDeliverySideEffects(object order, object? controller, object sellable, bool isFood)
+    {
+        var context = isFood ? NormalOrderChangeContextFoodDelivered : NormalOrderChangeContextBeverageDelivered;
+        NotifyNormalOrderStatusUpdate(order, context);
+        TryAddPlayerOccupiedDeskCode(order);
+        TryRecordBusinessConsume(sellable, isFood);
+        TryUpdateNormalDeskVisual(order, controller, sellable, isFood);
+        TryRecoverNormalOrderPatient(order, controller);
+    }
+
+    private static void TryAddPlayerOccupiedDeskCode(object order)
+    {
+        try
+        {
+            var deskCode = ToInt(ReadMember(order, "DeskCode") ?? TryInvokeInstanceValue(order, "get_DeskCode"), -1);
+            if (deskCode < 0) return;
+
+            var partnerManager = GetSingletonInstance(PartnerManagerTypeName);
+            if (partnerManager == null) return;
+            TryInvokeWithConvertedArguments(partnerManager, "TryAddPlayerOccupiedDeskCode", new object?[] { deskCode });
+        }
+        catch
+        {
+            // Optional side effect; keep the automation flow alive.
+        }
+    }
+
+    private static void TryRecordBusinessConsume(object sellable, bool isFood)
+    {
+        try
+        {
+            var id = ReadSellableId(sellable);
+            if (id < 0) return;
+
+            var tracker = GetSingletonInstance(StatusTrackerTypeName);
+            if (tracker == null) return;
+
+            var methodName = isFood ? "AddBussinessFoodConsumes" : "AddBussinessBeverageConsumes";
+            TryInvokeIntEnumerableMethod(tracker, methodName, new[] { id });
+        }
+        catch
+        {
+            // Some versions may not have StatusTracker ready during scene transitions.
+        }
+    }
+
+    private static void TryUpdateNormalDeskVisual(object order, object? controller, object sellable, bool isFood)
+    {
+        try
+        {
+            var sprite = ReadSellableVisual(sellable);
+            if (sprite == null) return;
+
+            var displayer = FindGuestTableDisplayer(controller, order);
+            if (displayer == null) return;
+
+            TryInvokeWithConvertedArguments(displayer, isFood ? "SetFoodVisual" : "SetBeverageVisual", new[] { sprite });
+        }
+        catch
+        {
+            // Visual refresh is best-effort; order data and evaluation remain authoritative.
+        }
+    }
+
+    private static object? ReadSellableVisual(object sellable)
+    {
+        var text = TryInvokeInstanceValue(sellable, "get_Text")
+            ?? ReadMember(sellable, "Text")
+            ?? ReadMember(sellable, "text");
+        if (text == null) return null;
+
+        return TryInvokeInstanceValue(text, "get_Visual")
+            ?? ReadMember(text, "Visual")
+            ?? ReadMember(text, "_Visual")
+            ?? ReadMember(text, "visual");
+    }
+
+    private static object? FindGuestTableDisplayer(object? controller, object order)
+    {
+        var nested = FindNestedObjectByTypeName(controller, GuestTableDisplayerTypeName, maxDepth: 4);
+        if (nested != null) return nested;
+
+        var deskCode = ToInt(ReadMember(order, "DeskCode") ?? TryInvokeInstanceValue(order, "get_DeskCode"), -1);
+        return FindGuestTableDisplayerByDeskCode(deskCode);
+    }
+
+    private static object? FindGuestTableDisplayerByDeskCode(int deskCode)
+    {
+        if (deskCode < 0) return null;
+
+        var type = FindType(GuestTableDisplayerTypeName);
+        if (type == null) return null;
+
+        foreach (var displayer in RuntimeReflectionUtility.FindUnityObjectsIncludingInactive(type))
+        {
+            if (displayer == null) continue;
+            var label = ReadDeskCodeText(displayer);
+            if (label == deskCode.ToString() || label == (deskCode + 1).ToString()) return displayer;
+        }
+
+        return null;
+    }
+
+    private static string ReadDeskCodeText(object displayer)
+    {
+        var textObject = ReadMember(displayer, "deskCode");
+        if (textObject == null) return "";
+        var text = (TryInvokeInstanceValue(textObject!, "get_text") ?? ReadMember(textObject!, "text"))?.ToString()?.Trim() ?? "";
+        return NormalizeDeskCodeText(text);
+    }
+
+    private static string NormalizeDeskCodeText(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return "";
+
+        var digits = new string(text.Where(char.IsDigit).ToArray());
+        return string.IsNullOrWhiteSpace(digits) ? text.Trim() : digits;
+    }
+
+    private static object? FindNestedObjectByTypeName(object? root, string typeName, int maxDepth)
+    {
+        if (root == null || maxDepth < 0) return null;
+
+        var seen = new HashSet<nint>();
+        var queue = new Queue<(object Value, int Depth)>();
+        queue.Enqueue((root, 0));
+
+        while (queue.Count > 0)
+        {
+            var (value, depth) = queue.Dequeue();
+            nint pointer;
+            try
+            {
+                pointer = ReadObjectPointer(value);
+            }
+            catch
+            {
+                pointer = new IntPtr(RuntimeHelpers.GetHashCode(value));
+            }
+
+            if (!seen.Add(pointer)) continue;
+            if (IsTypeName(value, typeName)) return value;
+            if (depth >= maxDepth) continue;
+
+            foreach (var child in EnumerateReadableObjectMembers(value))
+            {
+                queue.Enqueue((child, depth + 1));
+            }
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<object> EnumerateReadableObjectMembers(object value)
+    {
+        const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+        for (var type = value.GetType(); type != null; type = type.BaseType)
+        {
+            foreach (var field in type.GetFields(flags | BindingFlags.DeclaredOnly))
+            {
+                if (ShouldSkipObjectMember(field.FieldType)) continue;
+                object? fieldValue;
+                try
+                {
+                    fieldValue = field.GetValue(value);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                foreach (var child in ExpandObjectMember(fieldValue))
+                {
+                    yield return child;
+                }
+            }
+
+        }
+    }
+
+    private static IEnumerable<object> ExpandObjectMember(object? value)
+    {
+        if (value == null || value is string) yield break;
+        if (ShouldSkipObjectMember(value.GetType())) yield break;
+
+        foreach (var item in ReadObjectEnumerable(value))
+        {
+            if (item == null || item is string) continue;
+            if (ShouldSkipObjectMember(item.GetType())) continue;
+            yield return item;
+        }
+
+        if (value is IEnumerable && !IsTypeName(value, GuestTableDisplayerTypeName)) yield break;
+        yield return value;
+    }
+
+    private static bool ShouldSkipObjectMember(Type type)
+    {
+        if (type.IsPrimitive || type.IsEnum || type == typeof(string) || type == typeof(decimal)) return true;
+        if (typeof(Delegate).IsAssignableFrom(type)) return true;
+        if (type.FullName?.StartsWith("System.", StringComparison.Ordinal) == true
+            && !typeof(IEnumerable).IsAssignableFrom(type))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsTypeName(object value, string typeName)
+    {
+        for (var type = value.GetType(); type != null; type = type.BaseType)
+        {
+            if (string.Equals(type.FullName, typeName, StringComparison.Ordinal)
+                || string.Equals(type.Name, typeName, StringComparison.Ordinal)
+                || type.FullName?.EndsWith($".{typeName}", StringComparison.Ordinal) == true)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static void TryRecoverNormalOrderPatient(object order, object? controller)
+    {
+        try
+        {
+            if (controller == null) return;
+            if (ReadBool(InvokeInstance(order, "get_IsFullfilled", Array.Empty<object?>()))) return;
+            TryInvokeWithConvertedArguments(controller, "AddPatient", new object?[] { NormalOrderPartialDeliveryPatience });
+        }
+        catch
+        {
+            // Keep parity with the serve panel when possible, but never fail delivery over this.
+        }
+    }
+
+    private static bool TryInvokeIntEnumerableMethod(object target, string methodName, IReadOnlyList<int> ids)
+    {
+        foreach (var method in target.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+        {
+            if (!string.Equals(method.Name, methodName, StringComparison.Ordinal)) continue;
+            var parameters = method.GetParameters();
+            if (parameters.Length != 1) continue;
+
+            foreach (var argument in BuildIntArrayArgumentCandidates(parameters[0].ParameterType, ids))
+            {
+                try
+                {
+                    method.Invoke(target, new[] { argument });
+                    return true;
+                }
+                catch
+                {
+                    // Try the next collection representation.
+                }
+            }
+        }
+
+        return false;
     }
 
     private static void NotifyNormalOrderStatusUpdate(object order, int context)
@@ -1363,7 +1630,8 @@ internal static class RuntimeOrderPreparationService
             yield break;
         }
 
-        if (typeof(IEnumerable).IsAssignableFrom(parameterType))
+        if (typeof(IEnumerable).IsAssignableFrom(parameterType)
+            || parameterType.FullName?.Contains("IEnumerable", StringComparison.Ordinal) == true)
         {
             yield return ids.ToArray();
             yield return BuildIl2CppIntArray(ids);
