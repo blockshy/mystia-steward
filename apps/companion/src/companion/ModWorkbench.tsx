@@ -75,6 +75,7 @@ const GAME_UI_PINNING_STORAGE_KEY = `${STORAGE_PREFIX}-game-ui-pinning`;
 const COOKER_HIGHLIGHT_STORAGE_KEY = `${STORAGE_PREFIX}-cooker-highlight`;
 const RECIPE_SORT_RULES_STORAGE_KEY = `${STORAGE_PREFIX}-recipe-sort-rules`;
 const BEVERAGE_SORT_RULES_STORAGE_KEY = `${STORAGE_PREFIX}-beverage-sort-rules`;
+const SERVICE_ORDER_SORT_MODE_STORAGE_KEY = `${STORAGE_PREFIX}-service-order-sort-mode`;
 const LEGACY_ENDPOINT_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-endpoint`;
 const LEGACY_TOKEN_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-api-token`;
 const LEGACY_TAB_STORAGE_KEY = `${LEGACY_STORAGE_PREFIX}-mod-tab`;
@@ -121,6 +122,7 @@ const MOD_TAB_TRIGGER_CLASS = 'min-w-0 flex-1 data-active:bg-primary data-active
 type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'inventory' | 'logs' | 'settings';
 const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'service', 'inventory', 'logs', 'settings'];
 type FocusSwitchBehavior = 'hide' | 'keep-visible';
+type ServiceOrderSortMode = 'ordered' | 'guest';
 type SortDirection = 'asc' | 'desc';
 type RecipeSortKey =
   | 'requiredTag'
@@ -425,6 +427,7 @@ interface CompanionPreferences {
   cookerHighlightEnabled: boolean;
   recipeSortRules: SortRule<RecipeSortKey>[];
   beverageSortRules: SortRule<BeverageSortKey>[];
+  serviceOrderSortMode: ServiceOrderSortMode;
 }
 
 interface AutoFirstOrderState {
@@ -511,11 +514,12 @@ export function ModWorkbench() {
   );
   const gameUiPinningTarget = useMemo(
     () => companionPreferences.gameUiPinningEnabled || companionPreferences.cookerHighlightEnabled
-      ? buildGameUiPinningTarget(orderRecommendations.recommendations)
+      ? buildGameUiPinningTarget(orderRecommendations.recommendations, companionPreferences.serviceOrderSortMode)
       : null,
     [
       companionPreferences.cookerHighlightEnabled,
       companionPreferences.gameUiPinningEnabled,
+      companionPreferences.serviceOrderSortMode,
       orderRecommendations.recommendations,
     ],
   );
@@ -910,6 +914,7 @@ export function ModWorkbench() {
         favorites={favorites}
         favoriteBusyKey={favoriteBusyKey}
         favoriteError={favoriteError}
+        orderSortMode={companionPreferences.serviceOrderSortMode}
         compact={serviceFocusCompact}
         recipeLimit={serviceFocusRecipeLimit}
         beverageLimit={serviceFocusBeverageLimit}
@@ -1553,7 +1558,10 @@ function ModServicePanel({
   onEnterFocusMode: () => void;
 }) {
   const activeGuests = night?.activeRareGuests ?? [];
-  const orders = useMemo(() => sortNightOrders(night?.orders ?? []), [night?.orders]);
+  const orders = useMemo(
+    () => sortNightOrders(night?.orders ?? [], autoPrepPreferences.serviceOrderSortMode),
+    [autoPrepPreferences.serviceOrderSortMode, night?.orders],
+  );
 
   return (
     <div className="space-y-4">
@@ -1628,6 +1636,7 @@ function ModServicePanel({
           recommendations={recommendations}
           recommendationIssues={recommendationIssues}
           runtimeSets={runtimeSets}
+          orderSortMode={autoPrepPreferences.serviceOrderSortMode}
           favorites={favorites}
           favoriteBusyKey={favoriteBusyKey}
           favoriteError={favoriteError}
@@ -1643,6 +1652,7 @@ function ServiceFocusPage({
   recommendations,
   recommendationIssues,
   runtimeSets,
+  orderSortMode,
   favorites,
   favoriteBusyKey,
   favoriteError,
@@ -1659,6 +1669,7 @@ function ServiceFocusPage({
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
   runtimeSets: RuntimeSets | null;
+  orderSortMode: ServiceOrderSortMode;
   favorites: FavoriteData;
   favoriteBusyKey: string;
   favoriteError: string;
@@ -1706,6 +1717,7 @@ function ServiceFocusPage({
           recommendations={recommendations}
           recommendationIssues={recommendationIssues}
           runtimeSets={runtimeSets}
+          orderSortMode={orderSortMode}
           favorites={favorites}
           favoriteBusyKey={favoriteBusyKey}
           favoriteError={favoriteError}
@@ -1726,6 +1738,7 @@ function CurrentOrderRecommendations({
   recommendations,
   recommendationIssues,
   runtimeSets,
+  orderSortMode,
   favorites,
   favoriteBusyKey,
   favoriteError,
@@ -1738,6 +1751,7 @@ function CurrentOrderRecommendations({
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
   runtimeSets: RuntimeSets | null;
+  orderSortMode: ServiceOrderSortMode;
   favorites: FavoriteData;
   favoriteBusyKey: string;
   favoriteError: string;
@@ -1748,11 +1762,11 @@ function CurrentOrderRecommendations({
   onToggleBeverageFavorite: ToggleBeverageFavorite;
 }) {
   const rows = useMemo(
-    () => [
+    () => sortNightOrderRows([
       ...recommendationIssues.map((issue) => ({ kind: 'issue' as const, order: issue.order, issue })),
       ...recommendations.map((item) => ({ kind: 'recommendation' as const, order: item.order, item })),
-    ].sort((left, right) => compareNightOrders(left.order, right.order)),
-    [recommendationIssues, recommendations],
+    ], orderSortMode),
+    [orderSortMode, recommendationIssues, recommendations],
   );
 
   return (
@@ -2212,6 +2226,15 @@ function ModSettingsPanel({
           <div className="text-xs text-muted-foreground">
             进入经营场景后，若读取到已摆放厨具，推荐列表会隐藏当前场景无法制作的料理。
           </div>
+          <SettingChoice
+            label="经营中订单排序"
+            value={preferences.serviceOrderSortMode}
+            options={[
+              { value: 'ordered', label: '点单顺序', description: '按订单首次出现时间排列，保持当前默认行为。' },
+              { value: 'guest', label: '稀客分组', description: '同一稀客的订单放在一起，组内仍按点单先后排列。' },
+            ]}
+            onChange={(serviceOrderSortMode) => onPreferenceChange({ serviceOrderSortMode })}
+          />
           <SwitchControl
             label="游戏界面置顶推荐（实验性）"
             checked={preferences.gameUiPinningEnabled}
@@ -3489,16 +3512,76 @@ function mergeRareCustomers(localCustomers: ICustomerRare[], runtimeRareCustomer
   return result;
 }
 
-function sortNightOrders(orders: NightBusinessOrder[]): NightBusinessOrder[] {
-  return [...orders].sort(compareNightOrders);
+function sortNightOrders(
+  orders: NightBusinessOrder[],
+  mode: ServiceOrderSortMode = 'ordered',
+): NightBusinessOrder[] {
+  const groupFirstSeen = buildOrderGroupFirstSeen(orders);
+  return [...orders].sort((left, right) => compareNightOrders(left, right, mode, groupFirstSeen));
 }
 
-function compareNightOrders(left: NightBusinessOrder, right: NightBusinessOrder): number {
+function sortNightOrderRows<T extends { order: NightBusinessOrder }>(
+  rows: T[],
+  mode: ServiceOrderSortMode,
+): T[] {
+  const groupFirstSeen = buildOrderGroupFirstSeen(rows.map((row) => row.order));
+  return [...rows].sort((left, right) => compareNightOrders(left.order, right.order, mode, groupFirstSeen));
+}
+
+function compareNightOrders(
+  left: NightBusinessOrder,
+  right: NightBusinessOrder,
+  mode: ServiceOrderSortMode = 'ordered',
+  groupFirstSeen: Map<string, number> | null = null,
+): number {
+  if (mode === 'guest') {
+    const leftGroupKey = getOrderGuestGroupKey(left);
+    const rightGroupKey = getOrderGuestGroupKey(right);
+    if (leftGroupKey !== rightGroupKey) {
+      const leftGroupSeenAt = groupFirstSeen?.get(leftGroupKey) ?? getOrderSeenTime(left);
+      const rightGroupSeenAt = groupFirstSeen?.get(rightGroupKey) ?? getOrderSeenTime(right);
+      if (leftGroupSeenAt !== rightGroupSeenAt) return leftGroupSeenAt - rightGroupSeenAt;
+      const groupCompare = compareOrderGroupIdentity(left, right);
+      if (groupCompare !== 0) return groupCompare;
+    }
+  }
+
+  return compareNightOrdersByTime(left, right);
+}
+
+function compareNightOrdersByTime(left: NightBusinessOrder, right: NightBusinessOrder): number {
   const leftSeenAt = getOrderSeenTime(left);
   const rightSeenAt = getOrderSeenTime(right);
   if (leftSeenAt !== rightSeenAt) return leftSeenAt - rightSeenAt;
   if (left.deskCode !== right.deskCode) return left.deskCode - right.deskCode;
   return left.guestName.localeCompare(right.guestName, 'zh-Hans-CN');
+}
+
+function buildOrderGroupFirstSeen(orders: NightBusinessOrder[]): Map<string, number> {
+  const result = new Map<string, number>();
+  for (const order of orders) {
+    const key = getOrderGuestGroupKey(order);
+    const seenAt = getOrderSeenTime(order);
+    const current = result.get(key);
+    if (current === undefined || seenAt < current) result.set(key, seenAt);
+  }
+  return result;
+}
+
+function getOrderGuestGroupKey(order: NightBusinessOrder): string {
+  if (order.guestId !== null && order.guestId !== undefined && order.guestId >= 0) {
+    return `id:${order.guestId}`;
+  }
+  return `name:${order.guestName.trim()}|desk:${order.deskCode}`;
+}
+
+function compareOrderGroupIdentity(left: NightBusinessOrder, right: NightBusinessOrder): number {
+  const nameCompare = left.guestName.localeCompare(right.guestName, 'zh-Hans-CN');
+  if (nameCompare !== 0) return nameCompare;
+  const leftGuestId = left.guestId ?? Number.MAX_SAFE_INTEGER;
+  const rightGuestId = right.guestId ?? Number.MAX_SAFE_INTEGER;
+  if (leftGuestId !== rightGuestId) return leftGuestId - rightGuestId;
+  return left.deskCode - right.deskCode;
 }
 
 function getOrderSeenTime(order: NightBusinessOrder): number {
@@ -3540,7 +3623,7 @@ function buildOrderRecommendations(
   preferences: CompanionPreferences,
 ): { recommendations: OrderRecommendation[]; recommendationIssues: RecommendationIssue[] } {
   if (orders.length === 0) return { recommendations: [], recommendationIssues: [] };
-  const sortedOrders = sortNightOrders(orders);
+  const sortedOrders = sortNightOrders(orders, preferences.serviceOrderSortMode);
   if (!runtime) {
     return {
       recommendations: [],
@@ -3673,12 +3756,15 @@ function selectNextOrderPreparation(
   favorites: FavoriteData,
   preferences: CompanionPreferences,
 ): OrderPreparationSelection {
-  const rows = [...recommendations].sort((left, right) => compareNightOrders(left.order, right.order));
+  const rows = sortNightOrderRows(
+    recommendations.map((item) => ({ order: item.order, item })),
+    preferences.serviceOrderSortMode,
+  );
   if (rows.length === 0) {
     return { ok: false, message: '暂无可准备的稀客订单。' };
   }
 
-  const item = rows[0];
+  const item = rows[0].item;
   const recipePick = pickRecipeForPreparation(item, favorites, preferences);
   const beveragePick = pickBeverageForPreparation(item, favorites, preferences);
   if (!recipePick.ok && (preferences.autoPrepStartCooking || preferences.autoPrepFavoritesOnly)) {
@@ -3708,8 +3794,14 @@ function selectNextOrderPreparation(
   };
 }
 
-function buildGameUiPinningTarget(recommendations: OrderRecommendation[]): GameUiPinningTarget | null {
-  const item = [...recommendations].sort((left, right) => compareNightOrders(left.order, right.order))[0];
+function buildGameUiPinningTarget(
+  recommendations: OrderRecommendation[],
+  orderSortMode: ServiceOrderSortMode,
+): GameUiPinningTarget | null {
+  const item = sortNightOrderRows(
+    recommendations.map((recommendation) => ({ order: recommendation.order, recommendation })),
+    orderSortMode,
+  )[0]?.recommendation;
   if (!item) return null;
   const recipe = item.recipes[0] ?? null;
   const beverage = item.beverages[0] ?? null;
@@ -4311,12 +4403,18 @@ function readStoredCompanionPreferences(): CompanionPreferences {
     cookerHighlightEnabled: readStoredBoolean(COOKER_HIGHLIGHT_STORAGE_KEY, false),
     recipeSortRules: readStoredSortRules(RECIPE_SORT_RULES_STORAGE_KEY, RECIPE_SORT_OPTIONS),
     beverageSortRules: readStoredSortRules(BEVERAGE_SORT_RULES_STORAGE_KEY, BEVERAGE_SORT_OPTIONS),
+    serviceOrderSortMode: readStoredServiceOrderSortMode(),
   });
 }
 
 function readStoredFocusSwitchBehavior(): FocusSwitchBehavior {
   const value = localStorage.getItem(FOCUS_SWITCH_BEHAVIOR_STORAGE_KEY);
   return value === 'keep-visible' ? 'keep-visible' : 'hide';
+}
+
+function readStoredServiceOrderSortMode(): ServiceOrderSortMode {
+  const value = localStorage.getItem(SERVICE_ORDER_SORT_MODE_STORAGE_KEY);
+  return value === 'guest' ? 'guest' : 'ordered';
 }
 
 function readStoredSortRules<K extends string>(key: string, options: SortOption<K>[]): SortRule<K>[] {
@@ -4406,6 +4504,7 @@ function normalizeCompanionPreferences(value: Partial<CompanionPreferences>): Co
     cookerHighlightEnabled: Boolean(value.cookerHighlightEnabled),
     recipeSortRules: normalizeSortRules(value.recipeSortRules, RECIPE_SORT_OPTIONS),
     beverageSortRules: normalizeSortRules(value.beverageSortRules, BEVERAGE_SORT_OPTIONS),
+    serviceOrderSortMode: value.serviceOrderSortMode === 'guest' ? 'guest' : 'ordered',
   };
 }
 
@@ -4442,6 +4541,7 @@ function persistCompanionPreferences(preferences: CompanionPreferences) {
   localStorage.setItem(COOKER_HIGHLIGHT_STORAGE_KEY, normalized.cookerHighlightEnabled ? '1' : '0');
   localStorage.setItem(RECIPE_SORT_RULES_STORAGE_KEY, JSON.stringify(normalized.recipeSortRules));
   localStorage.setItem(BEVERAGE_SORT_RULES_STORAGE_KEY, JSON.stringify(normalized.beverageSortRules));
+  localStorage.setItem(SERVICE_ORDER_SORT_MODE_STORAGE_KEY, normalized.serviceOrderSortMode);
 }
 
 function applyCompanionVisualPreferences(preferences: CompanionPreferences) {
