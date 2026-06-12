@@ -382,8 +382,7 @@ internal sealed class StewardOverlayController
             var provider = new NightBusinessReflectionProvider(
                 _repository,
                 CreateNightBusinessDiagnostics(),
-                _activeSceneName,
-                _config.EnableSpecialOrderLogFallback.Value);
+                _activeSceneName);
             _businessContext = provider.LoadContext();
             if (manual)
             {

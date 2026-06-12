@@ -26,7 +26,6 @@ public sealed class StewardPluginConfig
         ConfigEntry<bool> enableNightBusinessDiagnostics,
         ConfigEntry<string> nightBusinessDiagnosticsPath,
         ConfigEntry<float> nightBusinessDiagnosticsIntervalSeconds,
-        ConfigEntry<bool> enableSpecialOrderLogFallback,
         ConfigEntry<int> maxExtraIngredients,
         ConfigEntry<string> popularFoodTagOverride,
         ConfigEntry<string> popularHateFoodTagOverride,
@@ -52,7 +51,6 @@ public sealed class StewardPluginConfig
         EnableNightBusinessDiagnostics = enableNightBusinessDiagnostics;
         NightBusinessDiagnosticsPath = nightBusinessDiagnosticsPath;
         NightBusinessDiagnosticsIntervalSeconds = nightBusinessDiagnosticsIntervalSeconds;
-        EnableSpecialOrderLogFallback = enableSpecialOrderLogFallback;
         MaxExtraIngredients = maxExtraIngredients;
         PopularFoodTagOverride = popularFoodTagOverride;
         PopularHateFoodTagOverride = popularHateFoodTagOverride;
@@ -79,7 +77,6 @@ public sealed class StewardPluginConfig
     public ConfigEntry<bool> EnableNightBusinessDiagnostics { get; }
     public ConfigEntry<string> NightBusinessDiagnosticsPath { get; }
     public ConfigEntry<float> NightBusinessDiagnosticsIntervalSeconds { get; }
-    public ConfigEntry<bool> EnableSpecialOrderLogFallback { get; }
     public ConfigEntry<int> MaxExtraIngredients { get; }
     public ConfigEntry<string> PopularFoodTagOverride { get; }
     public ConfigEntry<string> PopularHateFoodTagOverride { get; }
@@ -109,7 +106,6 @@ public sealed class StewardPluginConfig
             config.Bind("Diagnostics", "EnableNightBusinessDiagnostics", false, "Write night-business detection snapshots to an external file for debugging."),
             config.Bind("Diagnostics", "NightBusinessDiagnosticsPath", "", "Optional diagnostics log path. Empty uses BepInEx/config/mystia-steward-companion/night-business-diagnostics.log."),
             config.Bind("Diagnostics", "NightBusinessDiagnosticsIntervalSeconds", 2f, "Minimum seconds between diagnostics snapshots."),
-            config.Bind("Diagnostics", "EnableSpecialOrderLogFallback", false, "Fallback to parsing game console order logs if runtime order capture does not detect orders."),
             config.Bind("Rare", "MaxExtraIngredients", 4, "Maximum extra ingredients to search for rare recipes."),
             config.Bind("Overrides", "PopularFoodTag", "", "Optional popular liked food tag override. Empty uses live runtime data."),
             config.Bind("Overrides", "PopularHateFoodTag", "", "Optional popular hated food tag override. Empty uses live runtime data."),

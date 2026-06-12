@@ -323,10 +323,12 @@ public static class SpecialOrderRuntimeCapture
         var textParts = ParseOrderText(SafeToString(readableOrder));
         var orderTypeValue = GetMemberValue(readableOrder, "Type");
         var orderType = FormatValue(orderTypeValue);
+        var isManualSpecialOrder = IsManualSpecialOrder(readableOrder, controller);
         if (!IsSpecialOrderType(orderTypeValue, orderType)
             && !string.Equals(textParts.OrderType, "Special", StringComparison.OrdinalIgnoreCase)
             && readableOrder.GetType().Name.IndexOf("SpecialOrder", StringComparison.OrdinalIgnoreCase) < 0
-            && !textParts.LooksLikeSpecialOrder)
+            && !textParts.LooksLikeSpecialOrder
+            && !isManualSpecialOrder)
         {
             NoteParseFailure(source, $"not special: {order.GetType().FullName}", readableOrder, textParts);
             return null;
@@ -670,6 +672,29 @@ public static class SpecialOrderRuntimeCapture
     private static bool IsOrderFulfilled(object? order)
     {
         var value = GetMemberValue(order, "IsFullfilled");
+        if (value is bool boolValue) return boolValue;
+        return string.Equals(value?.ToString(), "true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsManualSpecialOrder(object? order, object? controller)
+    {
+        if (!ToBool(GetMemberValue(order, "ManualOrder"))) return false;
+
+        var specialGuest = GetMemberValue(order, "SpecialGuests")
+            ?? GetMemberValue(controller, "SpecialGuest")
+            ?? GetMemberValue(controller, "OrderingGuest");
+        return IsExplicitSpecialGuest(specialGuest);
+    }
+
+    private static bool IsExplicitSpecialGuest(object? guest)
+    {
+        var typeName = guest?.GetType().FullName ?? "";
+        return typeName.IndexOf("NightSceneUtility.SpecialGuest", StringComparison.OrdinalIgnoreCase) >= 0
+            || typeName.IndexOf("NightSceneUtility.MappedSpecialGuest", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private static bool ToBool(object? value)
+    {
         if (value is bool boolValue) return boolValue;
         return string.Equals(value?.ToString(), "true", StringComparison.OrdinalIgnoreCase);
     }

@@ -37,10 +37,6 @@ public sealed class MystiaStewardCompanionPlugin : BasePlugin
 
         SpecialOrderRuntimeCapture.Attach(Log);
         RuntimeUiPinningService.Attach(Log);
-        if (settings.EnableSpecialOrderLogFallback.Value)
-        {
-            SpecialOrderLogCapture.Attach(Log);
-        }
 
         StewardOverlayRuntimeContext.Configure(settings, Log);
         ClassInjector.RegisterTypeInIl2Cpp<StewardOverlayBehaviour>();
