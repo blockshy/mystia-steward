@@ -34,7 +34,7 @@ public static class SpecialOrderLogCapture
     private static void HandleLog(string? condition)
     {
         if (string.IsNullOrWhiteSpace(condition)) return;
-        if (!condition.Contains("Generated Special Guest Order:", StringComparison.Ordinal)) return;
+        if (!IsSpecialOrderLog(condition)) return;
 
         var order = Parse(condition);
         if (order == null) return;
@@ -84,6 +84,12 @@ public static class SpecialOrderLogCapture
             NormalizeTag(foodTag),
             NormalizeTag(beverageTag),
             DateTime.UtcNow);
+    }
+
+    private static bool IsSpecialOrderLog(string text)
+    {
+        return text.Contains("Generated Special Guest Order:", StringComparison.Ordinal)
+            || text.Contains("Manual Controlled Order Generated:", StringComparison.Ordinal);
     }
 
     private static string? ReadGuestNameFromHeader(string text)

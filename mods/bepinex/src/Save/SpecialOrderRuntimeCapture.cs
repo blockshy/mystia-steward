@@ -107,6 +107,9 @@ public static class SpecialOrderRuntimeCapture
 
             PatchMethod(_harmony, GuestGroupControllerTypeName, "PushToOrder", 1, false, nameof(OnControllerOrderAdded), null, patchedNow, missing);
             PatchMethod(_harmony, SpecialGuestsControllerTypeName, "PostGenerateOrder", 2, false, null, nameof(OnGeneratedSpecialOrder), patchedNow, missing);
+            PatchMethod(_harmony, GuestsManagerTypeName, "SetManualControllerOrderInternal", 3, false, null, nameof(OnManualControllerOrderSet), patchedNow, missing);
+            PatchMethod(_harmony, GuestsManagerTypeName, "EvaulateManualOrder", 2, false, nameof(OnManualOrderEvaluating), null, patchedNow, missing);
+            PatchMethod(_harmony, GuestsManagerTypeName, "EndDlc4SpecialManualOrder", 1, false, nameof(OnManualOrderEnded), null, patchedNow, missing);
             PatchMethod(_harmony, GuestsManagerTypeName, "AddToOrder", 1, false, nameof(OnOrderAdded), null, patchedNow, missing);
             PatchMethod(_harmony, GuestsManagerTypeName, "RemoveFromOrder", 1, false, nameof(OnOrderRemoved), null, patchedNow, missing);
             PatchMethod(_harmony, OrderControllerTypeName, "AddOrder", 1, true, nameof(OnOrderAdded), null, patchedNow, missing);
@@ -223,6 +226,28 @@ public static class SpecialOrderRuntimeCapture
     {
         lock (SyncRoot) _generatedCallbacks++;
         AddOrder(ParseOrder(__result, "PostGenerateOrder", __instance));
+    }
+
+    private static void OnManualControllerOrderSet(object __0, object __2)
+    {
+        lock (SyncRoot) _generatedCallbacks++;
+        AddOrder(ParseOrder(__2, "ManualOrderSet", __0));
+    }
+
+    private static void OnManualOrderEvaluating(object __0)
+    {
+        lock (SyncRoot) _statusCallbacks++;
+        var order = ParseControllerCurrentOrder(__0, "ManualOrderEvaluate");
+        if (order is { IsFulfilled: true })
+        {
+            RemoveOrder(order with { CaptureSource = "ManualOrderEvaluate" });
+        }
+    }
+
+    private static void OnManualOrderEnded(object __0)
+    {
+        lock (SyncRoot) _removeCallbacks++;
+        RemoveOrder(ParseControllerCurrentOrder(__0, "ManualOrderEnd") ?? BuildControllerRemovalOrder(__0, "ManualOrderEnd"));
     }
 
     private static void AddOrder(CapturedRuntimeSpecialOrder? order)
@@ -411,6 +436,60 @@ public static class SpecialOrderRuntimeCapture
         };
     }
 
+    private static CapturedRuntimeSpecialOrder? ParseControllerCurrentOrder(object? controller, string source)
+    {
+        if (controller == null)
+        {
+            NoteParseFailure(source, "controller is null");
+            return null;
+        }
+
+        var peekOrder = InvokeInstanceMethod(controller, "PeekOrders");
+        if (peekOrder != null)
+        {
+            var parsed = ParseOrder(peekOrder, source, controller);
+            if (parsed != null) return parsed;
+        }
+
+        var removal = BuildControllerRemovalOrder(controller, source);
+        if (removal != null) return removal;
+
+        NoteParseFailure(source, "controller order missing", controller);
+        return null;
+    }
+
+    private static CapturedRuntimeSpecialOrder? BuildControllerRemovalOrder(object? controller, string source)
+    {
+        if (controller == null) return null;
+
+        var specialGuest = GetMemberValue(controller, "SpecialGuest")
+            ?? GetMemberValue(controller, "OrderingGuest");
+        var guestId = ToNullableInt(GetMemberValue(specialGuest, "Id"));
+        var guestName = specialGuest == null ? "" : ReadGuestName(specialGuest, guestId);
+        if (string.IsNullOrWhiteSpace(guestName) && !guestId.HasValue) return null;
+
+        var deskCode = ToNullableInt(GetMemberValue(controller, "DeskCode")) ?? -1;
+        var capturedAt = DateTime.UtcNow;
+        return new CapturedRuntimeSpecialOrder(
+            deskCode,
+            guestId,
+            string.IsNullOrWhiteSpace(guestName) ? "Special guest" : guestName,
+            0,
+            false,
+            "",
+            0,
+            false,
+            "",
+            false,
+            capturedAt,
+            capturedAt,
+            "",
+            source)
+        {
+            ControllerObject = controller,
+        };
+    }
+
     private static bool IsSameOrderSlot(CapturedRuntimeSpecialOrder left, CapturedRuntimeSpecialOrder right)
     {
         if (!string.IsNullOrWhiteSpace(left.RuntimeKey)
@@ -438,9 +517,18 @@ public static class SpecialOrderRuntimeCapture
             return string.Equals(existing.RuntimeKey, removed.RuntimeKey, StringComparison.Ordinal);
         }
 
+        var removedHasDetails = HasAnyOrderDetail(removed);
+        if (!removedHasDetails
+            && existing.DeskCode >= 0
+            && removed.DeskCode >= 0
+            && existing.DeskCode == removed.DeskCode)
+        {
+            return true;
+        }
+
         if (!IsSameOrderSlot(existing, removed)) return false;
 
-        if (!HasAnyOrderDetail(removed))
+        if (!removedHasDetails)
         {
             return true;
         }
