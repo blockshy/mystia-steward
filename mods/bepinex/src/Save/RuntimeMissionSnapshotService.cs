@@ -5,7 +5,9 @@ namespace MystiaStewardCompanion.Save;
 public static class RuntimeMissionSnapshotService
 {
     private const string DataBaseDayTypeName = "GameData.Core.Collections.DaySceneUtility.DataBaseDay";
+    private const string DataBaseSchedulerTypeName = "GameData.Core.Collections.DataBaseScheduler";
     private const string RunTimeSchedulerTypeName = "GameData.RunTime.Common.RunTimeScheduler";
+    private const string RunTimePlayerDataTypeName = "GameData.RunTime.Common.RunTimePlayerData";
     private const string DataBaseLanguageTypeName = "GameData.CoreLanguage.Collections.DataBaseLanguage";
     private const string DaySceneLanguageTypeName = "GameData.CoreLanguage.Collections.DaySceneLanguage";
     private const string RunTimeDaySceneTypeName = "GameData.RunTime.DaySceneUtility.RunTimeDayScene";
@@ -43,6 +45,7 @@ public static class RuntimeMissionSnapshotService
         var source = new List<string>();
 
         var dataBaseDayType = RuntimeReflectionUtility.FindType(DataBaseDayTypeName);
+        var dataBaseSchedulerType = RuntimeReflectionUtility.FindType(DataBaseSchedulerTypeName);
         var schedulerType = RuntimeReflectionUtility.FindType(RunTimeSchedulerTypeName);
         if (dataBaseDayType == null || schedulerType == null)
         {
@@ -57,7 +60,7 @@ public static class RuntimeMissionSnapshotService
         var daySceneMapType = RuntimeReflectionUtility.FindType(DaySceneMapTypeName);
         var characterComponentType = RuntimeReflectionUtility.FindType(CharacterConditionComponentTypeName);
         var missionInteractType = RuntimeReflectionUtility.FindType(MissionInteractConditionComponentTypeName);
-        source.Add($"types=RuntimeDayScene={(runtimeDaySceneType == null ? "missing" : "ok")}; DaySceneMap={(daySceneMapType == null ? "missing" : "ok")}; CharacterCondition={(characterComponentType == null ? "missing" : "ok")}; MissionInteract={(missionInteractType == null ? "missing" : "ok")}");
+        source.Add($"types=RuntimeDayScene={(runtimeDaySceneType == null ? "missing" : "ok")}; DaySceneMap={(daySceneMapType == null ? "missing" : "ok")}; CharacterCondition={(characterComponentType == null ? "missing" : "ok")}; MissionInteract={(missionInteractType == null ? "missing" : "ok")}; DataBaseScheduler={(dataBaseSchedulerType == null ? "missing" : "ok")}");
 
         var missionData = ReadTrackedMissionDataSnapshots(schedulerType, errors).ToList();
         var statusByMission = missionData
@@ -96,6 +99,10 @@ public static class RuntimeMissionSnapshotService
             .ToList();
         source.Add($"sceneCharacters={sceneCharacterLabels.Count}");
         AddAvailableInteractMissions(missions, errors, dataBaseDayType, schedulerType, npcPlaceNames, statusByMission, sceneCharacterLabels, "SceneCharacter");
+
+        var scheduledEventMissions = ReadScheduledEventMissionFallbackMissions(dataBaseDayType, dataBaseSchedulerType, schedulerType, npcPlaceNames, source, errors).ToList();
+        source.Add($"scheduledEventMissions={scheduledEventMissions.Count}");
+        missions.AddRange(scheduledEventMissions);
 
         var trackedInteractableLabels = ReadTrackedInteractableLabels(runtimeDaySceneType, errors).ToList();
         source.Add($"trackedInteractables={trackedInteractableLabels.Count}");
@@ -365,6 +372,162 @@ public static class RuntimeMissionSnapshotService
 
         var started = RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.InvokeStaticMethod(schedulerType, "HaveMissionStarted", missionLabel));
         return started ? MissionStatusFulfilled : MissionStatusAvailable;
+    }
+
+    private static IEnumerable<RuntimeMissionInfo> ReadScheduledEventMissionFallbackMissions(
+        Type dataBaseDayType,
+        Type? dataBaseSchedulerType,
+        Type schedulerType,
+        IReadOnlyDictionary<string, List<string>> npcPlaceNames,
+        List<string> source,
+        List<string> errors)
+    {
+        if (dataBaseSchedulerType == null) yield break;
+
+        var characterHasInteractEvent = new Dictionary<string, bool>(StringComparer.Ordinal);
+        var scheduledEvents = ReadCurrentScheduledEvents(dataBaseSchedulerType, schedulerType, source, errors).ToList();
+        if (scheduledEvents.Count == 0) yield break;
+
+        foreach (var scheduledEvent in scheduledEvents)
+        {
+            var characterLabel = ResolveScheduledEventCharacterLabel(schedulerType, scheduledEvent.Node, characterHasInteractEvent);
+            if (string.IsNullOrWhiteSpace(characterLabel)) continue;
+
+            foreach (var missionLabel in ReadPostMissionLabels(scheduledEvent.Node).Distinct(StringComparer.Ordinal))
+            {
+                if (string.IsNullOrWhiteSpace(missionLabel)) continue;
+
+                var finished = RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.InvokeStaticMethod(schedulerType, "HaveMissionFinished", missionLabel));
+                if (finished) continue;
+
+                var started = RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.InvokeStaticMethod(schedulerType, "HaveMissionStarted", missionLabel));
+                if (started) continue;
+
+                yield return new RuntimeMissionInfo
+                {
+                    Label = missionLabel,
+                    Title = ResolveMissionTitle(missionLabel),
+                    CharacterLabel = characterLabel,
+                    CharacterName = ResolveNpcName(dataBaseDayType, characterLabel),
+                    Places = ResolvePlaces(npcPlaceNames, characterLabel),
+                    Source = string.IsNullOrWhiteSpace(scheduledEvent.Label)
+                        ? "ScheduledEventMission"
+                        : $"ScheduledEventMission:{scheduledEvent.Label}",
+                    Status = MissionStatusAvailable,
+                    Started = false,
+                    Finished = false,
+                };
+            }
+        }
+    }
+
+    private static IEnumerable<ScheduledEventSnapshot> ReadCurrentScheduledEvents(
+        Type dataBaseSchedulerType,
+        Type schedulerType,
+        List<string> source,
+        List<string> errors)
+    {
+        var result = new Dictionary<string, ScheduledEventSnapshot>(StringComparer.Ordinal);
+
+        foreach (var label in ReadCurrentScheduledEventLabels(schedulerType, source, errors))
+        {
+            if (string.IsNullOrWhiteSpace(label) || result.ContainsKey(label)) continue;
+
+            var eventNode = RuntimeReflectionUtility.InvokeStaticMethod(dataBaseSchedulerType, "RefEvent", label);
+            if (eventNode == null) continue;
+            result[label] = new ScheduledEventSnapshot { Label = label, Node = eventNode };
+        }
+
+        var directCount = 0;
+        foreach (var eventNode in RuntimeReflectionUtility.EnumerateObjects(RuntimeReflectionUtility.InvokeStaticMethod(schedulerType, "AllScheduledEventToday")))
+        {
+            if (eventNode == null) continue;
+            directCount++;
+            var label = ReadTextMember(eventNode, "label") ?? eventNode.ToString() ?? "";
+            var key = string.IsNullOrWhiteSpace(label) ? $"direct:{directCount}" : label;
+            result.TryAdd(key, new ScheduledEventSnapshot { Label = label, Node = eventNode });
+        }
+
+        source.Add($"scheduledEvents={result.Count}; directEvents={directCount}");
+        return result.Values;
+    }
+
+    private static IEnumerable<string> ReadCurrentScheduledEventLabels(Type schedulerType, List<string> source, List<string> errors)
+    {
+        var scheduledEvents = RuntimeReflectionUtility.GetStaticMemberValue(schedulerType, "scheduledEvents");
+        if (scheduledEvents == null)
+        {
+            source.Add("scheduledEventLabels=0");
+            yield break;
+        }
+
+        var count = 0;
+        foreach (var day in ReadCurrentEventDays())
+        {
+            var labels = RuntimeReflectionUtility.InvokeMethod(scheduledEvents, "get_Item", day);
+            foreach (var label in EnumerateTextValues(labels))
+            {
+                count++;
+                yield return label;
+            }
+        }
+
+        source.Add($"scheduledEventLabels={count}");
+    }
+
+    private static IEnumerable<int> ReadCurrentEventDays()
+    {
+        var days = new HashSet<int> { -1 };
+        var runtimePlayerDataType = RuntimeReflectionUtility.FindType(RunTimePlayerDataTypeName);
+        var day = runtimePlayerDataType == null
+            ? null
+            : RuntimeReflectionUtility.InvokeStaticMethod(runtimePlayerDataType, "GetDay");
+        var correctedDay = RuntimeReflectionUtility.ToInt(RuntimeReflectionUtility.GetMemberValue(day, "CorrectedDay"), int.MinValue);
+        if (correctedDay != int.MinValue) days.Add(correctedDay);
+        return days.OrderBy(value => value).ToList();
+    }
+
+    private static string? ResolveScheduledEventCharacterLabel(
+        Type schedulerType,
+        object? eventNode,
+        Dictionary<string, bool> characterHasInteractEvent)
+    {
+        var scheduledEvent = RuntimeReflectionUtility.GetMemberValue(eventNode, "scheduledEvent");
+        var trigger = RuntimeReflectionUtility.GetMemberValue(scheduledEvent, "trigger");
+        var triggerId = ReadTextMember(trigger, "triggerId");
+        if (string.IsNullOrWhiteSpace(triggerId)) return null;
+
+        var triggerType = RuntimeReflectionUtility.GetMemberValue(trigger, "triggerType");
+        var triggerTypeInt = RuntimeReflectionUtility.ToInt(triggerType, int.MinValue);
+        var triggerTypeText = triggerType?.ToString() ?? "";
+        if (triggerTypeInt == 3 || triggerTypeText.Contains("OnTalkWithCharacter", StringComparison.OrdinalIgnoreCase))
+        {
+            return triggerId;
+        }
+
+        if (triggerTypeInt != 5 && !triggerTypeText.Contains("KizunaCheckPoint", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        if (!characterHasInteractEvent.TryGetValue(triggerId, out var hasEvent))
+        {
+            hasEvent = RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.InvokeStaticMethod(schedulerType, "CheckCharacterInteractEvent", triggerId));
+            characterHasInteractEvent[triggerId] = hasEvent;
+        }
+
+        return hasEvent ? triggerId : null;
+    }
+
+    private static IEnumerable<string> ReadPostMissionLabels(object? eventNode)
+    {
+        foreach (var memberName in new[] { "postMissions", "postMissionsAfterPerformance" })
+        {
+            foreach (var label in EnumerateTextValues(RuntimeReflectionUtility.GetMemberValue(eventNode, memberName)))
+            {
+                yield return label;
+            }
+        }
     }
 
     private static string ReadTrackedMissionStatus(object? trackedMission)
@@ -900,6 +1063,12 @@ public static class RuntimeMissionSnapshotService
         public object? TrackedMission { get; init; }
         public string Label { get; init; } = "";
         public string Status { get; init; } = MissionStatusTracking;
+    }
+
+    private sealed class ScheduledEventSnapshot
+    {
+        public string Label { get; init; } = "";
+        public object? Node { get; init; }
     }
 
     private static string? ReadTextMember(object? value, string memberName)
