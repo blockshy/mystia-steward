@@ -258,7 +258,8 @@ internal static class RuntimeRareGuestInvitationService
 
         var staticMap = 0;
         var staticUnavailable = 0;
-        foreach (var label in ReadStaticCurrentMapNpcLabels(runtimeDaySceneType, dataBaseDayType, currentMapLabel, errors, out staticMap, out staticUnavailable))
+        var keyDiagnostics = "";
+        foreach (var label in ReadStaticCurrentMapNpcLabels(runtimeDaySceneType, dataBaseDayType, currentMapLabel, errors, out staticMap, out staticUnavailable, out keyDiagnostics))
         {
             counts["staticMap"]++;
             if (seen.Add(label)) labels.Add(label);
@@ -267,7 +268,7 @@ internal static class RuntimeRareGuestInvitationService
         counts["staticUnavailable"] = staticUnavailable;
         var errorText = errors.Count == 0 ? "" : $"; errors={string.Join("|", errors.Take(4))}";
         diagnostics =
-            $"currentMap={currentMapLabel}; mapNpc={counts["mapNpc"]}; mapObject={counts["mapObject"]}; sceneObject={counts["sceneObject"]}; trackedAnyMap={counts["trackedAnyMap"]}; staticMap={staticMap}; staticAccepted={counts["staticMap"]}; staticUnavailable={counts["staticUnavailable"]}{errorText}";
+            $"currentMap={currentMapLabel}; mapNpc={counts["mapNpc"]}; mapObject={counts["mapObject"]}; sceneObject={counts["sceneObject"]}; trackedAnyMap={counts["trackedAnyMap"]}; staticMap={staticMap}; staticAccepted={counts["staticMap"]}; staticUnavailable={counts["staticUnavailable"]}; {keyDiagnostics}{errorText}";
         return labels;
     }
 
@@ -334,17 +335,18 @@ internal static class RuntimeRareGuestInvitationService
         string currentMapLabel,
         List<string> errors,
         out int staticMap,
-        out int staticUnavailable)
+        out int staticUnavailable,
+        out string keyDiagnostics)
     {
         staticMap = 0;
         staticUnavailable = 0;
+        keyDiagnostics = "npcKeys=0";
         var labels = new List<string>();
         if (dataBaseDayType == null || string.IsNullOrWhiteSpace(currentMapLabel)) return labels;
 
-        var allNpcKeys = RuntimeReflectionUtility.InvokeStaticMethod(dataBaseDayType, "GetAllNPCKeys");
-        foreach (var keyCandidate in RuntimeReflectionUtility.EnumerateObjects(allNpcKeys))
+        var npcKeys = ReadGlobalNpcKeys(dataBaseDayType, errors, out keyDiagnostics);
+        foreach (var key in npcKeys)
         {
-            var key = keyCandidate?.ToString()?.Trim();
             if (string.IsNullOrWhiteSpace(key)) continue;
 
             var npc = InvokeStaticMethodWithSingleParameter(dataBaseDayType, "RefNPC", typeof(string), key);
@@ -364,12 +366,125 @@ internal static class RuntimeRareGuestInvitationService
             labels.Add(key);
         }
 
-        if (staticMap == 0 && RuntimeReflectionUtility.CountObjects(allNpcKeys) == 0)
+        if (staticMap == 0 && npcKeys.Count == 0)
         {
-            errors.Add("DataBaseDay.GetAllNPCKeys empty");
+            errors.Add("DataBaseDay NPC key sources empty");
         }
 
         return labels;
+    }
+
+    private static IReadOnlyList<string> ReadGlobalNpcKeys(Type dataBaseDayType, List<string> errors, out string diagnostics)
+    {
+        var result = new HashSet<string>(StringComparer.Ordinal);
+        var counts = new List<string>();
+
+        AddKeysFromSource("GetAllNPCKeys", RuntimeReflectionUtility.InvokeStaticMethod(dataBaseDayType, "GetAllNPCKeys"));
+        foreach (var memberName in new[] { "AllMappedNPCsMapping", "AllNPCsMapping", "allNPCs" })
+        {
+            AddKeysFromDictionary(memberName, RuntimeReflectionUtility.GetStaticMemberValue(dataBaseDayType, memberName));
+        }
+
+        diagnostics = $"npcKeys={result.Count}({string.Join(",", counts)})";
+        return result.OrderBy(value => value, StringComparer.Ordinal).ToList();
+
+        void AddKeysFromSource(string source, object? value)
+        {
+            var before = result.Count;
+            try
+            {
+                foreach (var key in ReadTextValues(value))
+                {
+                    result.Add(key);
+                }
+            }
+            catch (Exception ex)
+            {
+                if (errors.Count < 8) errors.Add($"npc key source {source}: {ex.Message}");
+            }
+
+            counts.Add($"{source}:{result.Count - before}");
+        }
+
+        void AddKeysFromDictionary(string source, object? dictionary)
+        {
+            var before = result.Count;
+            try
+            {
+                foreach (var key in ReadTextKeys(dictionary))
+                {
+                    result.Add(key);
+                }
+
+                foreach (var key in ReadNpcKeysFromDictionaryValues(dictionary))
+                {
+                    result.Add(key);
+                }
+            }
+            catch (Exception ex)
+            {
+                if (errors.Count < 8) errors.Add($"npc key source {source}: {ex.Message}");
+            }
+
+            counts.Add($"{source}:{result.Count - before}");
+        }
+    }
+
+    private static IEnumerable<string> ReadTextValues(object? value)
+    {
+        foreach (var item in RuntimeReflectionUtility.EnumerateObjects(value))
+        {
+            var text = item?.ToString()?.Trim();
+            if (!string.IsNullOrWhiteSpace(text)) yield return text;
+        }
+
+        foreach (var item in EnumerateViaEnumerator(value))
+        {
+            var text = item?.ToString()?.Trim();
+            if (!string.IsNullOrWhiteSpace(text)) yield return text;
+        }
+    }
+
+    private static IEnumerable<string> ReadTextKeys(object? dictionary)
+    {
+        foreach (var key in ReadTextValues(RuntimeReflectionUtility.GetMemberValue(dictionary, "Keys")))
+        {
+            yield return key;
+        }
+
+        foreach (var item in RuntimeReflectionUtility.EnumerateObjects(dictionary).Concat(EnumerateViaEnumerator(dictionary)))
+        {
+            var key = RuntimeReflectionUtility.GetMemberValue(item, "Key")
+                ?? RuntimeReflectionUtility.GetMemberValue(item, "key")
+                ?? RuntimeReflectionUtility.GetMemberValue(item, "Item1");
+            var text = key?.ToString()?.Trim();
+            if (!string.IsNullOrWhiteSpace(text)) yield return text;
+        }
+    }
+
+    private static IEnumerable<string> ReadNpcKeysFromDictionaryValues(object? dictionary)
+    {
+        var values = RuntimeReflectionUtility.GetMemberValue(dictionary, "Values");
+        foreach (var value in RuntimeReflectionUtility.EnumerateObjects(values).Concat(EnumerateViaEnumerator(values)))
+        {
+            var key = ReadTextMember(value, "key");
+            if (!string.IsNullOrWhiteSpace(key)) yield return key;
+        }
+    }
+
+    private static IEnumerable<object?> EnumerateViaEnumerator(object? value)
+    {
+        if (value == null || value is string) yield break;
+
+        var enumerator = RuntimeReflectionUtility.InvokeMethod(value, "GetEnumerator");
+        if (enumerator == null) yield break;
+
+        for (var i = 0; i < 1024; i++)
+        {
+            var hasNext = RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.InvokeMethod(enumerator, "MoveNext"));
+            if (!hasNext) yield break;
+            yield return RuntimeReflectionUtility.GetMemberValue(enumerator, "Current");
+        }
     }
 
     private static IEnumerable<string> ReadDaySceneMapCharacterLabels(Type? daySceneMapType)
