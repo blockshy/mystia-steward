@@ -124,6 +124,7 @@ export interface INormalBeverageResult {
 export interface IRareRecipeResult {
   recipe: IRecipe;
   extraIngredients: IIngredient[];
+  missionPriority?: boolean;
   // 记录每个加料被选中的用途标签（例如 { 12: ['甜', '果味'] }）
   extraIngredientReasonTags: Record<number, string[]>;
   isEasterPriority: boolean;

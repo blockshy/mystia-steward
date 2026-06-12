@@ -2931,6 +2931,7 @@ function ModTasksPanel({
   }
 
   const rows = missions?.availableMissions ?? [];
+  const statusCounts = countMissionStatuses(rows);
   const filteredRows = rows.filter((mission) => matchesMissionStatusFilter(mission, statusFilters));
   const toggleStatusFilter = (filter: MissionStatusFilter) => {
     setStatusFilters((current) => {
@@ -2963,7 +2964,7 @@ function ModTasksPanel({
                 data-gamepad-clickable="true"
                 onClick={() => toggleStatusFilter(filter)}
               >
-                {getMissionStatusFilterLabel(filter)}
+                {getMissionStatusFilterLabel(filter)} {statusCounts[filter]}
               </Button>
             ))}
           </div>
@@ -4563,6 +4564,11 @@ function RecipeRecommendationRow({
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
           <span className="text-xs text-muted-foreground">#{index + 1}</span>
           <span className="font-medium">{recipe.recipe.name}</span>
+          {recipe.missionPriority && (
+            <Badge className="border-amber-300/70 bg-amber-50 text-amber-950 dark:border-amber-400/30 dark:bg-amber-400/10 dark:text-amber-100">
+              任务
+            </Badge>
+          )}
           <Badge variant="secondary">{RATING_LABELS[recipe.rating]}</Badge>
           <span className="text-xs text-muted-foreground">
             分数 {recipe.foodScore} · 成本 {totalCost}
@@ -6498,7 +6504,11 @@ function addRecipeRowIfMissing(rows: IRareRecipeResult[], recipe: IRareRecipeRes
 function promoteMissionRecipe(rows: IRareRecipeResult[], recipeId: number): IRareRecipeResult[] {
   const target = rows.find((row) => row.recipe.id === recipeId);
   if (!target) return rows;
-  return [target, ...rows.filter((row) => row !== target)];
+  return [markMissionPriorityRecipe(target), ...rows.filter((row) => row !== target)];
+}
+
+function markMissionPriorityRecipe(recipe: IRareRecipeResult): IRareRecipeResult {
+  return recipe.missionPriority ? recipe : { ...recipe, missionPriority: true };
 }
 
 function promoteFavoriteBeverages(
@@ -6875,6 +6885,14 @@ function matchesMissionStatusFilter(mission: RuntimeMissionInfo, filters: Missio
   if (filters.length === 0) return false;
   if (mission.finished || mission.status === 'finished') return false;
   return filters.includes(normalizeMissionStatus(mission));
+}
+
+function countMissionStatuses(rows: RuntimeMissionInfo[]): Record<MissionStatusFilter, number> {
+  return rows.reduce<Record<MissionStatusFilter, number>>((counts, mission) => {
+    if (mission.finished || mission.status === 'finished') return counts;
+    counts[normalizeMissionStatus(mission)] += 1;
+    return counts;
+  }, { available: 0, tracking: 0, fulfilled: 0 });
 }
 
 function getMissionStatusFilterLabel(filter: MissionStatusFilter): string {

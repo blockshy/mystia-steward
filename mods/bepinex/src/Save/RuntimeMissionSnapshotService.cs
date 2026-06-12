@@ -79,23 +79,23 @@ public static class RuntimeMissionSnapshotService
 
         var npcKeys = ReadGlobalNpcKeys(dataBaseDayType, errors).ToList();
         source.Add($"npcKeys={npcKeys.Count}");
-        AddAvailableInteractMissions(missions, errors, dataBaseDayType, schedulerType, npcPlaceNames, npcKeys, "InteractMission");
+        AddAvailableInteractMissions(missions, errors, dataBaseDayType, schedulerType, npcPlaceNames, statusByMission, npcKeys, "InteractMission");
 
         var trackedNpcLabels = ReadTrackedNpcLabels(runtimeDaySceneType, errors).Except(npcKeys, StringComparer.Ordinal).ToList();
         source.Add($"trackedNpcLabels={trackedNpcLabels.Count}");
-        AddAvailableInteractMissions(missions, errors, dataBaseDayType, schedulerType, npcPlaceNames, trackedNpcLabels, "TrackedNPC");
+        AddAvailableInteractMissions(missions, errors, dataBaseDayType, schedulerType, npcPlaceNames, statusByMission, trackedNpcLabels, "TrackedNPC");
 
         var daySceneMapLabels = ReadDaySceneMapCharacterLabels(daySceneMapType, errors)
             .Except(npcKeys.Concat(trackedNpcLabels), StringComparer.Ordinal)
             .ToList();
         source.Add($"daySceneMapCharacters={daySceneMapLabels.Count}");
-        AddAvailableInteractMissions(missions, errors, dataBaseDayType, schedulerType, npcPlaceNames, daySceneMapLabels, "DaySceneMap");
+        AddAvailableInteractMissions(missions, errors, dataBaseDayType, schedulerType, npcPlaceNames, statusByMission, daySceneMapLabels, "DaySceneMap");
 
         var sceneCharacterLabels = ReadSceneCharacterLabels(characterComponentType, errors)
             .Except(npcKeys.Concat(trackedNpcLabels).Concat(daySceneMapLabels), StringComparer.Ordinal)
             .ToList();
         source.Add($"sceneCharacters={sceneCharacterLabels.Count}");
-        AddAvailableInteractMissions(missions, errors, dataBaseDayType, schedulerType, npcPlaceNames, sceneCharacterLabels, "SceneCharacter");
+        AddAvailableInteractMissions(missions, errors, dataBaseDayType, schedulerType, npcPlaceNames, statusByMission, sceneCharacterLabels, "SceneCharacter");
 
         var trackedInteractableLabels = ReadTrackedInteractableLabels(runtimeDaySceneType, errors).ToList();
         source.Add($"trackedInteractables={trackedInteractableLabels.Count}");
@@ -217,25 +217,61 @@ public static class RuntimeMissionSnapshotService
 
     private static IEnumerable<string> ReadGlobalNpcKeys(Type dataBaseDayType, List<string> errors)
     {
-        List<string> result;
+        var result = new HashSet<string>(StringComparer.Ordinal);
         try
         {
-            result = RuntimeReflectionUtility
-                .EnumerateObjects(RuntimeReflectionUtility.InvokeStaticMethod(dataBaseDayType, "GetAllNPCKeys"))
-                .Select(value => value?.ToString())
-                .Where(value => !string.IsNullOrWhiteSpace(value))
-                .Cast<string>()
-                .Distinct(StringComparer.Ordinal)
-                .OrderBy(value => value, StringComparer.Ordinal)
-                .ToList();
+            foreach (var key in EnumerateTextValues(RuntimeReflectionUtility.InvokeStaticMethod(dataBaseDayType, "GetAllNPCKeys")))
+            {
+                result.Add(key);
+            }
         }
         catch (Exception ex)
         {
             errors.Add($"npcKeys: {ex.Message}");
-            result = new List<string>();
         }
 
-        return result;
+        foreach (var memberName in new[] { "AllMappedNPCsMapping", "AllNPCsMapping", "allNPCs" })
+        {
+            try
+            {
+                foreach (var key in ReadTextKeys(RuntimeReflectionUtility.GetStaticMemberValue(dataBaseDayType, memberName)))
+                {
+                    result.Add(key);
+                }
+            }
+            catch (Exception ex)
+            {
+                if (errors.Count < 8) errors.Add($"npcKeys {memberName}: {ex.Message}");
+            }
+        }
+
+        return result.OrderBy(value => value, StringComparer.Ordinal).ToList();
+    }
+
+    private static IEnumerable<string> EnumerateTextValues(object? value)
+    {
+        foreach (var item in RuntimeReflectionUtility.EnumerateObjects(value))
+        {
+            var text = item?.ToString();
+            if (!string.IsNullOrWhiteSpace(text)) yield return text;
+        }
+    }
+
+    private static IEnumerable<string> ReadTextKeys(object? dictionary)
+    {
+        foreach (var key in EnumerateTextValues(RuntimeReflectionUtility.GetMemberValue(dictionary, "Keys")))
+        {
+            yield return key;
+        }
+
+        foreach (var item in RuntimeReflectionUtility.EnumerateObjects(dictionary))
+        {
+            var key = RuntimeReflectionUtility.GetMemberValue(item, "Key")
+                ?? RuntimeReflectionUtility.GetMemberValue(item, "key")
+                ?? RuntimeReflectionUtility.GetMemberValue(item, "Item1");
+            var text = key?.ToString();
+            if (!string.IsNullOrWhiteSpace(text)) yield return text;
+        }
     }
 
     private static void AddAvailableInteractMissions(
@@ -244,6 +280,7 @@ public static class RuntimeMissionSnapshotService
         Type dataBaseDayType,
         Type schedulerType,
         IReadOnlyDictionary<string, List<string>> npcPlaceNames,
+        IReadOnlyDictionary<string, string> statusByMission,
         IEnumerable<string> characterLabels,
         string source)
     {
@@ -265,6 +302,7 @@ public static class RuntimeMissionSnapshotService
                 {
                     var finished = RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.InvokeStaticMethod(schedulerType, "HaveMissionFinished", label));
                     if (finished) continue;
+                    var status = ResolveAvailableInteractMissionStatus(schedulerType, statusByMission, label);
 
                     missions.Add(new RuntimeMissionInfo
                     {
@@ -274,8 +312,8 @@ public static class RuntimeMissionSnapshotService
                         CharacterName = ResolveNpcName(dataBaseDayType, characterLabel),
                         Places = ResolvePlaces(npcPlaceNames, characterLabel),
                         Source = source,
-                        Status = MissionStatusAvailable,
-                        Started = false,
+                        Status = status,
+                        Started = status != MissionStatusAvailable,
                         Finished = finished,
                     });
                 }
@@ -310,9 +348,30 @@ public static class RuntimeMissionSnapshotService
             {
                 TrackedMission = parsedMission,
                 Label = label,
-                Status = NormalizeMissionStatus(statusValue),
+                Status = statusValue == null ? ReadTrackedMissionStatus(parsedMission) : NormalizeMissionStatus(statusValue),
             };
         }
+    }
+
+    private static string ResolveAvailableInteractMissionStatus(
+        Type schedulerType,
+        IReadOnlyDictionary<string, string> statusByMission,
+        string missionLabel)
+    {
+        if (statusByMission.TryGetValue(missionLabel, out var status))
+        {
+            return status == MissionStatusTracking ? MissionStatusFulfilled : status;
+        }
+
+        var started = RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.InvokeStaticMethod(schedulerType, "HaveMissionStarted", missionLabel));
+        return started ? MissionStatusFulfilled : MissionStatusAvailable;
+    }
+
+    private static string ReadTrackedMissionStatus(object? trackedMission)
+    {
+        return RuntimeReflectionUtility.ToBool(RuntimeReflectionUtility.GetMemberValue(trackedMission, "HasFulfilled"))
+            ? MissionStatusFulfilled
+            : MissionStatusTracking;
     }
 
     private static IEnumerable<object?> ReadTrackingMissions(Type schedulerType, List<string> errors)
