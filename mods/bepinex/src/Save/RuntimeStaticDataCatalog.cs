@@ -11,6 +11,12 @@ internal sealed class RuntimeStaticDataCatalog
     private const string DataBaseLanguageTypeName = "GameData.CoreLanguage.Collections.DataBaseLanguage";
     private const string DataBaseCharacterTypeName = "GameData.Core.Collections.CharacterUtility.DataBaseCharacter";
 
+    private static readonly HashSet<string> NonOrderableRareFoodTags = new(StringComparer.Ordinal)
+    {
+        "流行喜爱",
+        "流行厌恶",
+    };
+
     private static readonly TimeSpan RetryInterval = TimeSpan.FromSeconds(5);
     private static readonly object SyncRoot = new();
     private static RuntimeStaticDataSnapshot _snapshot = RuntimeStaticDataSnapshot.Empty("not loaded");
@@ -218,15 +224,26 @@ internal sealed class RuntimeStaticDataCatalog
                 .ToList();
 
             var normalCustomers = normalRows
-                .Select(row => new NormalCustomer
+                .Select(row =>
                 {
-                    Id = ParseInt(row, "id") ?? -1,
-                    Name = Field(row, "name"),
-                    Places = ResolvePlaces(Field(row, "localPlaces"), normalPlacesById, ParseInt(row, "id") ?? -1),
-                    PositiveTags = ParseTagNames(Field(row, "likeFood")),
-                    BeverageTags = ParseTagNames(Field(row, "likeBev")),
+                    var id = ParseInt(row, "id") ?? -1;
+                    if (IsSuppressedRuntimeCustomerRow(row)) return null;
+
+                    return new NormalCustomer
+                    {
+                        Id = id,
+                        Name = Field(row, "name"),
+                        Places = ResolvePlaces(Field(row, "localPlaces"), normalPlacesById, id),
+                        PositiveTags = ParseTagNames(Field(row, "likeFood")),
+                        BeverageTags = ParseTagNames(Field(row, "likeBev")),
+                    };
                 })
-                .Where(customer => customer.Id >= 0 && !string.IsNullOrWhiteSpace(customer.Name))
+                .Where(customer => customer != null)
+                .Cast<NormalCustomer>()
+                .Where(customer => customer.Id >= 0
+                    && IsUsableDisplayName(customer.Name)
+                    && customer.Places.Count > 0
+                    && (customer.PositiveTags.Count > 0 || customer.BeverageTags.Count > 0))
                 .GroupBy(customer => customer.Id)
                 .Select(group => group.First())
                 .OrderBy(customer => customer.Id)
@@ -239,24 +256,30 @@ internal sealed class RuntimeStaticDataCatalog
                     if (negative.Count == 0) negative = ParseTagNames(Field(row, "hateFoodOriginal"));
                     var positive = ParseTagNames(Field(row, "likeFood"));
                     if (positive.Count == 0) positive = ParseTagNames(Field(row, "likeFoodOriginal"));
+                    var id = ParseInt(row, "id") ?? -1;
+                    if (IsSuppressedRuntimeCustomerRow(row)) return null;
 
                     return new RareCustomer
                     {
-                        Id = ParseInt(row, "id") ?? -1,
+                        Id = id,
                         Name = Field(row, "name"),
                         Places = ResolvePlaces(
                             Field(row, "localPlaces"),
                             rarePlacesById,
-                            ParseInt(row, "id") ?? -1,
+                            id,
                             Field(row, "spawnType")),
                         PositiveTags = positive,
                         NegativeTags = negative,
                         BeverageTags = ParseTagNames(Field(row, "likeBev")),
                     };
                 })
+                .Where(customer => customer != null)
+                .Cast<RareCustomer>()
                 .Where(customer => customer.Id >= 0
-                    && !string.IsNullOrWhiteSpace(customer.Name)
-                    && (customer.PositiveTags.Count > 0 || customer.BeverageTags.Count > 0))
+                    && IsUsableDisplayName(customer.Name)
+                    && customer.Places.Count > 0
+                    && customer.PositiveTags.Any(IsOrderableRareFoodTag)
+                    && customer.BeverageTags.Count > 0)
                 .GroupBy(customer => customer.Id)
                 .Select(group => group.First())
                 .OrderBy(customer => customer.Id)
@@ -457,7 +480,36 @@ internal sealed class RuntimeStaticDataCatalog
         if (places.Count > 0) return places;
         if (string.Equals(spawnType, "EveryWhere", StringComparison.OrdinalIgnoreCase)) return PlaceNames.All.ToList();
         if (runtimePlacesById.TryGetValue(id, out var runtimePlaces) && runtimePlaces.Count > 0) return runtimePlaces;
-        return PlaceNames.All.ToList();
+        return new List<string>();
+    }
+
+    private static bool IsUsableDisplayName(string? value)
+    {
+        var text = value?.Trim() ?? "";
+        if (text.Length == 0) return false;
+        if (text.Equals("missing", StringComparison.OrdinalIgnoreCase)) return false;
+        if (text.Equals("null", StringComparison.OrdinalIgnoreCase)) return false;
+        if (text.Contains('?')) return false;
+        if (text.StartsWith("#", StringComparison.Ordinal)) return false;
+        return true;
+    }
+
+    private static bool IsOrderableRareFoodTag(string tag)
+    {
+        return !string.IsNullOrWhiteSpace(tag) && !NonOrderableRareFoodTags.Contains(tag.Trim());
+    }
+
+    private static bool IsSuppressedRuntimeCustomerRow(IReadOnlyDictionary<string, string> row)
+    {
+        return IsTruthy(Field(row, "doNotShow"))
+            || string.Equals(Field(row, "spawnType"), "NeverCome", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsTruthy(string value)
+    {
+        return string.Equals(value, "true", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, "yes", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, "1", StringComparison.Ordinal);
     }
 
     private static string NormalizeTagName(string value)

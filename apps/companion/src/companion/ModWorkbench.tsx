@@ -789,7 +789,9 @@ export function ModWorkbench() {
     [recommendationData],
   );
   const runtimeRareCustomers = useMemo(
-    () => (snapshot?.runtimeRareCustomers ?? []).map(toRuntimeRareCustomer),
+    () => (snapshot?.runtimeRareCustomers ?? [])
+      .map(toRuntimeRareCustomer)
+      .filter(isUsableRareCustomer),
     [snapshot?.runtimeRareCustomers],
   );
   const rareCustomersById = useMemo(
@@ -2149,13 +2151,30 @@ function ModRarePanel({
   const customers = useMemo(() => {
     if (!selectedPlace) return [];
     return mergeRareCustomers(
-      getRareCustomersByPlace(selectedPlace, data),
-      runtimeRareCustomers.filter((customer) => customer.places.includes(selectedPlace)),
+      getRareCustomersByPlace(selectedPlace, data).filter(isSelectableRareCustomer),
+      runtimeRareCustomers.filter((customer) => (
+        customer.places.includes(selectedPlace) && isSelectableRareCustomer(customer)
+      )),
     );
   }, [data, runtimeRareCustomers, selectedPlace]);
-  const selectedCustomer = customers.find((customer) => customer.id === rareCustomerId) ?? customers[0] ?? null;
-  const foodTag = requiredFoodTag || selectedCustomer?.positiveTags.find(isOrderableRareFoodTag) || '';
-  const beverageTag = requiredBeverageTag || selectedCustomer?.beverageTags[0] || '';
+  const selectedCustomer = useMemo(
+    () => customers.find((customer) => customer.id === rareCustomerId) ?? customers[0] ?? null,
+    [customers, rareCustomerId],
+  );
+  const selectedFoodTags = useMemo(
+    () => selectedCustomer?.positiveTags.filter(isOrderableRareFoodTag) ?? [],
+    [selectedCustomer],
+  );
+  const selectedBeverageTags = useMemo(
+    () => selectedCustomer?.beverageTags ?? [],
+    [selectedCustomer],
+  );
+  const foodTag = requiredFoodTag && selectedFoodTags.includes(requiredFoodTag)
+    ? requiredFoodTag
+    : selectedFoodTags[0] ?? '';
+  const beverageTag = requiredBeverageTag && selectedBeverageTags.includes(requiredBeverageTag)
+    ? requiredBeverageTag
+    : selectedBeverageTags[0] ?? '';
 
   useEffect(() => {
     if (!selectedCustomer) {
@@ -2163,8 +2182,8 @@ function ModRarePanel({
       return;
     }
     if (rareCustomerId !== selectedCustomer.id) onRareCustomerChange(selectedCustomer.id);
-    if (!requiredFoodTag && foodTag) onFoodTagChange(foodTag);
-    if (!requiredBeverageTag && beverageTag) onBeverageTagChange(beverageTag);
+    if (requiredFoodTag !== foodTag) onFoodTagChange(foodTag);
+    if (requiredBeverageTag !== beverageTag) onBeverageTagChange(beverageTag);
   }, [
     beverageTag,
     foodTag,
@@ -2260,7 +2279,7 @@ function ModRarePanel({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {selectedCustomer.positiveTags.filter(isOrderableRareFoodTag).map((tag) => (
+                    {selectedFoodTags.map((tag) => (
                       <SelectItem key={tag} value={tag}>{tag}</SelectItem>
                     ))}
                   </SelectContent>
@@ -2274,7 +2293,7 @@ function ModRarePanel({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {selectedCustomer.beverageTags.map((tag) => (
+                    {selectedBeverageTags.map((tag) => (
                       <SelectItem key={tag} value={tag}>{tag}</SelectItem>
                     ))}
                   </SelectContent>
@@ -5566,9 +5585,10 @@ function resolveCookerTypeId(value: string | null | undefined): number {
 }
 
 function toRuntimeRareCustomer(customer: RuntimeRareCustomer): ICustomerRare {
+  const name = (customer.name || '').trim();
   return {
     id: customer.id,
-    name: customer.name || customer.runtimeStringId || `运行时稀客 ${customer.id}`,
+    name,
     description: `运行时稀客数据: ${customer.runtimeStringId || customer.source || customer.id}`,
     dlc: 0,
     places: normalizeRuntimePlaces(customer.places),
@@ -5592,11 +5612,31 @@ function normalizeRuntimePlaces(places: string[]): TPlace[] {
   const normalized = places
     .map((place) => normalizePlace(place))
     .filter((place): place is TPlace => Boolean(place));
-  return normalized.length > 0 ? [...new Set(normalized)] : [...ALL_PLACES];
+  return [...new Set(normalized)];
 }
 
 function dedupeStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function isUsableRareCustomer(customer: ICustomerRare): boolean {
+  return isUsableRareCustomerName(customer.name)
+    && customer.positiveTags.some(isOrderableRareFoodTag)
+    && customer.beverageTags.length > 0;
+}
+
+function isSelectableRareCustomer(customer: ICustomerRare): boolean {
+  return isUsableRareCustomer(customer) && customer.places.length > 0;
+}
+
+function isUsableRareCustomerName(value: string): boolean {
+  const name = value.trim();
+  return Boolean(name)
+    && name !== 'missing'
+    && name !== 'null'
+    && !name.includes('?')
+    && !name.startsWith('#')
+    && !/^[A-Za-z0-9_]+$/.test(name);
 }
 
 function buildRareCustomerMap(

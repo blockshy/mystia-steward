@@ -8,6 +8,8 @@ import type {
 } from '@/lib/types';
 import { ALL_PLACES } from '@/lib/types';
 
+const NON_ORDERABLE_RARE_FOOD_TAGS = new Set(['流行喜爱', '流行厌恶']);
+
 export interface RecommendationDataSet {
   recipes: IRecipe[];
   ingredients: IIngredient[];
@@ -146,33 +148,43 @@ function normalizeRuntimeBeverage(value: RuntimeDataCatalogSnapshot['beverages']
 function normalizeRuntimeNormalCustomer(
   value: RuntimeDataCatalogSnapshot['normalCustomers'][number],
 ): ICustomerNormal | null {
-  if (!Number.isFinite(value.id) || !value.name) return null;
+  if (!Number.isFinite(value.id) || !isUsableRuntimeName(value.name)) return null;
+  const places = normalizePlaces(value.places);
+  const positiveTags = normalizeStringArray(value.positiveTags);
+  const beverageTags = normalizeStringArray(value.beverageTags);
+  if (places.length === 0 || (positiveTags.length === 0 && beverageTags.length === 0)) return null;
+
   return {
     id: value.id,
     name: value.name,
     description: value.description ?? '',
     dlc: value.dlc ?? 0,
-    places: normalizePlaces(value.places),
-    positiveTags: normalizeStringArray(value.positiveTags),
-    beverageTags: normalizeStringArray(value.beverageTags),
+    places,
+    positiveTags,
+    beverageTags,
   };
 }
 
 function normalizeRuntimeRareCustomerData(
   value: RuntimeDataCatalogSnapshot['rareCustomers'][number],
 ): ICustomerRare | null {
-  if (!Number.isFinite(value.id) || !value.name) return null;
+  if (!Number.isFinite(value.id) || !isUsableRuntimeName(value.name)) return null;
+  const places = normalizePlaces(value.places);
+  const positiveTags = normalizeStringArray(value.positiveTags).filter(isOrderableRareFoodTag);
+  const beverageTags = normalizeStringArray(value.beverageTags);
+  if (places.length === 0 || positiveTags.length === 0 || beverageTags.length === 0) return null;
+
   return {
     id: value.id,
     name: value.name,
     description: value.description ?? '',
     dlc: value.dlc ?? 0,
-    places: normalizePlaces(value.places),
+    places,
     price: value.price ?? [0, 0],
     enduranceLimit: value.enduranceLimit ?? 1,
-    positiveTags: normalizeStringArray(value.positiveTags),
+    positiveTags,
     negativeTags: normalizeStringArray(value.negativeTags),
-    beverageTags: normalizeStringArray(value.beverageTags),
+    beverageTags,
     positiveTagMapping: value.positiveTagMapping ?? {},
     beverageTagMapping: value.beverageTagMapping ?? {},
     collection: value.collection ?? false,
@@ -190,5 +202,18 @@ function normalizeStringArray(value: unknown): string[] {
 function normalizePlaces(value: unknown): TPlace[] {
   const places = normalizeStringArray(value)
     .filter((place): place is TPlace => (ALL_PLACES as string[]).includes(place));
-  return places.length > 0 ? places : [...ALL_PLACES];
+  return places;
+}
+
+function isUsableRuntimeName(value: unknown): value is string {
+  const name = String(value ?? '').trim();
+  return Boolean(name)
+    && name !== 'missing'
+    && name !== 'null'
+    && !name.includes('?')
+    && !name.startsWith('#');
+}
+
+function isOrderableRareFoodTag(tag: string): boolean {
+  return Boolean(tag) && !NON_ORDERABLE_RARE_FOOD_TAGS.has(tag);
 }

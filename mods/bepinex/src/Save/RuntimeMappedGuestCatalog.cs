@@ -361,7 +361,7 @@ internal sealed class RuntimeMappedGuestCatalog
             Id = runtimeId.Value,
             RuntimeStringId = runtimeStringId.Trim(),
             Name = runtimeDisplayName.Trim(),
-            Places = PlaceNames.All.ToList(),
+            Places = new List<string>(),
             PositiveTags = positiveTags,
             NegativeTags = negativeTags,
             BeverageTags = beverageTagNames,
