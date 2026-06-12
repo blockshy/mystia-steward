@@ -395,6 +395,7 @@ internal sealed class StewardOverlayController
 
             if (!IsNightBusinessScene(_activeSceneName))
             {
+                SpecialOrderRuntimeCapture.ClearOrders("left night business scene");
                 _businessContext = new NightBusinessContext
                 {
                     Source = L("当前不在夜晚经营场景。", "Not in a night business scene."),
@@ -1038,6 +1039,7 @@ internal sealed class StewardOverlayController
         _runtimeSource = "";
         _runtimeStateSignature = "";
         _lastRuntimeReadUtc = DateTime.MinValue;
+        SpecialOrderRuntimeCapture.ClearOrders("runtime cleared");
         RuntimeCookerHighlightService.Clear();
         _status = status;
     }

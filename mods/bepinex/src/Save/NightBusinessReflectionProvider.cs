@@ -684,18 +684,9 @@ public sealed class NightBusinessReflectionProvider
         IReadOnlyList<NightBusinessGuest> activeGuests,
         DateTime nowUtc)
     {
+        if (!HasCapturedOrderDetails(captured)) return false;
         if (MatchesActiveGuest(order, activeGuests)) return true;
-        if (HasCapturedOrderRuntimeReference(captured) && HasCapturedOrderDetails(captured))
-        {
-            return nowUtc - captured.CapturedAt <= RuntimeCapturedOrderMaxAge;
-        }
-
         return nowUtc - captured.CapturedAt <= UnmatchedCapturedOrderGrace;
-    }
-
-    private static bool HasCapturedOrderRuntimeReference(CapturedRuntimeSpecialOrder captured)
-    {
-        return captured.OrderObject != null || captured.ControllerObject != null;
     }
 
     private static bool HasCapturedOrderDetails(CapturedRuntimeSpecialOrder captured)

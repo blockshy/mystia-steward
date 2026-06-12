@@ -306,6 +306,7 @@ http://127.0.0.1:32145
 - `GET /logs/automation`：读取 `BepInEx/config/MystiaStewardCompanion/automation-jobs.log` 尾部内容，返回结构与 `/logs` 一致，受日志读取开关和读取上限控制。
 - `GET /logs/export-diagnostics?open=true`：生成诊断 zip，包含 manifest、当前 snapshot、`LogOutput.log` 尾部、自动化作业日志尾部和诊断目录中的 `.log` 尾部；`open=true` 会打开诊断包目录。
 - `GET /orders/complete-first?...`：按伴随窗口传入的稀客订单匹配送餐盘内容并尝试完成订单。
+- `GET /orders/rare/dismiss?...`：按桌号和点单 Tag 删除一笔运行时稀客订单捕获缓存，用于清理偶发未被游戏移除事件命中的过时订单。
 - `GET /orders/normal/complete-first?...`：按请求中的订单 key、桌位和料理处理一笔普客订单。普客自动化只负责按订单料理开始制作，并在完成后通过 `IzakayaConfigure.StoreFood()` 把料理写入游戏料理暂存容器；不处理酒水，不写入 `ServFood/ServBeverage/ServedFoodInAir`，也不触发订单评价。
 - `GET /rare-guests/invite-all`：排队到 Unity 主线程，只读取当前日间场景 NPC 并用 `DataBaseCharacter.RefSGuest()` 映射稀客；候选来源优先使用 `DayScene.SceneManager.CurrentActiveMapLabel`、`RunTimeDayScene.GetMapNPCs()`、`DaySceneMap.allCharacters` 和场景中的 `CharacterConditionComponent`，若这些实时对象还未填充，则按当前地图反查 `DataBaseDay.GetAllNPCKeys()`、`AllMappedNPCsMapping`、`AllNPCsMapping` 或 `allNPCs` 中的 NPC key，再通过 `RefNPC().possibleDestinations` 判断所在地图，并用 `RunTimeDayScene.RefTrackedNPCAvailability()` 过滤当前存档和时间下真正可见的 NPC。当前场景候选为空时直接失败，不回退到 `DataBaseCharacter.GetSpecialGuestsAndMappedGuests()` 执行全量邀请。每个候选会读取 `RunTimeAlbum.GetOrGenerateSpecialNPCKizunaLevel()`、检查 `StatusTracker.HasNPCInvited()` 和当前等级成功邀请对话包；符合条件后直接调用 `StatusTracker.RecordInvitedGuest()` 写入今晚邀请名单。该端点不调用 `DaySceneChatSelectionPannel.InviteSpecGuest()`，避免触发随机失败和消耗今日尝试次数；也不以 `HasTemptInvited()` 作为跳过条件，避免旧版本或手动失败尝试把可写入邀请卡住。该端点不直接刷出稀客，不推进时间，不写 `Story.SpecialGuestControlled`。
 

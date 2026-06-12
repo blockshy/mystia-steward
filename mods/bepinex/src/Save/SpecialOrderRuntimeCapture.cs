@@ -77,6 +77,34 @@ public static class SpecialOrderRuntimeCapture
         }
     }
 
+    public static int DismissOrder(int deskCode, int? guestId, string guestName, int foodTagId, int beverageTagId)
+    {
+        lock (SyncRoot)
+        {
+            var removed = Orders.RemoveAll(order => IsDismissRequestMatch(order, deskCode, guestId, guestName, foodTagId, beverageTagId));
+            _lastCapture = $"dismissed: desk={deskCode}, guestId={guestId?.ToString() ?? ""}, foodTagId={foodTagId}, bevTagId={beverageTagId}";
+            if (removed > 0)
+            {
+                _changeVersion++;
+            }
+
+            _status = BuildStatusLocked();
+            return removed;
+        }
+    }
+
+    public static void ClearOrders(string reason)
+    {
+        lock (SyncRoot)
+        {
+            if (Orders.Count == 0) return;
+            Orders.Clear();
+            _lastCapture = $"cleared: {reason}";
+            _changeVersion++;
+            _status = BuildStatusLocked();
+        }
+    }
+
     public static IReadOnlyList<string> RecentParseFailuresSnapshot(TimeSpan maxAge, int limit = 16)
     {
         var now = DateTime.UtcNow;
@@ -536,6 +564,41 @@ public static class SpecialOrderRuntimeCapture
         }
 
         return CanMergeCapturedOrderDetails(existing, removed);
+    }
+
+    private static bool IsDismissRequestMatch(
+        CapturedRuntimeSpecialOrder existing,
+        int deskCode,
+        int? guestId,
+        string guestName,
+        int foodTagId,
+        int beverageTagId)
+    {
+        if (deskCode >= 0 && existing.DeskCode >= 0 && existing.DeskCode != deskCode) return false;
+
+        var guestMatches = false;
+        if (guestId.HasValue && existing.GuestId.HasValue && existing.GuestId.Value == guestId.Value)
+        {
+            guestMatches = true;
+        }
+
+        if (!guestMatches
+            && !string.IsNullOrWhiteSpace(guestName)
+            && string.Equals(existing.GuestName, guestName, StringComparison.Ordinal))
+        {
+            guestMatches = true;
+        }
+
+        var requestedFoodTag = foodTagId != int.MinValue;
+        var requestedBeverageTag = beverageTagId != int.MinValue;
+        var foodMatches = !requestedFoodTag
+            || (existing.HasFoodTagId && existing.FoodTagId == foodTagId);
+        var beverageMatches = !requestedBeverageTag
+            || (existing.HasBeverageTagId && existing.BeverageTagId == beverageTagId);
+        var detailsMatch = foodMatches && beverageMatches && (requestedFoodTag || requestedBeverageTag);
+
+        if (detailsMatch) return true;
+        return guestMatches && deskCode >= 0;
     }
 
     private static bool HasAnyOrderDetail(CapturedRuntimeSpecialOrder order)

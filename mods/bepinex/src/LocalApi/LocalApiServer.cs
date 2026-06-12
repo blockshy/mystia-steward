@@ -222,6 +222,9 @@ internal sealed class LocalApiServer : IDisposable
                     case "/orders/normal/complete-first":
                         WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _completeNormalOrder));
                         break;
+                    case "/orders/rare/dismiss":
+                        WriteResponse(stream, 200, "OK", BuildRareOrderDismissJson(query));
+                        break;
                     case "/rare-guests/invite-all":
                         WriteResponse(stream, 200, "OK", BuildRareGuestInvitationJson());
                         break;
@@ -558,6 +561,27 @@ internal sealed class LocalApiServer : IDisposable
             return "{\"ok\":false,\"runtimeAvailable\":false,\"status\":\"稀客邀请失败。\",\"error\":\""
                 + EscapeJson(ex.Message)
                 + "\",\"candidateCount\":0,\"usableCount\":0,\"existingSlotCount\":0,\"existingControlledCount\":0,\"scheduledSlotCount\":0,\"invitedCount\":0,\"skippedCount\":0,\"invited\":[],\"skipped\":[]}";
+        }
+    }
+
+    private static string BuildRareOrderDismissJson(string query)
+    {
+        try
+        {
+            var removed = SpecialOrderRuntimeCapture.DismissOrder(
+                ReadIntQuery(query, "deskCode", -1),
+                ReadNullableIntQuery(query, "guestId"),
+                ReadStringQuery(query, "guestName"),
+                ReadIntQuery(query, "foodTagId", int.MinValue),
+                ReadIntQuery(query, "beverageTagId", int.MinValue));
+            var status = removed > 0
+                ? $"已删除 {removed} 条稀客订单缓存。"
+                : "未找到匹配的稀客订单缓存。";
+            return "{\"ok\":true,\"removed\":" + removed + ",\"status\":\"" + EscapeJson(status) + "\",\"error\":null}";
+        }
+        catch (Exception ex)
+        {
+            return "{\"ok\":false,\"removed\":0,\"status\":\"\",\"error\":\"" + EscapeJson(ex.Message) + "\"}";
         }
     }
 

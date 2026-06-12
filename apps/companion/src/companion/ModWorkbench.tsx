@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Archive, ArrowDown, ArrowUp, FolderOpen, Power, RefreshCw, RotateCcw, Star } from 'lucide-react';
+import { Archive, ArrowDown, ArrowUp, FolderOpen, Power, RefreshCw, RotateCcw, Star, Trash2 } from 'lucide-react';
 import { CustomerScoreBadges } from '@/components/ScoreBadge';
 import { RegionSelector } from '@/components/RegionSelector';
 import { TagBadge } from '@/components/TagBadge';
@@ -543,6 +543,13 @@ interface RareGuestInvitationResponse {
   skipped: RareGuestInvitationEntry[];
 }
 
+interface RareOrderDismissResponse {
+  ok: boolean;
+  removed: number;
+  status: string;
+  error: string | null;
+}
+
 interface GameUiPinningTarget {
   signature: string;
   recipeId: number;
@@ -780,6 +787,8 @@ export function ModWorkbench() {
   const [rareGuestInvitationResult, setRareGuestInvitationResult] = useState<RareGuestInvitationResponse | null>(null);
   const [rareGuestInvitationError, setRareGuestInvitationError] = useState('');
   const [rareGuestInvitationBusy, setRareGuestInvitationBusy] = useState(false);
+  const [dismissRareOrderBusyKey, setDismissRareOrderBusyKey] = useState('');
+  const [dismissRareOrderError, setDismissRareOrderError] = useState('');
   const [autoPrepBusy, setAutoPrepBusy] = useState(false);
   const [autoPrepMessage, setAutoPrepMessage] = useState('');
   const [autoPrepPaused, setAutoPrepPaused] = useState(false);
@@ -1077,6 +1086,29 @@ export function ModWorkbench() {
       setRareGuestInvitationError(err instanceof Error ? err.message : String(err));
     } finally {
       setRareGuestInvitationBusy(false);
+    }
+  }, [apiToken, normalizedEndpoint, refresh]);
+
+  const dismissRareOrder = useCallback(async (order: NightBusinessOrder) => {
+    if (!apiToken) {
+      setDismissRareOrderError('未收到本地 API Token。请从游戏内启动或按 F8 唤起伴随窗口。');
+      return;
+    }
+
+    const orderKey = buildNightBusinessOrderKey(order);
+    setDismissRareOrderBusyKey(orderKey);
+    setDismissRareOrderError('');
+    try {
+      const response = await dismissRuntimeRareOrder(normalizedEndpoint, apiToken, order);
+      if (!response.ok) {
+        throw new Error(response.error || response.status || '删除稀客订单失败');
+      }
+
+      await refresh(true);
+    } catch (err) {
+      setDismissRareOrderError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDismissRareOrderBusyKey('');
     }
   }, [apiToken, normalizedEndpoint, refresh]);
 
@@ -1879,10 +1911,6 @@ export function ModWorkbench() {
             indexes={recommendationIndexes}
             error={error}
             lastConnectedAt={lastConnectedAt}
-            inviteAllBusy={rareGuestInvitationBusy}
-            inviteAllResult={rareGuestInvitationResult}
-            inviteAllError={rareGuestInvitationError}
-            onInviteAllRareGuests={inviteAllRareGuests}
           />
         </TabsContent>
 
@@ -1969,6 +1997,9 @@ export function ModWorkbench() {
             onToggleBeverageFavorite={toggleBeverageFavorite}
             onRetryRareAutomationOrder={retryRareAutomationOrder}
             onResetRareAutomationOrder={resetRareAutomationOrder}
+            dismissRareOrderBusyKey={dismissRareOrderBusyKey}
+            dismissRareOrderError={dismissRareOrderError}
+            onDismissRareOrder={dismissRareOrder}
             onEnterFocusMode={() => setServiceFocusMode(true)}
             normalBusiness={snapshot?.normalBusiness ?? null}
           />
@@ -1979,6 +2010,10 @@ export function ModWorkbench() {
             runtimeLoaded={snapshot?.runtimeLoaded ?? false}
             missions={snapshot?.runtimeMissions ?? null}
             data={recommendationData}
+            inviteAllBusy={rareGuestInvitationBusy}
+            inviteAllResult={rareGuestInvitationResult}
+            inviteAllError={rareGuestInvitationError}
+            onInviteAllRareGuests={inviteAllRareGuests}
           />
         </TabsContent>
 
@@ -2023,10 +2058,6 @@ function ModOverviewPanel({
   indexes,
   error,
   lastConnectedAt,
-  inviteAllBusy,
-  inviteAllResult,
-  inviteAllError,
-  onInviteAllRareGuests,
 }: {
   endpoint: string;
   snapshot: LocalApiSnapshot | null;
@@ -2036,10 +2067,6 @@ function ModOverviewPanel({
   indexes: ReturnType<typeof buildRecommendationDataIndexes>;
   error: string;
   lastConnectedAt: Date | null;
-  inviteAllBusy: boolean;
-  inviteAllResult: RareGuestInvitationResponse | null;
-  inviteAllError: string;
-  onInviteAllRareGuests: () => void;
 }) {
   const ownedIngredientEntries = useMemo(
     () => buildLowStockEntries(runtime?.ownedIngredientQty ?? {}, indexes.ingredientNameById),
@@ -2096,54 +2123,6 @@ function ModOverviewPanel({
           <InfoLine label="经营扫描" value={night?.source || '暂无'} />
         </ListPanel>
 
-        <ListPanel title="稀客邀请">
-          <div className="grid gap-3 text-sm">
-            <InfoLine label="机制" value="按游戏羁绊邀请条件写入今晚邀请名单" />
-            <InfoLine label="可用状态" value={snapshot?.runtimeLoaded ? '等待用户执行' : '等待存档加载'} />
-            <Button
-              size="sm"
-              onClick={onInviteAllRareGuests}
-              disabled={!snapshot?.runtimeLoaded || Boolean(error) || inviteAllBusy}
-            >
-              {inviteAllBusy ? '邀请中...' : '邀请全部可邀请稀客'}
-            </Button>
-            {inviteAllError && <EmptyRow text={inviteAllError} />}
-            {inviteAllResult ? (
-              <div className="max-w-full min-w-0 overflow-hidden rounded-md border border-border/80 bg-background/35 p-2">
-                <WrappedInfoLine label="结果" value={inviteAllResult.status || (inviteAllResult.ok ? '已完成' : '失败')} />
-                <WrappedInfoLine
-                  label="统计"
-                  value={`新增 ${inviteAllResult.invitedCount} · 候选 ${inviteAllResult.candidateCount} · 可判定 ${inviteAllResult.usableCount} · 今晚已邀 ${inviteAllResult.existingControlledCount}/${inviteAllResult.existingSlotCount}`}
-                />
-                <WrappedInfoLine label="来源" value={inviteAllResult.source || '未知'} />
-                {inviteAllResult.diagnostics && (
-                  <WrappedInfoLine label="读取诊断" value={inviteAllResult.diagnostics} mono />
-                )}
-                <div className="mt-2 flex flex-wrap gap-1">
-                  {inviteAllResult.invited.slice(0, 12).map((entry) => (
-                    <Badge key={`${entry.id}-${entry.runtimeName || entry.name}`} variant="secondary" className="max-w-full">
-                      {entry.name || entry.runtimeName || `#${entry.id}`}
-                    </Badge>
-                  ))}
-                  {inviteAllResult.invited.length > 12 && (
-                    <Badge variant="outline">+{inviteAllResult.invited.length - 12}</Badge>
-                  )}
-                  {inviteAllResult.invited.length === 0 && (
-                    <span className="text-xs text-muted-foreground">暂无新增邀请</span>
-                  )}
-                </div>
-                {inviteAllResult.skipped.length > 0 && (
-                  <div className="mt-2 max-w-full break-words text-xs text-muted-foreground">
-                    跳过：{summarizeInvitationSkipped(inviteAllResult.skipped)}
-                  </div>
-                )}
-              </div>
-            ) : (
-              <EmptyRow text="尚未执行邀请" />
-            )}
-          </div>
-        </ListPanel>
-
         <ListPanel title="低库存概览">
           <div className={DENSE_TWO_COLUMN_GRID}>
             <LowStockColumn title="材料" entries={ownedIngredientEntries} />
@@ -2152,6 +2131,75 @@ function ModOverviewPanel({
         </ListPanel>
       </div>
     </div>
+  );
+}
+
+function RareGuestInvitationPanel({
+  runtimeLoaded,
+  inviteAllBusy,
+  inviteAllResult,
+  inviteAllError,
+  onInviteAllRareGuests,
+}: {
+  runtimeLoaded: boolean;
+  inviteAllBusy: boolean;
+  inviteAllResult: RareGuestInvitationResponse | null;
+  inviteAllError: string;
+  onInviteAllRareGuests: () => void;
+}) {
+  return (
+    <ListPanel title="稀客邀请">
+      <div className="grid min-w-0 gap-3 text-sm">
+        <div className={DENSE_TWO_COLUMN_GRID_TIGHT}>
+          <InfoLine label="机制" value="按游戏羁绊邀请条件写入今晚邀请名单" />
+          <InfoLine label="可用状态" value={runtimeLoaded ? '等待用户执行' : '等待存档加载'} />
+        </div>
+        <div>
+          <Button
+            size="sm"
+            onClick={onInviteAllRareGuests}
+            disabled={!runtimeLoaded || inviteAllBusy}
+            data-gamepad-clickable="true"
+          >
+            {inviteAllBusy ? '邀请中...' : '邀请全部可邀请稀客'}
+          </Button>
+        </div>
+        {inviteAllError && <EmptyRow text={inviteAllError} />}
+        {inviteAllResult ? (
+          <div className="max-w-full min-w-0 overflow-hidden rounded-md border border-border/80 bg-background/35 p-2">
+            <WrappedInfoLine label="结果" value={inviteAllResult.status || (inviteAllResult.ok ? '已完成' : '失败')} />
+            <WrappedInfoLine
+              label="统计"
+              value={`新增 ${inviteAllResult.invitedCount} · 候选 ${inviteAllResult.candidateCount} · 可判定 ${inviteAllResult.usableCount} · 今晚已邀 ${inviteAllResult.existingControlledCount}/${inviteAllResult.existingSlotCount}`}
+            />
+            <WrappedInfoLine label="来源" value={inviteAllResult.source || '未知'} />
+            {inviteAllResult.diagnostics && (
+              <WrappedInfoLine label="读取诊断" value={inviteAllResult.diagnostics} mono />
+            )}
+            <div className="mt-2 flex max-w-full flex-wrap gap-1">
+              {inviteAllResult.invited.slice(0, 12).map((entry) => (
+                <Badge key={`${entry.id}-${entry.runtimeName || entry.name}`} variant="secondary" className="max-w-full truncate">
+                  {entry.name || entry.runtimeName || `#${entry.id}`}
+                </Badge>
+              ))}
+              {inviteAllResult.invited.length > 12 && (
+                <Badge variant="outline">+{inviteAllResult.invited.length - 12}</Badge>
+              )}
+              {inviteAllResult.invited.length === 0 && (
+                <span className="text-xs text-muted-foreground">暂无新增邀请</span>
+              )}
+            </div>
+            {inviteAllResult.skipped.length > 0 && (
+              <div className="mt-2 max-w-full break-words text-xs text-muted-foreground">
+                跳过：{summarizeInvitationSkipped(inviteAllResult.skipped)}
+              </div>
+            )}
+          </div>
+        ) : (
+          <EmptyRow text="尚未执行邀请" />
+        )}
+      </div>
+    </ListPanel>
   );
 }
 
@@ -2539,6 +2587,8 @@ function ModServicePanel({
   normalOrderPausedCount,
   normalOrderDiagnostics,
   normalBusiness,
+  dismissRareOrderBusyKey,
+  dismissRareOrderError,
   onRecipeLimitChange,
   onBeverageLimitChange,
   onPreferenceChange,
@@ -2546,6 +2596,7 @@ function ModServicePanel({
   onToggleBeverageFavorite,
   onRetryRareAutomationOrder,
   onResetRareAutomationOrder,
+  onDismissRareOrder,
   onEnterFocusMode,
 }: {
   runtime: RecommendationStateSnapshot | null;
@@ -2572,6 +2623,8 @@ function ModServicePanel({
   normalOrderPausedCount: number;
   normalOrderDiagnostics: NormalAutoOrderDiagnostic[];
   normalBusiness: NormalBusinessContext | null;
+  dismissRareOrderBusyKey: string;
+  dismissRareOrderError: string;
   onRecipeLimitChange: (value: number) => void;
   onBeverageLimitChange: (value: number) => void;
   onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
@@ -2579,6 +2632,7 @@ function ModServicePanel({
   onToggleBeverageFavorite: ToggleBeverageFavorite;
   onRetryRareAutomationOrder: (orderKey: string) => void;
   onResetRareAutomationOrder: (orderKey: string) => void;
+  onDismissRareOrder: (order: NightBusinessOrder) => void;
   onEnterFocusMode: () => void;
 }) {
   const dataIndexes = useMemo(() => buildRecommendationDataIndexes(data), [data]);
@@ -2673,19 +2727,42 @@ function ModServicePanel({
 
             <ListPanel title="当前稀客点单">
               {orders.length === 0 && <EmptyRow text={night?.error || '暂无点单'} />}
-              {orders.map((order) => (
-                <div key={`${order.deskCode}-${order.guestId}-${order.foodTagId}-${order.beverageTagId}`} className="border-b py-2 text-sm last:border-b-0">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="font-medium">{order.guestName}</span>
-                    <span className="text-muted-foreground">桌 {formatDesk(order.deskCode)}</span>
+              {dismissRareOrderError && <EmptyRow text={dismissRareOrderError} />}
+              {orders.map((order) => {
+                const orderKey = buildNightBusinessOrderKey(order);
+                const busy = dismissRareOrderBusyKey === orderKey;
+                return (
+                  <div key={orderKey} className="border-b py-2 text-sm last:border-b-0">
+                    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
+                      <div className="min-w-0">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="truncate font-medium" title={order.guestName}>{order.guestName}</span>
+                          <span className="shrink-0 text-muted-foreground">桌 {formatDesk(order.deskCode)}</span>
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-1.5">
+                          <Badge variant="outline">料理 {order.foodTag || '无'} ({order.foodTagId})</Badge>
+                          <Badge variant="outline">酒水 {order.beverageTag || '无'} ({order.beverageTagId})</Badge>
+                          <Badge variant="secondary">{order.source}</Badge>
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="size-8 text-muted-foreground hover:text-destructive"
+                        title="删除这笔稀客订单缓存"
+                        aria-label="删除这笔稀客订单缓存"
+                        disabled={busy}
+                        data-gamepad-clickable="true"
+                        data-gamepad-focus-key={`rare-order-dismiss:${orderKey}`}
+                        onClick={() => onDismissRareOrder(order)}
+                      >
+                        <Trash2 className="size-4" />
+                      </Button>
+                    </div>
                   </div>
-                  <div className="mt-1 flex flex-wrap gap-1.5">
-                    <Badge variant="outline">料理 {order.foodTag || '无'} ({order.foodTagId})</Badge>
-                    <Badge variant="outline">酒水 {order.beverageTag || '无'} ({order.beverageTagId})</Badge>
-                    <Badge variant="secondary">{order.source}</Badge>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </ListPanel>
           </div>
 
@@ -3227,10 +3304,18 @@ function ModTasksPanel({
   runtimeLoaded,
   missions,
   data,
+  inviteAllBusy,
+  inviteAllResult,
+  inviteAllError,
+  onInviteAllRareGuests,
 }: {
   runtimeLoaded: boolean;
   missions: RuntimeMissionContext | null;
   data: RecommendationDataSet;
+  inviteAllBusy: boolean;
+  inviteAllResult: RareGuestInvitationResponse | null;
+  inviteAllError: string;
+  onInviteAllRareGuests: () => void;
 }) {
   const [statusFilters, setStatusFilters] = useState<MissionStatusFilter[]>(DEFAULT_MISSION_STATUS_FILTERS);
   const [showExtraInfo, setShowExtraInfo] = useState(false);
@@ -3252,6 +3337,14 @@ function ModTasksPanel({
 
   return (
     <div className="space-y-4">
+      <RareGuestInvitationPanel
+        runtimeLoaded={runtimeLoaded}
+        inviteAllBusy={inviteAllBusy}
+        inviteAllResult={inviteAllResult}
+        inviteAllError={inviteAllError}
+        onInviteAllRareGuests={onInviteAllRareGuests}
+      />
+
       <Card>
         <CardContent className={`${DENSE_THREE_COLUMN_GRID} p-4 text-sm`}>
           <InfoLine label="任务数据" value={missions ? '已读取' : '暂不可用'} />
@@ -5187,6 +5280,34 @@ async function inviteAllAvailableRareGuests(
   }
 }
 
+async function dismissRuntimeRareOrder(
+  endpoint: string,
+  apiToken: string,
+  order: NightBusinessOrder,
+): Promise<RareOrderDismissResponse> {
+  const params = new URLSearchParams({
+    deskCode: String(order.deskCode),
+    guestName: order.guestName,
+    foodTagId: String(order.foodTagId),
+    beverageTagId: String(order.beverageTagId),
+  });
+  if (order.guestId != null) params.set('guestId', String(order.guestId));
+
+  const abortController = new AbortController();
+  const timeoutId = window.setTimeout(() => abortController.abort(), 2500);
+
+  try {
+    return await readLocalApiJson<RareOrderDismissResponse>(
+      endpoint,
+      apiToken,
+      `/orders/rare/dismiss?${params.toString()}`,
+      abortController.signal,
+    );
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
 async function writeInventoryQuantity(
   endpoint: string,
   apiToken: string,
@@ -6449,6 +6570,19 @@ function buildAutoOrderKey(item: OrderRecommendation): string {
     order.guestId ?? order.guestName,
     order.foodTag,
     order.beverageTag,
+  ].join('|');
+}
+
+function buildNightBusinessOrderKey(order: NightBusinessOrder): string {
+  return [
+    order.firstSeenAtUtc ?? order.lastSeenAtUtc ?? '',
+    order.deskCode,
+    order.guestId ?? order.guestName,
+    order.foodTagId,
+    order.foodTag,
+    order.beverageTagId,
+    order.beverageTag,
+    order.source,
   ].join('|');
 }
 
