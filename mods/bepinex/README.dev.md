@@ -301,6 +301,7 @@ http://127.0.0.1:32145
 - `GET /logs/open-folder?target=log|diagnostics`：打开对应日志目录。
 - `GET /logs`：在 `LocalApi.ExposeLogs=true` 时读取 `BepInEx/LogOutput.log` 尾部日志，按 `LocalApi.MaxLogLines` 和 `LocalApi.MaxLogBytes` 裁剪。
 - `GET /inventory/set?type=ingredient|beverage&id=ID&qty=数量`：在 Unity 主线程修改当前运行时材料或酒水库存。
+- `GET /inventory/bulk-set?type=ingredient|beverage&ids=ID1,ID2&qty=数量`：批量修改当前运行时材料或酒水库存；用于修改页的材料/酒水批量设为 `99`，只在批量结束后刷新一次运行时快照。
 - `GET /orders/prepare-next?...`：按伴随窗口传入的稀客订单执行准备步骤，可组合取酒、开始料理、收取料理和收藏限定。
 - `GET /logs/automation`：读取 `BepInEx/config/MystiaStewardCompanion/automation-jobs.log` 尾部内容，返回结构与 `/logs` 一致，受日志读取开关和读取上限控制。
 - `GET /logs/export-diagnostics?open=true`：生成诊断 zip，包含 manifest、当前 snapshot、`LogOutput.log` 尾部、自动化作业日志尾部和诊断目录中的 `.log` 尾部；`open=true` 会打开诊断包目录。

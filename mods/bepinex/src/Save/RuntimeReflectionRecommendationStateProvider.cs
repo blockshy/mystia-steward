@@ -90,6 +90,11 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
         };
 
         var state = RecommendationState.FromSave(_repository, parsed);
+        foreach (var rareCustomerId in ExpandAvailableRareCustomerIds(RuntimeRareCustomerAvailabilityService.ReadAvailableRareCustomerIds()))
+        {
+            state.AvailableRareCustomerIds.Add(rareCustomerId);
+        }
+
         if (_includePlacedCookers)
         {
             RuntimeCookerSnapshotService.ApplyTo(state);
@@ -100,6 +105,49 @@ public sealed class RuntimeReflectionRecommendationStateProvider : IRecommendati
         }
 
         return state;
+    }
+
+    private HashSet<int> ExpandAvailableRareCustomerIds(HashSet<int> recordedIds)
+    {
+        var result = new HashSet<int>(recordedIds);
+        if (recordedIds.Count == 0) return result;
+
+        try
+        {
+            var mappedGuests = new RuntimeMappedGuestCatalog(_repository).Snapshot();
+            foreach (var entry in mappedGuests.Entries)
+            {
+                if (!MatchesRecordedRareCustomer(entry, recordedIds)) continue;
+                AddIfValid(result, entry.RuntimeId);
+                AddIfValid(result, entry.SourceGuestId);
+                AddIfValid(result, entry.LocalRareCustomerId);
+                AddIfValid(result, entry.RuntimeCustomer?.Id);
+            }
+        }
+        catch
+        {
+            // Mapping expansion is an optimization. The raw recorded ids are still usable.
+        }
+
+        return result;
+    }
+
+    private static bool MatchesRecordedRareCustomer(RuntimeMappedGuestEntry entry, HashSet<int> recordedIds)
+    {
+        return IsRecorded(entry.RuntimeId, recordedIds)
+            || IsRecorded(entry.SourceGuestId, recordedIds)
+            || IsRecorded(entry.LocalRareCustomerId, recordedIds)
+            || IsRecorded(entry.RuntimeCustomer?.Id, recordedIds);
+    }
+
+    private static bool IsRecorded(int? id, HashSet<int> recordedIds)
+    {
+        return id.HasValue && recordedIds.Contains(id.Value);
+    }
+
+    private static void AddIfValid(HashSet<int> target, int? id)
+    {
+        if (id.HasValue && id.Value >= 0) target.Add(id.Value);
     }
 
     private static List<int> ReadLiveRecipeIds(object? storagePartial)

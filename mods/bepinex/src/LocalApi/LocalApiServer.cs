@@ -11,7 +11,7 @@ namespace MystiaStewardCompanion.LocalApi;
 
 internal sealed class LocalApiServer : IDisposable
 {
-    private const int MaxRequestBytes = 8192;
+    private const int MaxRequestBytes = 32768;
 
     private readonly ManualLogSource _log;
     private readonly object _snapshotLock = new();
@@ -22,6 +22,7 @@ internal sealed class LocalApiServer : IDisposable
     private readonly Action<bool?, bool?, bool?> _updateLogSettings;
     private readonly Func<string, string> _openLogFolder;
     private readonly Func<string, int, int, RuntimeInventoryEditResult> _editInventory;
+    private readonly Func<string, IReadOnlyList<int>, int, RuntimeInventoryBulkEditResult> _editInventoryBulk;
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _prepareOrder;
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _completeOrder;
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _completeNormalOrder;
@@ -40,6 +41,7 @@ internal sealed class LocalApiServer : IDisposable
         Action<bool?, bool?, bool?> updateLogSettings,
         Func<string, string> openLogFolder,
         Func<string, int, int, RuntimeInventoryEditResult> editInventory,
+        Func<string, IReadOnlyList<int>, int, RuntimeInventoryBulkEditResult> editInventoryBulk,
         Func<OrderPreparationRequest, OrderPreparationResult> prepareOrder,
         Func<OrderPreparationRequest, OrderPreparationResult> completeOrder,
         Func<OrderPreparationRequest, OrderPreparationResult> completeNormalOrder,
@@ -54,6 +56,7 @@ internal sealed class LocalApiServer : IDisposable
         _updateLogSettings = updateLogSettings;
         _openLogFolder = openLogFolder;
         _editInventory = editInventory;
+        _editInventoryBulk = editInventoryBulk;
         _prepareOrder = prepareOrder;
         _completeOrder = completeOrder;
         _completeNormalOrder = completeNormalOrder;
@@ -203,6 +206,9 @@ internal sealed class LocalApiServer : IDisposable
                         break;
                     case "/inventory/set":
                         WriteResponse(stream, 200, "OK", BuildInventoryEditJson(query));
+                        break;
+                    case "/inventory/bulk-set":
+                        WriteResponse(stream, 200, "OK", BuildInventoryBulkEditJson(query));
                         break;
                     case "/orders/prepare-next":
                         WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _prepareOrder));
@@ -446,6 +452,48 @@ internal sealed class LocalApiServer : IDisposable
         {
             return "{\"ok\":false,\"error\":\"" + EscapeJson(ex.Message) + "\"}";
         }
+    }
+
+    private string BuildInventoryBulkEditJson(string query)
+    {
+        var itemType = ReadStringQuery(query, "type");
+        var itemIds = ReadIntListQuery(query, "ids");
+        if (!int.TryParse(ReadStringQuery(query, "qty"), out var quantity) || itemIds.Count == 0)
+        {
+            return "{\"ok\":false,\"error\":\"invalid inventory bulk edit parameters\"}";
+        }
+
+        RuntimeInventoryBulkEditResult result;
+        try
+        {
+            result = _editInventoryBulk(itemType, itemIds, quantity);
+        }
+        catch (Exception ex)
+        {
+            return "{\"ok\":false,\"error\":\"" + EscapeJson(ex.Message) + "\"}";
+        }
+
+        var builder = new StringBuilder()
+            .Append('{')
+            .Append("\"ok\":").Append(result.Failed == 0 ? "true" : "false").Append(',')
+            .Append("\"type\":\"").Append(EscapeJson(result.ItemType)).Append("\",")
+            .Append("\"requestedQuantity\":").Append(result.RequestedQuantity).Append(',')
+            .Append("\"total\":").Append(result.Total).Append(',')
+            .Append("\"changed\":").Append(result.Changed).Append(',')
+            .Append("\"unchanged\":").Append(result.Unchanged).Append(',')
+            .Append("\"failed\":").Append(result.Failed).Append(',')
+            .Append("\"errors\":[");
+
+        for (var i = 0; i < result.Errors.Count; i++)
+        {
+            if (i > 0) builder.Append(',');
+            builder.Append('"').Append(EscapeJson(result.Errors[i])).Append('"');
+        }
+
+        builder.Append("],\"error\":");
+        builder.Append(result.Failed == 0 ? "null" : $"\"{EscapeJson(string.Join("; ", result.Errors))}\"");
+        builder.Append('}');
+        return builder.ToString();
     }
 
     private string BuildOrderActionJson(string query, Func<OrderPreparationRequest, OrderPreparationResult> action)

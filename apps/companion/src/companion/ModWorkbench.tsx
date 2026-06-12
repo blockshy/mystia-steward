@@ -228,6 +228,7 @@ interface RecommendationStateSnapshot {
   availableRecipeIds: number[];
   availableBeverageIds: number[];
   availableIngredientIds: number[];
+  availableRareCustomerIds?: number[];
   ownedIngredientQty: Record<string, number>;
   ownedBeverageQty: Record<string, number>;
   placedCookerTypeIds?: number[];
@@ -369,6 +370,7 @@ interface RuntimeSets {
   recipeIds: Set<number>;
   beverageIds: Set<number>;
   ingredientIds: Set<number>;
+  rareCustomerIds: Set<number>;
   unavailableIngredientIds: Set<number>;
   ownedIngredientQty: Record<number, number>;
   ownedBeverageQty: Record<number, number>;
@@ -440,6 +442,18 @@ interface InventoryEditResponse {
   previousQuantity: number;
   quantity: number;
   changed: boolean;
+  error: string | null;
+}
+
+interface InventoryBulkEditResponse {
+  ok: boolean;
+  type: 'ingredient' | 'beverage';
+  requestedQuantity: number;
+  total: number;
+  changed: number;
+  unchanged: number;
+  failed: number;
+  errors: string[];
   error: string | null;
 }
 
@@ -2150,13 +2164,20 @@ function ModRarePanel({
   const dataIndexes = useMemo(() => buildRecommendationDataIndexes(data), [data]);
   const customers = useMemo(() => {
     if (!selectedPlace) return [];
+    const unlockedRareCustomerIds = runtimeSets?.rareCustomerIds ?? new Set<number>();
+    const shouldFilterByUnlocked = unlockedRareCustomerIds.size > 0;
+    const matchesCurrentSave = (customer: ICustomerRare) =>
+      !shouldFilterByUnlocked || unlockedRareCustomerIds.has(customer.id);
+
     return mergeRareCustomers(
-      getRareCustomersByPlace(selectedPlace, data).filter(isSelectableRareCustomer),
+      getRareCustomersByPlace(selectedPlace, data).filter((customer) =>
+        isSelectableRareCustomer(customer) && matchesCurrentSave(customer),
+      ),
       runtimeRareCustomers.filter((customer) => (
-        customer.places.includes(selectedPlace) && isSelectableRareCustomer(customer)
+        customer.places.includes(selectedPlace) && isSelectableRareCustomer(customer) && matchesCurrentSave(customer)
       )),
     );
-  }, [data, runtimeRareCustomers, selectedPlace]);
+  }, [data, runtimeRareCustomers, runtimeSets, selectedPlace]);
   const selectedCustomer = useMemo(
     () => customers.find((customer) => customer.id === rareCustomerId) ?? customers[0] ?? null,
     [customers, rareCustomerId],
@@ -2921,6 +2942,25 @@ function ModInventoryPanel({
     () => filterInventoryItems(data.beverages.filter((beverage) => beverage.id >= 0), normalizedSearch),
     [data.beverages, normalizedSearch],
   );
+  const bulkIngredientIds = useMemo(
+    () => runtimeSets
+      ? data.ingredients
+        .filter((ingredient) => ingredient.id >= 0 && runtimeSets.ingredientIds.has(ingredient.id))
+        .map((ingredient) => ingredient.id)
+      : [],
+    [data.ingredients, runtimeSets],
+  );
+  const bulkBeverageIds = useMemo(
+    () => runtimeSets
+      ? data.beverages
+        .filter((beverage) => {
+          if (beverage.id < 0 || !runtimeSets.beverageIds.has(beverage.id)) return false;
+          return (runtimeSets.ownedBeverageQty[beverage.id] ?? 0) >= 0;
+        })
+        .map((beverage) => beverage.id)
+      : [],
+    [data.beverages, runtimeSets],
+  );
 
   const applyQuantity = useCallback(async (kind: 'ingredient' | 'beverage', id: number, quantity: number) => {
     const key = inventoryDraftKey(kind, id);
@@ -2932,6 +2972,31 @@ function ModInventoryPanel({
       const result = await writeInventoryQuantity(endpoint, apiToken, kind, id, targetQuantity);
       if (!result.ok) throw new Error(result.error || '库存修改失败');
       setMessage(`${kind === 'ingredient' ? '材料' : '酒水'} #${id}: ${result.previousQuantity} -> ${result.quantity}`);
+      await onRefresh();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyKey('');
+    }
+  }, [apiToken, endpoint, onRefresh]);
+
+  const applyBulkQuantity = useCallback(async (
+    kind: 'ingredient' | 'beverage',
+    ids: number[],
+    quantity: number,
+  ) => {
+    const key = inventoryBulkKey(kind);
+    const targetQuantity = normalizeEditableQuantity(quantity);
+    setBusyKey(key);
+    setMessage('');
+
+    try {
+      const result = await writeInventoryBulkQuantity(endpoint, apiToken, kind, ids, targetQuantity);
+      const label = kind === 'ingredient' ? '材料' : '酒水';
+      const suffix = result.failed > 0 && result.errors.length > 0
+        ? `；失败：${result.errors.slice(0, 3).join('；')}`
+        : '';
+      setMessage(`${label}批量设为 ${targetQuantity}：变更 ${result.changed}，未变 ${result.unchanged}，失败 ${result.failed}${suffix}`);
       await onRefresh();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err));
@@ -2954,7 +3019,25 @@ function ModInventoryPanel({
               修改会写入当前游戏运行时库存；请在游戏内保存后再退出。经营中修改可能会和实时消耗同时发生。
             </div>
           </div>
-          <div className="flex min-w-0 items-center gap-2">
+          <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!apiToken || busyKey !== '' || bulkIngredientIds.length === 0}
+              data-gamepad-focus-key="inventory:bulk:ingredient"
+              onClick={() => applyBulkQuantity('ingredient', bulkIngredientIds, 99)}
+            >
+              材料设为 99
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!apiToken || busyKey !== '' || bulkBeverageIds.length === 0}
+              data-gamepad-focus-key="inventory:bulk:beverage"
+              onClick={() => applyBulkQuantity('beverage', bulkBeverageIds, 99)}
+            >
+              酒水设为 99
+            </Button>
             <Input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
@@ -3141,7 +3224,7 @@ function InventoryEditColumn<TItem extends IIngredient | IBeverage>({
           const key = inventoryDraftKey(kind, item.id);
           const quantity = ownedQty[item.id] ?? 0;
           const editable = Boolean(apiToken) && item.id >= 0 && quantity >= 0;
-          const busy = busyKey === key;
+          const busy = busyKey === key || busyKey === inventoryBulkKey(kind);
 
           return (
             <div
@@ -4959,6 +5042,33 @@ async function writeInventoryQuantity(
   }
 }
 
+async function writeInventoryBulkQuantity(
+  endpoint: string,
+  apiToken: string,
+  itemType: 'ingredient' | 'beverage',
+  itemIds: number[],
+  quantity: number,
+): Promise<InventoryBulkEditResponse> {
+  const params = new URLSearchParams({
+    type: itemType,
+    ids: itemIds.join(','),
+    qty: String(normalizeEditableQuantity(quantity)),
+  });
+  const abortController = new AbortController();
+  const timeoutId = window.setTimeout(() => abortController.abort(), 8000);
+
+  try {
+    return await readLocalApiJson<InventoryBulkEditResponse>(
+      endpoint,
+      apiToken,
+      `/inventory/bulk-set?${params.toString()}`,
+      abortController.signal,
+    );
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
 async function publishGameUiPinningTarget(
   endpoint: string,
   apiToken: string,
@@ -5218,6 +5328,7 @@ function buildRuntimeSets(
     recipeIds: new Set(runtime.availableRecipeIds),
     beverageIds: new Set(runtime.availableBeverageIds),
     ingredientIds,
+    rareCustomerIds: new Set(runtime.availableRareCustomerIds ?? []),
     unavailableIngredientIds,
     ownedIngredientQty: normalizeOwnedIngredientQty(runtime.ownedIngredientQty),
     ownedBeverageQty: normalizeOwnedIngredientQty(runtime.ownedBeverageQty ?? {}),
@@ -5771,6 +5882,10 @@ function filterInventoryItems<TItem extends IIngredient | IBeverage>(items: TIte
 
 function inventoryDraftKey(kind: 'ingredient' | 'beverage', itemId: number) {
   return `${kind}:${itemId}`;
+}
+
+function inventoryBulkKey(kind: 'ingredient' | 'beverage') {
+  return `bulk:${kind}`;
 }
 
 function normalizeEditableQuantity(value: number) {
@@ -7099,6 +7214,7 @@ function buildRecommendationStateSignature(runtime: RecommendationStateSnapshot,
     runtime.availableRecipeIds.join(','),
     runtime.availableBeverageIds.join(','),
     runtime.availableIngredientIds.join(','),
+    (runtime.availableRareCustomerIds ?? []).join(','),
     ownedQty,
     ownedBeverageQty,
     runtime.popularFoodTag ?? '',

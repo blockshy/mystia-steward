@@ -293,6 +293,7 @@ public sealed class RecommendationState
     public HashSet<int> AvailableRecipeIds { get; } = new();
     public HashSet<int> AvailableBeverageIds { get; } = new();
     public HashSet<int> AvailableIngredientIds { get; } = new();
+    public HashSet<int> AvailableRareCustomerIds { get; } = new();
     public Dictionary<int, int> OwnedIngredientQty { get; } = new();
     public Dictionary<int, int> OwnedBeverageQty { get; } = new();
     public HashSet<int> PlacedCookerTypeIds { get; } = new();

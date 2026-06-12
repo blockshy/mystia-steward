@@ -27,6 +27,7 @@ internal sealed class StewardOverlayController
     private LocalApiServer? _localApiServer;
     private readonly object _inventoryEditLock = new();
     private readonly Queue<PendingInventoryEdit> _pendingInventoryEdits = new();
+    private readonly Queue<PendingInventoryBulkEdit> _pendingInventoryBulkEdits = new();
     private readonly object _orderPreparationLock = new();
     private readonly Queue<PendingOrderPreparation> _pendingOrderPreparations = new();
     private bool _runtimeLoaded;
@@ -56,6 +57,16 @@ internal sealed class StewardOverlayController
         public int Quantity { get; init; }
         public ManualResetEventSlim Completion { get; } = new(false);
         public RuntimeInventoryEditResult? Result { get; set; }
+        public Exception? Error { get; set; }
+    }
+
+    private sealed class PendingInventoryBulkEdit
+    {
+        public string ItemType { get; init; } = "";
+        public IReadOnlyList<int> ItemIds { get; init; } = Array.Empty<int>();
+        public int Quantity { get; init; }
+        public ManualResetEventSlim Completion { get; } = new(false);
+        public RuntimeInventoryBulkEditResult? Result { get; set; }
         public Exception? Error { get; set; }
     }
 
@@ -98,6 +109,7 @@ internal sealed class StewardOverlayController
     {
         if (_disposed || _config == null) return;
         ProcessPendingInventoryEdits();
+        ProcessPendingInventoryBulkEdits();
         ProcessPendingOrderPreparations();
         ProcessPendingCookingCollections();
         RefreshOnSceneChange();
@@ -426,6 +438,7 @@ internal sealed class StewardOverlayController
                 UpdateLocalApiLogSettings,
                 OpenLocalApiLogFolder,
                 EditInventoryFromLocalApi,
+                EditInventoryBulkFromLocalApi,
                 PrepareOrderFromLocalApi,
                 CompleteOrderFromLocalApi,
                 CompleteNormalOrderFromLocalApi,
@@ -676,6 +689,33 @@ internal sealed class StewardOverlayController
         return pending.Result ?? throw new InvalidOperationException("Inventory edit did not produce a result.");
     }
 
+    private RuntimeInventoryBulkEditResult EditInventoryBulkFromLocalApi(string itemType, IReadOnlyList<int> itemIds, int quantity)
+    {
+        if (Thread.CurrentThread.ManagedThreadId == _mainThreadId)
+        {
+            return ApplyInventoryBulkEdit(itemType, itemIds, quantity);
+        }
+
+        var pending = new PendingInventoryBulkEdit
+        {
+            ItemType = itemType,
+            ItemIds = itemIds.ToArray(),
+            Quantity = quantity,
+        };
+        lock (_inventoryEditLock)
+        {
+            _pendingInventoryBulkEdits.Enqueue(pending);
+        }
+
+        if (!pending.Completion.Wait(TimeSpan.FromSeconds(6)))
+        {
+            throw new TimeoutException("Inventory bulk edit timed out waiting for Unity main thread.");
+        }
+
+        if (pending.Error != null) throw pending.Error;
+        return pending.Result ?? throw new InvalidOperationException("Inventory bulk edit did not produce a result.");
+    }
+
     private OrderPreparationResult PrepareOrderFromLocalApi(OrderPreparationRequest request)
     {
         return RunOrderActionFromLocalApi(request, OrderActionKind.PrepareRare);
@@ -825,6 +865,33 @@ internal sealed class StewardOverlayController
         }
     }
 
+    private void ProcessPendingInventoryBulkEdits()
+    {
+        while (true)
+        {
+            PendingInventoryBulkEdit? pending;
+            lock (_inventoryEditLock)
+            {
+                pending = _pendingInventoryBulkEdits.Count == 0 ? null : _pendingInventoryBulkEdits.Dequeue();
+            }
+
+            if (pending == null) return;
+
+            try
+            {
+                pending.Result = ApplyInventoryBulkEdit(pending.ItemType, pending.ItemIds, pending.Quantity);
+            }
+            catch (Exception ex)
+            {
+                pending.Error = ex;
+            }
+            finally
+            {
+                pending.Completion.Set();
+            }
+        }
+    }
+
     private RuntimeInventoryEditResult ApplyInventoryEdit(string itemType, int itemId, int quantity)
     {
         var result = RuntimeInventoryEditor.SetQuantity(itemType, itemId, quantity);
@@ -837,6 +904,57 @@ internal sealed class StewardOverlayController
         RefreshBusinessContext(false);
         PublishLocalApiSnapshot();
         return result;
+    }
+
+    private RuntimeInventoryBulkEditResult ApplyInventoryBulkEdit(string itemType, IReadOnlyList<int> itemIds, int quantity)
+    {
+        var normalizedType = itemType;
+        var changed = 0;
+        var unchanged = 0;
+        var failed = 0;
+        var errors = new List<string>();
+
+        foreach (var itemId in itemIds.Where(id => id >= 0).Distinct().OrderBy(id => id))
+        {
+            try
+            {
+                var result = RuntimeInventoryEditor.SetQuantity(itemType, itemId, quantity);
+                normalizedType = result.ItemType;
+                if (!string.IsNullOrWhiteSpace(result.Error))
+                {
+                    failed++;
+                    if (errors.Count < 8) errors.Add($"#{itemId}: {result.Error}");
+                    continue;
+                }
+
+                if (result.Changed) changed++;
+                else unchanged++;
+            }
+            catch (Exception ex)
+            {
+                failed++;
+                if (errors.Count < 8) errors.Add($"#{itemId}: {ex.Message}");
+            }
+        }
+
+        var total = changed + unchanged + failed;
+        _status = L(
+            $"批量库存修改：{normalizedType} 共 {total} 项，变更 {changed}，未变 {unchanged}，失败 {failed}",
+            $"Inventory bulk edit: {normalizedType} total {total}, changed {changed}, unchanged {unchanged}, failed {failed}");
+        RefreshRuntimeState(false);
+        RefreshBusinessContext(false);
+        PublishLocalApiSnapshot();
+
+        return new RuntimeInventoryBulkEditResult
+        {
+            ItemType = normalizedType,
+            RequestedQuantity = Math.Clamp(quantity, 0, 9999),
+            Total = total,
+            Changed = changed,
+            Unchanged = unchanged,
+            Failed = failed,
+            Errors = errors,
+        };
     }
 
     private void ClearLoadedRuntime(string status)
@@ -912,6 +1030,7 @@ internal sealed class StewardOverlayController
             hash = HashIds(hash, state.AvailableRecipeIds);
             hash = HashIds(hash, state.AvailableBeverageIds);
             hash = HashIds(hash, state.AvailableIngredientIds);
+            hash = HashIds(hash, state.AvailableRareCustomerIds);
             foreach (var item in state.OwnedIngredientQty.OrderBy(item => item.Key))
             {
                 hash = (hash * 31) + item.Key;
