@@ -68,6 +68,7 @@ const WINDOW_OPACITY_STORAGE_KEY = `${STORAGE_PREFIX}-window-opacity`;
 const FOCUS_SWITCH_BEHAVIOR_STORAGE_KEY = `${STORAGE_PREFIX}-focus-switch-behavior`;
 const FOCUS_SWITCH_COOLDOWN_STORAGE_KEY = `${STORAGE_PREFIX}-focus-switch-cooldown-ms`;
 const ALWAYS_ON_TOP_STORAGE_KEY = `${STORAGE_PREFIX}-always-on-top`;
+const MOUSE_PASSTHROUGH_STORAGE_KEY = `${STORAGE_PREFIX}-mouse-passthrough`;
 const GAMEPAD_NAVIGATION_STORAGE_KEY = `${STORAGE_PREFIX}-gamepad-navigation`;
 const AUTOMATION_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-automation-enabled`;
 const AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-order-enabled`;
@@ -587,6 +588,7 @@ interface CompanionPreferences {
   focusSwitchBehavior: FocusSwitchBehavior;
   focusSwitchCooldownMs: number;
   alwaysOnTop: boolean;
+  mousePassthroughEnabled: boolean;
   gamepadNavigationEnabled: boolean;
   automationEnabled: boolean;
   autoNormalOrderEnabled: boolean;
@@ -1817,11 +1819,58 @@ export function ModWorkbench() {
       companionPreferences.focusSwitchBehavior,
       companionPreferences.alwaysOnTop,
       companionPreferences.focusSwitchCooldownMs,
+      companionPreferences.mousePassthroughEnabled,
     );
   }, [
     companionPreferences.alwaysOnTop,
     companionPreferences.focusSwitchBehavior,
     companionPreferences.focusSwitchCooldownMs,
+    companionPreferences.mousePassthroughEnabled,
+  ]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return undefined;
+
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    import('@tauri-apps/api/event')
+      .then(async ({ listen }) => {
+        unlisten = await listen<boolean>('mouse-passthrough-changed', (event) => {
+          if (disposed) return;
+          const mousePassthroughEnabled = Boolean(event.payload);
+          setCompanionPreferences((current) => (
+            current.mousePassthroughEnabled === mousePassthroughEnabled
+              ? current
+              : normalizeCompanionPreferences({ ...current, mousePassthroughEnabled })
+          ));
+        });
+      })
+      .catch(() => {
+        // Browser mode and older companion builds do not expose this event.
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isTauriRuntime()) return undefined;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'F10') return;
+      event.preventDefault();
+      updateCompanionPreferences({
+        mousePassthroughEnabled: !companionPreferences.mousePassthroughEnabled,
+      });
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [
+    companionPreferences.mousePassthroughEnabled,
+    updateCompanionPreferences,
   ]);
 
   useEffect(() => {
@@ -1937,6 +1986,11 @@ export function ModWorkbench() {
           <p className="mt-1 text-sm text-muted-foreground">
             {snapshot ? `mystia-steward-companion ${snapshot.pluginVersion}` : '等待本地 API 响应'}
           </p>
+          {companionPreferences.mousePassthroughEnabled && (
+            <Badge variant="secondary" className="mt-2">
+              鼠标穿透中 · F10 解除
+            </Badge>
+          )}
         </div>
         <div className="flex w-full max-w-2xl items-center gap-2">
           <Input
@@ -2284,6 +2338,7 @@ function ModOverviewPanel({
           <ListPanel title="快捷键">
             <div className={`${DENSE_TWO_COLUMN_GRID_TIGHT} text-sm`}>
               <InfoLine label="F8" value="在游戏与独立窗口之间切换焦点或重新显示伴随窗口" />
+              <InfoLine label="F10" value="开启或关闭鼠标穿透锁定；穿透后可用它恢复窗口操作" />
               <InfoLine label="RS Click" value="手柄默认在游戏与独立窗口之间切换" />
               <InfoLine label="手柄导航" value="左摇杆/十字键移动，A 确认，B 返回，LB/RB 切换页面，LT/RT 滚动" />
               <InfoLine label="专注模式" value="Y 进入专注模式或切换精简模式，X 收藏当前推荐项" />
@@ -4221,6 +4276,14 @@ function ModSettingsPanel({
                 checked={preferences.alwaysOnTop}
                 onCheckedChange={(alwaysOnTop) => onPreferenceChange({ alwaysOnTop })}
               />
+              <SwitchControl
+                label="鼠标穿透锁定"
+                checked={preferences.mousePassthroughEnabled}
+                onCheckedChange={(mousePassthroughEnabled) => onPreferenceChange({ mousePassthroughEnabled })}
+              />
+              <div className="text-xs text-muted-foreground">
+                开启后伴随窗口会忽略鼠标点击，点击会落到下方游戏或其他窗口；按 F10、F8/RS Click 或托盘菜单可恢复操作。
+              </div>
             </div>
           </ListPanel>
 
@@ -8153,6 +8216,7 @@ function readStoredCompanionPreferences(): CompanionPreferences {
       localStorage.getItem(FOCUS_SWITCH_COOLDOWN_STORAGE_KEY) ?? DEFAULT_FOCUS_SWITCH_COOLDOWN_MS,
     ),
     alwaysOnTop: readStoredBoolean(ALWAYS_ON_TOP_STORAGE_KEY, true),
+    mousePassthroughEnabled: readStoredBoolean(MOUSE_PASSTHROUGH_STORAGE_KEY, false),
     gamepadNavigationEnabled: readStoredBoolean(GAMEPAD_NAVIGATION_STORAGE_KEY, true),
     automationEnabled: readStoredBoolean(AUTOMATION_ENABLED_STORAGE_KEY, false),
     autoNormalOrderEnabled: readStoredBoolean(AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY, false),
@@ -8265,6 +8329,7 @@ function normalizeCompanionPreferences(value: Partial<CompanionPreferences>): Co
     focusSwitchBehavior: value.focusSwitchBehavior === 'keep-visible' ? 'keep-visible' : 'hide',
     focusSwitchCooldownMs: normalizeFocusSwitchCooldownMs(value.focusSwitchCooldownMs ?? DEFAULT_FOCUS_SWITCH_COOLDOWN_MS),
     alwaysOnTop: Boolean(value.alwaysOnTop),
+    mousePassthroughEnabled: Boolean(value.mousePassthroughEnabled),
     gamepadNavigationEnabled: Boolean(value.gamepadNavigationEnabled),
     automationEnabled: Boolean(value.automationEnabled),
     autoNormalOrderEnabled: Boolean(value.autoNormalOrderEnabled),
@@ -8338,6 +8403,7 @@ function persistCompanionPreferences(preferences: CompanionPreferences) {
   localStorage.setItem(FOCUS_SWITCH_BEHAVIOR_STORAGE_KEY, normalized.focusSwitchBehavior);
   localStorage.setItem(FOCUS_SWITCH_COOLDOWN_STORAGE_KEY, String(normalized.focusSwitchCooldownMs));
   localStorage.setItem(ALWAYS_ON_TOP_STORAGE_KEY, normalized.alwaysOnTop ? '1' : '0');
+  localStorage.setItem(MOUSE_PASSTHROUGH_STORAGE_KEY, normalized.mousePassthroughEnabled ? '1' : '0');
   localStorage.setItem(GAMEPAD_NAVIGATION_STORAGE_KEY, normalized.gamepadNavigationEnabled ? '1' : '0');
   localStorage.setItem(AUTOMATION_ENABLED_STORAGE_KEY, normalized.automationEnabled ? '1' : '0');
   localStorage.setItem(AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY, normalized.autoNormalOrderEnabled ? '1' : '0');
@@ -8377,6 +8443,7 @@ async function applyCompanionPreferencesToTauri(
   focusSwitchBehavior: FocusSwitchBehavior,
   alwaysOnTop: boolean,
   focusSwitchCooldownMs: number,
+  mousePassthroughEnabled: boolean,
 ) {
   if (!isTauriRuntime()) return;
 
@@ -8387,6 +8454,7 @@ async function applyCompanionPreferencesToTauri(
       alwaysOnTop,
       windowSwitchCooldownMs: normalizeFocusSwitchCooldownMs(focusSwitchCooldownMs),
     });
+    await invoke('set_mouse_passthrough', { enabled: mousePassthroughEnabled });
   } catch {
     // Browser mode and older companion builds do not expose this command.
   }
