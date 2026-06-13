@@ -365,6 +365,7 @@ interface LocalApiSnapshot {
   normalBusiness?: NormalBusinessContext | null;
   runtimeRareCustomers?: RuntimeRareCustomer[];
   runtimeData?: RuntimeDataCatalogSnapshot;
+  performanceMs?: Record<string, number>;
 }
 
 interface RuntimeSets {
@@ -772,6 +773,7 @@ export function ModWorkbench() {
     readStoredCompanionPreferences(),
   );
   const [snapshot, setSnapshot] = useState<LocalApiSnapshot | null>(null);
+  const [cachedRuntimeData, setCachedRuntimeData] = useState<RuntimeDataCatalogSnapshot | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [connectionPaused, setConnectionPaused] = useState(false);
@@ -823,19 +825,38 @@ export function ModWorkbench() {
     setConnectionFailureCount(0);
     setError('');
     setSnapshot(null);
+    setCachedRuntimeData(null);
   }, [normalizedEndpointDraft]);
   const pauseConnection = useCallback(() => {
     setConnectionPaused(true);
     setLoading(false);
     setError('已停止自动重连。');
   }, []);
+
+  useEffect(() => {
+    if (!snapshot) return;
+    if (!snapshot.runtimeLoaded) {
+      setCachedRuntimeData(null);
+      return;
+    }
+
+    if (snapshot.runtimeData?.isComplete) {
+      setCachedRuntimeData(snapshot.runtimeData);
+    }
+  }, [snapshot]);
+
   const runtime = snapshot?.recommendationState ?? null;
   const night = snapshot?.nightBusiness ?? null;
   const detectedPlace = normalizePlace(night?.place);
   const selectedPlace = manualPlace ?? detectedPlace;
+  const effectiveRuntimeData = snapshot?.runtimeData?.isComplete
+    ? snapshot.runtimeData
+    : snapshot?.runtimeLoaded
+      ? cachedRuntimeData ?? snapshot?.runtimeData
+      : snapshot?.runtimeData;
   const recommendationData = useMemo(
-    () => buildRecommendationDataSet(snapshot?.runtimeData),
-    [snapshot?.runtimeData],
+    () => buildRecommendationDataSet(effectiveRuntimeData),
+    [effectiveRuntimeData],
   );
   const recommendationIndexes = useMemo(
     () => buildRecommendationDataIndexes(recommendationData),
@@ -1973,6 +1994,7 @@ export function ModWorkbench() {
             recommendations={orderRecommendations.recommendations}
             recommendationIssues={orderRecommendations.recommendationIssues}
             data={recommendationData}
+            performanceMs={snapshot?.performanceMs}
             runtimeSets={runtimeSets}
             uiPinningStatus={snapshot?.runtimeUiPinningStatus ?? ''}
             uiPinningTarget={gameUiPinningTarget}
@@ -2092,6 +2114,7 @@ function ModOverviewPanel({
             label="推荐数据"
             value={data.source === 'runtime' ? `游戏运行时 (${data.status})` : `等待游戏运行时数据 (${data.status})`}
           />
+          <InfoLine label="性能耗时" value={formatPerformanceMs(snapshot?.performanceMs)} mono />
           <InfoLine label="数据目录" value={snapshot?.dataDirectory || '未知'} mono />
         </CardContent>
       </Card>
@@ -2569,6 +2592,7 @@ function ModServicePanel({
   recommendations,
   recommendationIssues,
   data,
+  performanceMs,
   runtimeSets,
   uiPinningStatus,
   uiPinningTarget,
@@ -2605,6 +2629,7 @@ function ModServicePanel({
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
   data: RecommendationDataSet;
+  performanceMs?: Record<string, number>;
   runtimeSets: RuntimeSets | null;
   uiPinningStatus: string;
   uiPinningTarget: GameUiPinningTarget | null;
@@ -2671,6 +2696,7 @@ function ModServicePanel({
           <InfoLine label="经营场景" value={detectedPlace ?? night?.placeLabel ?? '无经营场景'} />
           <InfoLine label="扫描状态" value={night?.source || '暂无'} />
           <InfoLine label="推荐数据" value={runtime ? '已就绪' : '暂不可用'} />
+          <InfoLine label="性能耗时" value={formatPerformanceMs(performanceMs)} mono />
           <InfoLine
             label="已摆放厨具"
             value={runtimeSets?.hasCookerSnapshot
@@ -7980,6 +8006,18 @@ async function toggleCompanionFocus(
 
 function formatTime(date: Date) {
   return date.toLocaleTimeString('zh-CN', { hour12: false });
+}
+
+function formatPerformanceMs(metrics?: Record<string, number>) {
+  const entries = Object.entries(metrics ?? {})
+    .filter(([, value]) => Number.isFinite(value))
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 4);
+  if (entries.length === 0) return '暂无';
+
+  return entries
+    .map(([key, value]) => `${key} ${value >= 10 ? value.toFixed(0) : value.toFixed(1)}ms`)
+    .join(' · ');
 }
 
 function formatRetryDelay(failureCount: number) {

@@ -65,6 +65,7 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 
 - Mod 只读取当前游戏运行时数据，不读取 `.memory` 存档文件。
 - 运行时固定数据读取成功后，C# 侧会把 `DataBaseCore` / `DataBaseCharacter` / `DataBaseLanguage` 结构化为 `RuntimeDataCatalog`，并切换 `DataRepository` 到运行时仓库；伴随窗口收到 `snapshot.runtimeData.isComplete=true` 后，普客/稀客推荐、经营中推荐、任务目标、库存修改页和自动化目标解析都必须使用这份运行时数据集。
+- 本地 API 快照需要避免在 Unity 主线程高频序列化大对象。完整 `RuntimeDataCatalog` 可以被节流省略，前端必须缓存最近一次完整数据并继续使用；不要把缺失的 `snapshot.runtimeData` 当作数据不可用。新增重扫描或自动化轮询时要记录到 `performanceMs` 或复用现有耗时指标，便于概览页排查掉帧。
 - 夜间经营订单优先使用运行时对象；日志捕获仅作为兼容和排障手段。
 - 夜间经营订单必须按首次出现时间稳定显示；不得因桌号排序或推荐完整度排序让新订单插到旧订单前面。
 - 经营中订单排序支持 `点单顺序` 和 `稀客分组`。默认必须保持点单顺序；稀客分组模式下，同一稀客订单放在一起，稀客组之间按该稀客最早订单出现时间排序，组内仍按点单先后排序。经营中列表、当前点单推荐、专注模式、游戏界面置顶目标和自动化第一单选择必须复用同一排序函数。

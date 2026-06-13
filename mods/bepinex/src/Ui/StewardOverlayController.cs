@@ -14,6 +14,9 @@ namespace MystiaStewardCompanion.Ui;
 internal sealed class StewardOverlayController
 {
     private const float SpecialOrderRefreshDebounceSeconds = 0.2f;
+    private const float LocalApiSnapshotPublishMinIntervalSeconds = 0.5f;
+    private const float RuntimeDataFullPublishIntervalSeconds = 10f;
+    private const float PendingCookingProcessIntervalSeconds = 0.25f;
     private const int SceneSnapshotStartupGuardFrames = 10;
     private static readonly JsonSerializerOptions LocalApiJsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -44,13 +47,19 @@ internal sealed class StewardOverlayController
     private DateTime _lastRuntimeReadUtc = DateTime.MinValue;
     private float _nextAutoRefreshAt;
     private float _nextBusinessRefreshAt;
+    private float _nextLocalApiSnapshotPublishAt;
+    private float _nextRuntimeDataFullPublishAt;
+    private float _nextPendingCookingProcessAt;
     private int _sceneChangedFrame;
     private bool _localApiSnapshotErrorLogged;
     private bool _disposed;
     private bool _controllerToggleLatched;
     private bool _specialOrderRefreshPending;
+    private bool _localApiSnapshotPublishPending;
     private float _nextControllerToggleAt;
     private float _nextSpecialOrderRefreshAt;
+    private string _lastPublishedRuntimeDataSignature = "";
+    private readonly Dictionary<string, double> _performanceMs = new(StringComparer.Ordinal);
 
     private sealed class PendingInventoryEdit
     {
@@ -107,7 +116,7 @@ internal sealed class StewardOverlayController
         StartLocalApi();
         RefreshBusinessContext(false);
         RefreshRuntimeState(false);
-        PublishLocalApiSnapshot();
+        PublishLocalApiSnapshot(force: true);
         if (_localApiServer != null)
         {
             CompanionProcessLauncher.TryAutoLaunch(config, log, _localApiToken);
@@ -133,10 +142,12 @@ internal sealed class StewardOverlayController
             }
         }
 
+        FlushPendingLocalApiSnapshot();
         if (!_config.AutoRefreshRuntime.Value || Time.realtimeSinceStartup < _nextAutoRefreshAt) return;
         _nextAutoRefreshAt = Time.realtimeSinceStartup + Math.Max(1f, _config.AutoRefreshSeconds.Value);
         RefreshBusinessContext(false);
         RefreshRuntimeState(false);
+        FlushPendingLocalApiSnapshot();
     }
 
     private void RefreshBusinessContextOnSpecialOrderChange()
@@ -295,6 +306,7 @@ internal sealed class StewardOverlayController
     {
         if (_repository == null || _config == null) return;
 
+        var stopwatch = Stopwatch.StartNew();
         try
         {
             _activeSceneName = GetActiveSceneName();
@@ -370,6 +382,7 @@ internal sealed class StewardOverlayController
         }
         finally
         {
+            RecordPerformance("refresh.runtime", stopwatch.Elapsed);
             PublishLocalApiSnapshot();
         }
     }
@@ -381,6 +394,7 @@ internal sealed class StewardOverlayController
 
         _nextBusinessRefreshAt = Time.realtimeSinceStartup + Math.Max(1f, _config.AutoRefreshSeconds.Value);
 
+        var stopwatch = Stopwatch.StartNew();
         try
         {
             _activeSceneName = GetActiveSceneName();
@@ -430,6 +444,7 @@ internal sealed class StewardOverlayController
         }
         finally
         {
+            RecordPerformance("refresh.business", stopwatch.Elapsed);
             PublishLocalApiSnapshot();
         }
     }
@@ -468,12 +483,20 @@ internal sealed class StewardOverlayController
         }
     }
 
-    private void PublishLocalApiSnapshot()
+    private void PublishLocalApiSnapshot(bool force = false)
     {
         if (_localApiServer == null) return;
+        if (!force && Time.realtimeSinceStartup < _nextLocalApiSnapshotPublishAt)
+        {
+            _localApiSnapshotPublishPending = true;
+            return;
+        }
 
+        var stopwatch = Stopwatch.StartNew();
         try
         {
+            _localApiSnapshotPublishPending = false;
+            _nextLocalApiSnapshotPublishAt = Time.realtimeSinceStartup + LocalApiSnapshotPublishMinIntervalSeconds;
             TryRefreshRuntimeDataCatalog();
             var publishedState = _state ?? (_businessContext?.Orders.Count > 0 ? GetBusinessRecommendationState() : null);
             var snapshot = new LocalApiSnapshot
@@ -486,16 +509,19 @@ internal sealed class StewardOverlayController
                 RuntimeSource = _runtimeSource,
                 DataDirectory = _repository?.DataDirectory ?? "",
                 RuntimeUiPinningStatus = RuntimeUiPinningService.Status,
-                RecommendationState = publishedState == null ? null : RecommendationStateSnapshot.From(publishedState),
+                RecommendationState = Measure(
+                    "snapshot.recommendationState",
+                    () => publishedState == null ? null : RecommendationStateSnapshot.From(publishedState)),
                 NightBusiness = _businessContext,
-                RuntimeMissions = ReadRuntimeMissionsForSnapshot(),
-                NormalBusiness = ReadNormalBusinessForSnapshot(),
+                RuntimeMissions = Measure("snapshot.missions", ReadRuntimeMissionsForSnapshot),
+                NormalBusiness = Measure("snapshot.normalBusiness", ReadNormalBusinessForSnapshot),
                 RuntimeRareCustomers = _repository == null
                     ? new List<RuntimeRareCustomer>()
-                    : new RuntimeMappedGuestCatalog(_repository).Snapshot().RuntimeRareCustomers.ToList(),
-                RuntimeData = _runtimeDataCatalog,
+                    : Measure("snapshot.rareCustomers", () => new RuntimeMappedGuestCatalog(_repository).Snapshot().RuntimeRareCustomers.ToList()),
+                RuntimeData = BuildRuntimeDataForSnapshot(force),
+                PerformanceMs = BuildPerformanceSnapshot(),
             };
-            _localApiServer.SetSnapshotJson(JsonSerializer.Serialize(snapshot, LocalApiJsonOptions));
+            _localApiServer.SetSnapshotJson(Measure("snapshot.serialize", () => JsonSerializer.Serialize(snapshot, LocalApiJsonOptions)));
             _localApiSnapshotErrorLogged = false;
         }
         catch (Exception ex)
@@ -504,6 +530,79 @@ internal sealed class StewardOverlayController
             _localApiSnapshotErrorLogged = true;
             _log?.LogWarning($"Local API snapshot publish failed: {ex.Message}");
         }
+        finally
+        {
+            RecordPerformance("snapshot.publish", stopwatch.Elapsed);
+        }
+    }
+
+    private void FlushPendingLocalApiSnapshot()
+    {
+        if (!_localApiSnapshotPublishPending) return;
+        if (Time.realtimeSinceStartup < _nextLocalApiSnapshotPublishAt) return;
+
+        PublishLocalApiSnapshot();
+    }
+
+    private RuntimeDataCatalog? BuildRuntimeDataForSnapshot(bool force)
+    {
+        if (!_runtimeDataCatalog.IsComplete) return _runtimeDataCatalog;
+
+        var signature = BuildRuntimeDataSignature(_runtimeDataCatalog);
+        if (force
+            || Time.realtimeSinceStartup >= _nextRuntimeDataFullPublishAt
+            || !string.Equals(signature, _lastPublishedRuntimeDataSignature, StringComparison.Ordinal))
+        {
+            _lastPublishedRuntimeDataSignature = signature;
+            _nextRuntimeDataFullPublishAt = Time.realtimeSinceStartup + RuntimeDataFullPublishIntervalSeconds;
+            return _runtimeDataCatalog;
+        }
+
+        return null;
+    }
+
+    private static string BuildRuntimeDataSignature(RuntimeDataCatalog catalog)
+    {
+        return string.Join(
+            "|",
+            catalog.IsComplete ? "1" : "0",
+            catalog.Source,
+            catalog.Status,
+            catalog.Recipes.Count,
+            catalog.Ingredients.Count,
+            catalog.Beverages.Count,
+            catalog.NormalCustomers.Count,
+            catalog.RareCustomers.Count,
+            catalog.FoodTagIdMap.Count);
+    }
+
+    private T Measure<T>(string key, Func<T> action)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            return action();
+        }
+        finally
+        {
+            RecordPerformance(key, stopwatch.Elapsed);
+        }
+    }
+
+    private void RecordPerformance(string key, TimeSpan elapsed)
+    {
+        if (string.IsNullOrWhiteSpace(key)) return;
+
+        var milliseconds = Math.Round(elapsed.TotalMilliseconds, 2);
+        _performanceMs[key] = milliseconds;
+    }
+
+    private Dictionary<string, double> BuildPerformanceSnapshot()
+    {
+        return _performanceMs
+            .OrderByDescending(item => item.Value)
+            .Take(12)
+            .ToDictionary(item => item.Key, item => item.Value, StringComparer.Ordinal);
     }
 
     private void TryRefreshRuntimeDataCatalog()
@@ -901,7 +1000,13 @@ internal sealed class StewardOverlayController
 
     private void ProcessPendingCookingCollections()
     {
-        foreach (var message in RuntimeOrderPreparationService.ProcessPendingCookingCollections())
+        if (Time.realtimeSinceStartup < _nextPendingCookingProcessAt) return;
+        _nextPendingCookingProcessAt = Time.realtimeSinceStartup + PendingCookingProcessIntervalSeconds;
+
+        var messages = Measure(
+            "automation.collect",
+            RuntimeOrderPreparationService.ProcessPendingCookingCollections);
+        foreach (var message in messages)
         {
             _status = message;
             _log?.LogInfo(message);
