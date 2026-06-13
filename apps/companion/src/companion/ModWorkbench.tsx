@@ -33,6 +33,7 @@ import {
 import { isTauriRuntime } from '@/lib/tauri-runtime';
 import { useThemeMode } from '@/lib/theme';
 import type { ThemeMode } from '@/lib/theme';
+import helpContent from '@/data/help-content.json';
 import {
   DEFAULT_RECOMMENDATION_DATA,
   buildRecommendationDataIndexes,
@@ -157,11 +158,35 @@ const MOD_TAB_TRIGGER_CLASS = 'min-w-0 flex-1 data-active:bg-primary data-active
 const INNER_TAB_TRIGGER_CLASS = 'min-w-0 flex-1 data-active:bg-primary data-active:text-primary-foreground dark:data-active:bg-primary dark:data-active:text-primary-foreground';
 const RECOMMENDATION_SCROLL_AREA = 'min-h-[28rem] max-h-[calc(100vh-18rem)] overflow-auto pr-1';
 
-type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'tasks' | 'inventory' | 'logs' | 'settings';
-const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'service', 'tasks', 'inventory', 'logs', 'settings'];
+type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'tasks' | 'inventory' | 'help' | 'logs' | 'settings';
+const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'service', 'tasks', 'inventory', 'help', 'logs', 'settings'];
 const BASIC_MOD_TABS: ModTab[] = MOD_TABS.filter((tab) => tab !== 'logs');
 type OverviewTab = 'status' | 'inventory' | 'actions';
 type SettingsTab = 'window' | 'recommendation' | 'sorting' | 'automation' | 'debug';
+interface HelpContent {
+  version: number;
+  updatedAt: string;
+  intro: string;
+  categories: HelpCategory[];
+}
+
+interface HelpCategory {
+  id: string;
+  title: string;
+  description?: string;
+  items: HelpItem[];
+}
+
+interface HelpItem {
+  id: string;
+  title: string;
+  summary?: string;
+  steps?: string[];
+  notes?: string[];
+  warnings?: string[];
+}
+
+const HELP_CONTENT = helpContent as HelpContent;
 type FocusSwitchBehavior = 'hide' | 'keep-visible';
 type ServiceOrderSortMode = 'ordered' | 'guest';
 type RareGuestInvitationScope = 'current' | 'all';
@@ -2068,6 +2093,9 @@ export function ModWorkbench() {
           <TabsTrigger value="inventory" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="inventory">
             修改
           </TabsTrigger>
+          <TabsTrigger value="help" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="help">
+            帮助
+          </TabsTrigger>
           {companionPreferences.showDebugDetails && (
             <TabsTrigger value="logs" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="logs">
               日志
@@ -2217,6 +2245,10 @@ export function ModWorkbench() {
             data={recommendationData}
             onRefresh={refresh}
           />
+        </TabsContent>
+
+        <TabsContent value="help" data-gamepad-scope="content">
+          <ModHelpPanel />
         </TabsContent>
 
         {companionPreferences.showDebugDetails && (
@@ -2512,6 +2544,148 @@ function RareGuestInvitationPanel({
       </div>
     </ListPanel>
   );
+}
+
+function ModHelpPanel() {
+  const [query, setQuery] = useState('');
+  const normalizedQuery = normalizeHelpSearchText(query);
+  const filteredCategories = useMemo(
+    () => filterHelpCategories(HELP_CONTENT.categories, normalizedQuery),
+    [normalizedQuery],
+  );
+  const totalItems = HELP_CONTENT.categories.reduce((sum, category) => sum + category.items.length, 0);
+  const visibleItems = filteredCategories.reduce((sum, category) => sum + category.items.length, 0);
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardContent className="space-y-3 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="text-base font-semibold">帮助</h2>
+              <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{HELP_CONTENT.intro}</p>
+            </div>
+            <div className="text-right text-xs text-muted-foreground">
+              <div>条目 {visibleItems}/{totalItems}</div>
+              <div>更新 {HELP_CONTENT.updatedAt}</div>
+            </div>
+          </div>
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索功能、问题或关键词"
+            data-gamepad-clickable="true"
+          />
+        </CardContent>
+      </Card>
+
+      {filteredCategories.length === 0 ? (
+        <EmptyState text="没有匹配的帮助内容" />
+      ) : (
+        <div className="space-y-3">
+          {filteredCategories.map((category) => (
+            <ListPanel
+              key={category.id}
+              title={category.title}
+              action={<span className="text-xs text-muted-foreground">{category.items.length} 项</span>}
+            >
+              {category.description && (
+                <p className="mb-3 text-sm text-muted-foreground">{category.description}</p>
+              )}
+              <div className="space-y-2">
+                {category.items.map((item) => (
+                  <HelpDisclosure key={item.id} item={item} />
+                ))}
+              </div>
+            </ListPanel>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HelpDisclosure({ item }: { item: HelpItem }) {
+  return (
+    <details className="group rounded-md border border-border bg-background/70">
+      <summary
+        className="flex cursor-pointer list-none items-start justify-between gap-3 px-3 py-2.5 text-sm marker:hidden"
+        data-gamepad-clickable="true"
+      >
+        <div className="min-w-0">
+          <div className="font-medium">{item.title}</div>
+          {item.summary && <div className="mt-1 text-xs text-muted-foreground">{item.summary}</div>}
+        </div>
+        <span className="shrink-0 text-xs text-muted-foreground group-open:hidden">展开</span>
+        <span className="hidden shrink-0 text-xs text-muted-foreground group-open:inline">收起</span>
+      </summary>
+      <div className="space-y-3 border-t border-border px-3 py-3 text-sm">
+        {item.steps && item.steps.length > 0 && (
+          <HelpTextBlock title="操作" items={item.steps} ordered />
+        )}
+        {item.notes && item.notes.length > 0 && (
+          <HelpTextBlock title="说明" items={item.notes} />
+        )}
+        {item.warnings && item.warnings.length > 0 && (
+          <HelpTextBlock title="注意" items={item.warnings} tone="warning" />
+        )}
+      </div>
+    </details>
+  );
+}
+
+function HelpTextBlock({
+  title,
+  items,
+  ordered = false,
+  tone = 'default',
+}: {
+  title: string;
+  items: string[];
+  ordered?: boolean;
+  tone?: 'default' | 'warning';
+}) {
+  const List = ordered ? 'ol' : 'ul';
+  return (
+    <div>
+      <div className={tone === 'warning' ? 'text-sm font-medium text-destructive' : 'text-sm font-medium'}>
+        {title}
+      </div>
+      <List className={`mt-1 space-y-1 pl-5 ${ordered ? 'list-decimal' : 'list-disc'} text-muted-foreground`}>
+        {items.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </List>
+    </div>
+  );
+}
+
+function filterHelpCategories(categories: HelpCategory[], query: string): HelpCategory[] {
+  if (!query) return categories;
+
+  return categories
+    .map((category) => ({
+      ...category,
+      items: category.items.filter((item) => helpItemMatchesQuery(category, item, query)),
+    }))
+    .filter((category) => category.items.length > 0);
+}
+
+function helpItemMatchesQuery(category: HelpCategory, item: HelpItem, query: string): boolean {
+  const chunks = [
+    category.title,
+    category.description ?? '',
+    item.title,
+    item.summary ?? '',
+    ...(item.steps ?? []),
+    ...(item.notes ?? []),
+    ...(item.warnings ?? []),
+  ];
+  return normalizeHelpSearchText(chunks.join('\n')).includes(query);
+}
+
+function normalizeHelpSearchText(value: string): string {
+  return value.trim().toLowerCase();
 }
 
 function ModNormalPanel({
@@ -8181,6 +8355,7 @@ function readStoredTab(): ModTab {
     || value === 'service'
     || value === 'tasks'
     || value === 'inventory'
+    || value === 'help'
     || value === 'logs'
     || value === 'settings'
     ? value
