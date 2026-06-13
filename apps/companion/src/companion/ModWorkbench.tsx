@@ -5,9 +5,12 @@ import { CustomerScoreBadges } from '@/components/ScoreBadge';
 import { RegionSelector } from '@/components/RegionSelector';
 import { TagBadge } from '@/components/TagBadge';
 import { useGamepadNavigation } from '@/companion/use-gamepad-navigation';
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { ChoiceGroup, type ChoiceOption } from '@/components/ui/choice-group';
+import { EmptyRow, EmptyState, InfoLine, ListPanel, Metric, StatusCard } from '@/components/ui/display';
 import { Input } from '@/components/ui/input';
 import {
   Select,
@@ -16,6 +19,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { SliderField } from '@/components/ui/slider';
+import { Switch, SwitchField } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   computeNormalBeverageResults,
@@ -2607,30 +2612,27 @@ function ModHelpPanel() {
 
 function HelpDisclosure({ item }: { item: HelpItem }) {
   return (
-    <details className="group rounded-md border border-border bg-background/70">
-      <summary
-        className="flex cursor-pointer list-none items-start justify-between gap-3 px-3 py-2.5 text-sm marker:hidden"
-        data-gamepad-clickable="true"
-      >
-        <div className="min-w-0">
-          <div className="font-medium">{item.title}</div>
-          {item.summary && <div className="mt-1 text-xs text-muted-foreground">{item.summary}</div>}
-        </div>
-        <span className="shrink-0 text-xs text-muted-foreground group-open:hidden">展开</span>
-        <span className="hidden shrink-0 text-xs text-muted-foreground group-open:inline">收起</span>
-      </summary>
-      <div className="space-y-3 border-t border-border px-3 py-3 text-sm">
-        {item.steps && item.steps.length > 0 && (
-          <HelpTextBlock title="操作" items={item.steps} ordered />
-        )}
-        {item.notes && item.notes.length > 0 && (
-          <HelpTextBlock title="说明" items={item.notes} />
-        )}
-        {item.warnings && item.warnings.length > 0 && (
-          <HelpTextBlock title="注意" items={item.warnings} tone="warning" />
-        )}
-      </div>
-    </details>
+    <Accordion defaultValue={[]}>
+      <AccordionItem value={item.id}>
+        <AccordionTrigger data-gamepad-clickable="true">
+          <div className="min-w-0">
+            <div className="font-medium">{item.title}</div>
+            {item.summary && <div className="mt-1 text-xs text-muted-foreground">{item.summary}</div>}
+          </div>
+        </AccordionTrigger>
+        <AccordionContent className="space-y-3">
+          {item.steps && item.steps.length > 0 && (
+            <HelpTextBlock title="操作" items={item.steps} ordered />
+          )}
+          {item.notes && item.notes.length > 0 && (
+            <HelpTextBlock title="说明" items={item.notes} />
+          )}
+          {item.warnings && item.warnings.length > 0 && (
+            <HelpTextBlock title="注意" items={item.warnings} tone="warning" />
+          )}
+        </AccordionContent>
+      </AccordionItem>
+    </Accordion>
   );
 }
 
@@ -5004,79 +5006,9 @@ function NormalAutoPrepStatus({
   );
 }
 
-function StatusCard({
-  label,
-  value,
-  detail,
-  tone,
-}: {
-  label: string;
-  value: string;
-  detail: string;
-  tone: 'good' | 'bad' | 'neutral';
-}) {
-  const toneClass = tone === 'good'
-    ? 'text-emerald-700 dark:text-emerald-300'
-    : tone === 'bad'
-      ? 'text-destructive'
-      : 'text-foreground';
-
-  return (
-    <Card>
-      <CardContent className="p-4">
-        <div className="text-xs text-muted-foreground">{label}</div>
-        <div className={`mt-1 text-lg font-semibold ${toneClass}`}>{value}</div>
-        <div className="mt-1 truncate text-xs text-muted-foreground" title={detail}>{detail}</div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function Metric({ label, value }: { label: string; value: number | string }) {
-  return (
-    <div>
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="mt-1 text-base font-semibold">{value}</div>
-    </div>
-  );
-}
-
-function InfoLine({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div className="min-w-0">
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className={`mt-1 truncate text-sm ${mono ? 'font-mono text-xs' : 'font-medium'}`} title={value}>{value}</div>
-    </div>
-  );
-}
-
 function formatGuestFund(guest: NightBusinessGuest): string {
   if (typeof guest.fund !== 'number' || !Number.isFinite(guest.fund)) return '';
   return String(Math.trunc(guest.fund));
-}
-
-function ListPanel({
-  title,
-  action,
-  children,
-  contentClassName = '',
-}: {
-  title: string;
-  action?: ReactNode;
-  children: ReactNode;
-  contentClassName?: string;
-}) {
-  return (
-    <Card className="min-w-0">
-      <CardContent className="min-w-0 p-4">
-        <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
-          <h2 className="min-w-0 text-base font-semibold">{title}</h2>
-          {action}
-        </div>
-        {contentClassName ? <div className={contentClassName}>{children}</div> : children}
-      </CardContent>
-    </Card>
-  );
 }
 
 function LowStockColumn({
@@ -5121,18 +5053,6 @@ function TagSummary({
   );
 }
 
-function EmptyRow({ text }: { text: string }) {
-  return <div className="py-6 text-center text-sm text-muted-foreground">{text}</div>;
-}
-
-function EmptyState({ text }: { text: string }) {
-  return (
-    <Card>
-      <CardContent className="py-10 text-center text-sm text-muted-foreground">{text}</CardContent>
-    </Card>
-  );
-}
-
 function RuntimeUnavailable() {
   return <EmptyState text="尚未读取到游戏实时数据。请确认游戏已加载存档，且 Mod 本地 API 已连接。" />;
 }
@@ -5147,24 +5067,7 @@ function SwitchControl({
   onCheckedChange: (value: boolean) => void;
 }) {
   return (
-    <label className="flex items-center gap-2 text-sm">
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        onClick={() => onCheckedChange(!checked)}
-        className={`relative h-5 w-9 shrink-0 rounded-full border transition-colors ${
-          checked ? 'border-primary bg-primary' : 'border-border bg-muted'
-        }`}
-      >
-        <span
-          className={`absolute left-0 top-1/2 size-4 -translate-y-1/2 rounded-full bg-background shadow-sm transition-transform ${
-            checked ? 'translate-x-4' : 'translate-x-0.5'
-          }`}
-        />
-      </button>
-      <span className="whitespace-nowrap">{label}</span>
-    </label>
+    <SwitchField label={label} checked={checked} onCheckedChange={onCheckedChange} />
   );
 }
 
@@ -5281,27 +5184,16 @@ function OpacitySlider({
   const percent = Math.round(normalizeWindowOpacity(value) * 100);
 
   return (
-    <div>
-      <div className="mb-2 flex items-center justify-between gap-3 text-sm">
-        <span className="font-medium">窗口透明度</span>
-        <span className="text-muted-foreground">{percent}%</span>
-      </div>
-      <input
-        type="range"
-        min={Math.round(MIN_WINDOW_OPACITY * 100)}
-        max={100}
-        step={1}
-        value={percent}
-        aria-label="窗口透明度"
-        data-gamepad-slider="true"
-        data-gamepad-step="1"
-        onChange={(event) => onChange(normalizeWindowOpacity(Number(event.target.value) / 100))}
-        className="h-2 w-full accent-primary"
-      />
-      <div className="mt-1 text-xs text-muted-foreground">
-        仅调整窗口和面板背景，文字、按钮和标签不会整体变淡。
-      </div>
-    </div>
+    <SliderField
+      label="窗口透明度"
+      value={percent}
+      min={Math.round(MIN_WINDOW_OPACITY * 100)}
+      max={100}
+      step={1}
+      valueText={`${percent}%`}
+      description="仅调整窗口和面板背景，文字、按钮和标签不会整体变淡。"
+      onChange={(nextPercent) => onChange(normalizeWindowOpacity(nextPercent / 100))}
+    />
   );
 }
 
@@ -5313,31 +5205,10 @@ function SettingChoice<TValue extends string>({
 }: {
   label: string;
   value: TValue;
-  options: { value: TValue; label: string; description: string }[];
+  options: ChoiceOption<TValue>[];
   onChange: (value: TValue) => void;
 }) {
-  return (
-    <div>
-      <div className="mb-2 text-sm font-medium">{label}</div>
-      <div className={`grid gap-2 ${options.length > 2 ? 'grid-cols-3' : 'grid-cols-2'}`}>
-        {options.map((option) => (
-          <button
-            key={option.value}
-            type="button"
-            onClick={() => onChange(option.value)}
-            className={`rounded-lg border p-2 text-left transition-colors ${
-              value === option.value
-                ? 'border-primary bg-primary/10 text-foreground'
-                : 'border-border bg-background/50 text-foreground hover:bg-muted'
-            }`}
-          >
-            <div className="text-sm font-medium">{option.label}</div>
-            <div className="mt-1 text-xs text-muted-foreground">{option.description}</div>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
+  return <ChoiceGroup label={label} value={value} options={options} onChange={onChange} />;
 }
 
 function SortRulesControl<K extends string>({
@@ -5374,21 +5245,10 @@ function SortRulesControl<K extends string>({
             className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 rounded-md border border-border bg-background/50 p-2 text-sm"
           >
             <label className="flex min-w-0 items-center gap-2">
-              <button
-                type="button"
-                role="switch"
-                aria-checked={rule.enabled}
-                onClick={() => updateRule(rule.key, { enabled: !rule.enabled })}
-                className={`relative h-5 w-9 shrink-0 rounded-full border transition-colors ${
-                  rule.enabled ? 'border-primary bg-primary' : 'border-border bg-muted'
-                }`}
-              >
-                <span
-                  className={`absolute left-0 top-1/2 size-4 -translate-y-1/2 rounded-full bg-background shadow-sm transition-transform ${
-                    rule.enabled ? 'translate-x-4' : 'translate-x-0.5'
-                  }`}
-                />
-              </button>
+              <Switch
+                checked={rule.enabled}
+                onCheckedChange={(enabled) => updateRule(rule.key, { enabled })}
+              />
               <span className="truncate">{label}</span>
             </label>
             <Button

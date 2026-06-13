@@ -24,6 +24,9 @@
 - React 代码使用函数组件和 hooks。
 - 面向用户的文案默认使用中文；Mod UI 需要同时保留中文和英文入口。
 - 不在组件中硬编码平衡值，优先更新结构化数据和类型化逻辑。
+- 伴随窗口 UI 基础组件统一放在 `apps/companion/src/components/ui/`。按钮、输入框、选择框、页签、卡片、徽标、开关、滑杆、选项组、折叠面板、状态卡片、空状态和信息字段都优先使用该目录组件，不要在业务页面复制外部模板组件或手写第二套样式。
+- UI 原语以 Base UI 无样式组件为交互基础，样式由项目 Tailwind token 控制。新增组件要保持工具型窗口的紧凑布局、小圆角、实边框、弱动画和可读高对比，不引入通用后台模板、玻璃拟态、过度圆角或独立视觉体系。
+- `ModWorkbench.tsx` 允许保留业务组合组件，但纯展示组件应下沉到 `components/ui` 或独立业务组件文件。新增页面时先复用 `ListPanel`、`InfoLine`、`EmptyState`、`SwitchField`、`SliderField`、`ChoiceGroup` 和 `Accordion`，避免页面层样式混乱。
 
 ## 构建验证
 
