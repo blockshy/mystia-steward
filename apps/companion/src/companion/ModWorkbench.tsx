@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { ArrowDown, ArrowUp, FolderOpen, Power, RefreshCw, RotateCcw, Star } from 'lucide-react';
+import { Archive, ArrowDown, ArrowUp, FolderOpen, Power, RefreshCw, RotateCcw, Star, Trash2 } from 'lucide-react';
 import { CustomerScoreBadges } from '@/components/ScoreBadge';
 import { RegionSelector } from '@/components/RegionSelector';
 import { TagBadge } from '@/components/TagBadge';
 import { useGamepadNavigation } from '@/companion/use-gamepad-navigation';
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { ChoiceGroup, type ChoiceOption } from '@/components/ui/choice-group';
+import { EmptyRow, EmptyState, InfoLine, ListPanel, Metric, StatusCard } from '@/components/ui/display';
 import { Input } from '@/components/ui/input';
 import {
   Select,
@@ -16,6 +19,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { SliderField } from '@/components/ui/slider';
+import { Switch, SwitchField } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   computeNormalBeverageResults,
@@ -29,14 +34,24 @@ import {
   rankPreferenceBeveragesForRare,
   rankPreferenceRecipesForRare,
   rankRecipesForRare,
+  type SpecialFoodRuleRankOptions,
 } from '@/lib/rare-recommend';
 import { isTauriRuntime } from '@/lib/tauri-runtime';
 import { useThemeMode } from '@/lib/theme';
 import type { ThemeMode } from '@/lib/theme';
+import helpContent from '@/data/help-content.json';
+import {
+  DEFAULT_RECOMMENDATION_DATA,
+  buildRecommendationDataIndexes,
+  buildRecommendationDataSet,
+  type RecommendationDataSet,
+  type RuntimeDataCatalogSnapshot,
+} from '@/lib/recommendation-data';
 import type {
   IBeverage,
   ICustomerRare,
   IIngredient,
+  IRecipe,
   INormalBeverageResult,
   INormalRecipeResult,
   IRareBeverageResult,
@@ -45,8 +60,6 @@ import type {
   TRating,
 } from '@/lib/types';
 import { ALL_PLACES } from '@/lib/types';
-import allIngredients from '@/data/ingredients.json';
-import allBeverages from '@/data/beverages.json';
 
 const DEFAULT_ENDPOINT = 'http://127.0.0.1:32145';
 const STORAGE_PREFIX = 'mystia-steward-companion';
@@ -54,6 +67,7 @@ const LEGACY_STORAGE_PREFIX = 'mystia-steward';
 const ENDPOINT_STORAGE_KEY = `${STORAGE_PREFIX}-mod-api-endpoint`;
 const TOKEN_STORAGE_KEY = `${STORAGE_PREFIX}-mod-api-token`;
 const TAB_STORAGE_KEY = `${STORAGE_PREFIX}-mod-tab`;
+const RARE_GUEST_INVITATION_SCOPE_STORAGE_KEY = `${STORAGE_PREFIX}-rare-guest-invitation-scope`;
 const FOCUS_COMPACT_STORAGE_KEY = `${STORAGE_PREFIX}-service-focus-compact`;
 const FOCUS_RECIPE_LIMIT_STORAGE_KEY = `${STORAGE_PREFIX}-service-focus-recipe-limit`;
 const FOCUS_BEVERAGE_LIMIT_STORAGE_KEY = `${STORAGE_PREFIX}-service-focus-beverage-limit`;
@@ -61,18 +75,33 @@ const WINDOW_OPACITY_STORAGE_KEY = `${STORAGE_PREFIX}-window-opacity`;
 const FOCUS_SWITCH_BEHAVIOR_STORAGE_KEY = `${STORAGE_PREFIX}-focus-switch-behavior`;
 const FOCUS_SWITCH_COOLDOWN_STORAGE_KEY = `${STORAGE_PREFIX}-focus-switch-cooldown-ms`;
 const ALWAYS_ON_TOP_STORAGE_KEY = `${STORAGE_PREFIX}-always-on-top`;
+const MOUSE_PASSTHROUGH_STORAGE_KEY = `${STORAGE_PREFIX}-mouse-passthrough`;
 const GAMEPAD_NAVIGATION_STORAGE_KEY = `${STORAGE_PREFIX}-gamepad-navigation`;
 const AUTOMATION_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-automation-enabled`;
+const AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-order-enabled`;
+const AUTO_NORMAL_TAKE_BEVERAGE_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-take-beverage`;
+const AUTO_NORMAL_START_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-start-cooking`;
+const AUTO_NORMAL_COLLECT_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-collect-cooking`;
+const AUTO_NORMAL_DELIVER_FOOD_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-deliver-food`;
+const AUTO_NORMAL_COMPLETE_ORDER_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-complete-order`;
+const AUTO_NORMAL_STOP_ON_ERROR_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-stop-on-error`;
 const AUTO_PREP_COMPLETE_ORDER_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-complete-order`;
 const AUTO_PREP_TAKE_BEVERAGE_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-take-beverage`;
 const AUTO_PREP_START_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-start-cooking`;
 const AUTO_PREP_COLLECT_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-collect-cooking`;
 const AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-favorites-only`;
 const AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-stop-on-error`;
-const AUTO_PREP_COMPLETE_QTE_STORAGE_KEY = `${STORAGE_PREFIX}-auto-prep-complete-qte`;
+const AUTO_RARE_CONCURRENCY_STORAGE_KEY = `${STORAGE_PREFIX}-auto-rare-concurrency`;
+const AUTO_NORMAL_CONCURRENCY_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-concurrency`;
+const AUTO_RARE_TRAY_WAIT_SECONDS_STORAGE_KEY = `${STORAGE_PREFIX}-auto-rare-tray-wait-seconds`;
+const AUTO_NORMAL_STORAGE_WAIT_SECONDS_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-storage-wait-seconds`;
+const AUTO_MAX_STEP_RETRIES_STORAGE_KEY = `${STORAGE_PREFIX}-auto-max-step-retries`;
+const AUTO_MAX_ROLLBACKS_STORAGE_KEY = `${STORAGE_PREFIX}-auto-max-rollbacks`;
 const FILTER_MISSING_COOKERS_STORAGE_KEY = `${STORAGE_PREFIX}-filter-missing-cookers`;
+const PRIORITIZE_MISSION_RECIPES_STORAGE_KEY = `${STORAGE_PREFIX}-prioritize-mission-recipes`;
 const GAME_UI_PINNING_STORAGE_KEY = `${STORAGE_PREFIX}-game-ui-pinning`;
 const COOKER_HIGHLIGHT_STORAGE_KEY = `${STORAGE_PREFIX}-cooker-highlight`;
+const SHOW_DEBUG_DETAILS_STORAGE_KEY = `${STORAGE_PREFIX}-show-debug-details`;
 const RECIPE_SORT_RULES_STORAGE_KEY = `${STORAGE_PREFIX}-recipe-sort-rules`;
 const BEVERAGE_SORT_RULES_STORAGE_KEY = `${STORAGE_PREFIX}-beverage-sort-rules`;
 const SERVICE_ORDER_SORT_MODE_STORAGE_KEY = `${STORAGE_PREFIX}-service-order-sort-mode`;
@@ -88,7 +117,27 @@ const DEFAULT_FOCUS_SWITCH_COOLDOWN_MS = 800;
 const MIN_FOCUS_SWITCH_COOLDOWN_MS = 250;
 const MAX_FOCUS_SWITCH_COOLDOWN_MS = 2000;
 const MAX_LOG_LINES_IN_VIEW = 400;
+const CONNECTION_RETRY_DELAYS_MS = [2000, 5000, 10000, 30000];
 const AUTO_FIRST_ORDER_TICK_MS = 1500;
+const AUTO_NORMAL_ORDER_TICK_MS = 500;
+const RARE_TRAY_BACKLOG_REUSE_SECONDS = 30;
+const DEFAULT_RARE_AUTO_ORDERS_PER_TICK = 2;
+const DEFAULT_NORMAL_AUTO_ORDERS_PER_TICK = 3;
+const MIN_AUTO_ORDER_CONCURRENCY = 1;
+const MAX_RARE_AUTO_ORDER_CONCURRENCY = 4;
+const MAX_NORMAL_AUTO_ORDER_CONCURRENCY = 6;
+const DEFAULT_NORMAL_AUTO_STORAGE_WAIT_SECONDS = 45;
+const MIN_AUTO_WAIT_SECONDS = 10;
+const MAX_AUTO_WAIT_SECONDS = 180;
+const NORMAL_AUTO_RECOVERABLE_PAUSE_RETRY_MS = 10000;
+const DEFAULT_RARE_AUTO_TRAY_WAIT_SECONDS = 30;
+const AUTO_JOB_STALL_MS = 90000;
+const DEFAULT_AUTO_STEP_RETRIES = 3;
+const MIN_AUTO_STEP_RETRIES = 1;
+const MAX_AUTO_STEP_RETRIES_LIMIT = 10;
+const DEFAULT_AUTO_ROLLBACKS = 2;
+const MIN_AUTO_ROLLBACKS = 0;
+const MAX_AUTO_ROLLBACKS_LIMIT = 5;
 const NON_ORDERABLE_RARE_FOOD_TAGS = new Set(['流行喜爱', '流行厌恶']);
 const COOKER_TYPE_NAME_BY_ID = new Map<number, string>([
   [1, '煮锅'],
@@ -103,12 +152,7 @@ const COOKER_NAME_ALIASES = new Map<string, string>([
   ['锅', '煮锅'],
   ['炸锅', '油锅'],
 ]);
-const INGREDIENTS = allIngredients as IIngredient[];
-const INGREDIENT_BY_NAME = new Map(INGREDIENTS.map((ingredient) => [ingredient.name, ingredient]));
-const INGREDIENT_ID_BY_NAME = new Map(INGREDIENTS.map((ingredient) => [ingredient.name, ingredient.id]));
-const INGREDIENT_NAME_BY_ID = new Map(INGREDIENTS.map((ingredient) => [ingredient.id, ingredient.name]));
-const BEVERAGES = allBeverages as IBeverage[];
-const BEVERAGE_NAME_BY_ID = new Map(BEVERAGES.map((beverage) => [beverage.id, beverage.name]));
+const DEFAULT_DATA_INDEXES = buildRecommendationDataIndexes(DEFAULT_RECOMMENDATION_DATA);
 const LOW_STOCK_RESOURCE_THRESHOLD = 5;
 const EXTRA_INGREDIENT_RESOURCE_WEIGHT = 2;
 const DENSE_TWO_COLUMN_GRID = 'grid grid-cols-2 gap-4';
@@ -117,12 +161,47 @@ const DENSE_THREE_COLUMN_GRID = 'grid grid-cols-3 gap-3';
 const DENSE_FOUR_COLUMN_GRID = 'grid grid-cols-4 gap-3';
 const DENSE_CARD_HEADER_GRID = 'grid grid-cols-[minmax(0,1fr)_auto] gap-3';
 const DENSE_ITEM_GRID = 'grid grid-cols-[repeat(auto-fit,minmax(11rem,1fr))] gap-2';
+const AUTOMATION_SWITCH_GRID = 'grid grid-cols-2 gap-2 xl:grid-cols-3';
+const AUTOMATION_SWITCH_CELL = 'min-w-0 rounded-md border border-border bg-background/70 px-2.5 py-2';
 const MOD_TAB_TRIGGER_CLASS = 'min-w-0 flex-1 data-active:bg-primary data-active:text-primary-foreground dark:data-active:bg-primary dark:data-active:text-primary-foreground';
+const INNER_TAB_TRIGGER_CLASS = 'min-w-0 flex-1 data-active:bg-primary data-active:text-primary-foreground dark:data-active:bg-primary dark:data-active:text-primary-foreground';
+const RECOMMENDATION_SCROLL_AREA = 'min-h-[28rem] max-h-[calc(100vh-18rem)] overflow-auto pr-1';
 
-type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'inventory' | 'logs' | 'settings';
-const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'service', 'inventory', 'logs', 'settings'];
+type ModTab = 'overview' | 'normal' | 'rare' | 'service' | 'tasks' | 'inventory' | 'help' | 'logs' | 'settings';
+const MOD_TABS: ModTab[] = ['overview', 'normal', 'rare', 'service', 'tasks', 'inventory', 'help', 'logs', 'settings'];
+const BASIC_MOD_TABS: ModTab[] = MOD_TABS.filter((tab) => tab !== 'logs');
+type OverviewTab = 'status' | 'inventory' | 'actions';
+type SettingsTab = 'window' | 'recommendation' | 'sorting' | 'automation' | 'debug';
+interface HelpContent {
+  version: number;
+  updatedAt: string;
+  intro: string;
+  categories: HelpCategory[];
+}
+
+interface HelpCategory {
+  id: string;
+  title: string;
+  description?: string;
+  items: HelpItem[];
+}
+
+interface HelpItem {
+  id: string;
+  title: string;
+  summary?: string;
+  steps?: string[];
+  notes?: string[];
+  warnings?: string[];
+}
+
+const HELP_CONTENT = helpContent as HelpContent;
 type FocusSwitchBehavior = 'hide' | 'keep-visible';
 type ServiceOrderSortMode = 'ordered' | 'guest';
+type RareGuestInvitationScope = 'current' | 'all';
+type MissionStatusFilter = 'available' | 'tracking' | 'fulfilled';
+const DEFAULT_MISSION_STATUS_FILTERS: MissionStatusFilter[] = ['available', 'fulfilled'];
+const MISSION_STATUS_FILTER_OPTIONS: MissionStatusFilter[] = ['available', 'tracking', 'fulfilled'];
 type SortDirection = 'asc' | 'desc';
 type RecipeSortKey =
   | 'requiredTag'
@@ -193,6 +272,7 @@ interface RecommendationStateSnapshot {
   availableRecipeIds: number[];
   availableBeverageIds: number[];
   availableIngredientIds: number[];
+  availableRareCustomerIds?: number[];
   ownedIngredientQty: Record<string, number>;
   ownedBeverageQty: Record<string, number>;
   placedCookerTypeIds?: number[];
@@ -201,6 +281,26 @@ interface RecommendationStateSnapshot {
   popularFoodTag: string | null;
   popularHateFoodTag: string | null;
   famousShopEnabled: boolean;
+  specialRules?: RuntimeSpecialRuleContext[];
+  specialRuleStatus?: string;
+}
+
+interface RuntimeSpecialFoodTagTarget {
+  id?: number | null;
+  name: string;
+  rawName: string;
+  source: string;
+}
+
+interface RuntimeSpecialRuleContext {
+  ruleId: string;
+  challengeMode: string;
+  displayName: string;
+  description: string;
+  matchMode: 'any' | 'all' | string;
+  foodTagTargets: RuntimeSpecialFoodTagTarget[];
+  source: string;
+  status: string;
 }
 
 interface PlacedCookerSnapshot {
@@ -235,6 +335,8 @@ interface NightBusinessOrder {
   source: string;
   firstSeenAtUtc?: string | null;
   lastSeenAtUtc?: string | null;
+  hasServedFood?: boolean;
+  hasServedBeverage?: boolean;
 }
 
 interface NightBusinessContext {
@@ -242,6 +344,60 @@ interface NightBusinessContext {
   placeLabel: string | null;
   activeRareGuests: NightBusinessGuest[];
   orders: NightBusinessOrder[];
+  source: string;
+  error: string | null;
+}
+
+interface RuntimeMissionInfo {
+  label: string;
+  title: string;
+  characterLabel: string;
+  characterName: string;
+  places?: string[];
+  source: string;
+  status?: MissionStatusFilter | 'finished';
+  started: boolean;
+  finished: boolean;
+  targetRecipeId?: number | null;
+  targetRecipeName?: string | null;
+}
+
+interface RuntimeMissionServeTarget {
+  guestId: number;
+  guestName: string;
+  guestLabel: string;
+  missionLabel: string;
+  missionTitle: string;
+  recipeId: number;
+  recipeName: string;
+  status: MissionStatusFilter | 'finished';
+  source: string;
+}
+
+interface RuntimeMissionContext {
+  availableMissions: RuntimeMissionInfo[];
+  serveTargets?: RuntimeMissionServeTarget[];
+  source: string;
+  error: string | null;
+}
+
+interface NormalBusinessOrder {
+  orderKey?: string;
+  deskCode: number;
+  guestName: string;
+  foodId: number;
+  foodName: string;
+  beverageId: number;
+  beverageName: string;
+  hasServedFood: boolean;
+  hasServedBeverage: boolean;
+  isFulfilled: boolean;
+  firstSeenAtUtc?: string | null;
+  source: string;
+}
+
+interface NormalBusinessContext {
+  orders: NormalBusinessOrder[];
   source: string;
   error: string | null;
 }
@@ -261,14 +417,19 @@ interface LocalApiSnapshot {
   pluginVersion: string;
   capturedAtUtc: string;
   activeSceneName: string;
+  activeDayMapLabel?: string;
+  activeDayMapName?: string;
   runtimeLoaded: boolean;
   status: string;
   runtimeSource: string;
-  dataDirectory: string;
   runtimeUiPinningStatus?: string;
   recommendationState: RecommendationStateSnapshot | null;
   nightBusiness: NightBusinessContext | null;
+  runtimeMissions?: RuntimeMissionContext | null;
+  normalBusiness?: NormalBusinessContext | null;
   runtimeRareCustomers?: RuntimeRareCustomer[];
+  runtimeData?: RuntimeDataCatalogSnapshot;
+  performanceMs?: Record<string, number>;
 }
 
 interface RuntimeSets {
@@ -320,11 +481,21 @@ interface LocalApiLogSettings {
   nightBusinessDiagnosticsEnabled: boolean;
   nightBusinessDiagnosticsPath: string;
   nightBusinessDiagnosticsDirectory: string;
+  nativeBepInExConsoleEnabled: boolean;
+  nativeBepInExConsoleVisible: boolean;
 }
 
 interface LocalApiFolderResponse {
   ok: boolean;
   directory: string;
+  error: string | null;
+}
+
+interface DiagnosticPackageResponse {
+  ok: boolean;
+  path: string;
+  directory: string;
+  files: string[];
   error: string | null;
 }
 
@@ -339,6 +510,18 @@ interface InventoryEditResponse {
   error: string | null;
 }
 
+interface InventoryBulkEditResponse {
+  ok: boolean;
+  type: 'ingredient' | 'beverage';
+  requestedQuantity: number;
+  total: number;
+  changed: number;
+  unchanged: number;
+  failed: number;
+  errors: string[];
+  error: string | null;
+}
+
 interface OrderPreparationStep {
   name: string;
   ok: boolean;
@@ -349,6 +532,9 @@ interface OrderPreparationStep {
 interface OrderPreparationResponse {
   ok: boolean;
   prepared: boolean;
+  servedFood?: boolean;
+  servedBeverage?: boolean;
+  completedOrder?: boolean;
   error: string | null;
   order: {
     deskCode: number;
@@ -397,6 +583,49 @@ interface FavoriteMutationResponse {
   error: string | null;
 }
 
+interface RareGuestInvitationEntry {
+  id: number;
+  name: string;
+  runtimeName: string;
+  reason: string;
+  status?: string;
+  canInvite?: boolean;
+  isCurrentScene?: boolean;
+  kizunaLevel?: number;
+  sceneLabels?: string[];
+  sceneNames?: string[];
+}
+
+interface RareGuestInvitationResponse {
+  ok: boolean;
+  runtimeAvailable: boolean;
+  status: string;
+  error: string | null;
+  candidateCount: number;
+  usableCount: number;
+  existingSlotCount: number;
+  existingControlledCount: number;
+  scheduledSlotCount: number;
+  invitedCount: number;
+  skippedCount: number;
+  source?: string;
+  diagnostics?: string;
+  scope?: RareGuestInvitationScope;
+  currentMapLabel?: string;
+  currentMapName?: string;
+  candidates?: RareGuestInvitationEntry[];
+  available: RareGuestInvitationEntry[];
+  invited: RareGuestInvitationEntry[];
+  skipped: RareGuestInvitationEntry[];
+}
+
+interface RareOrderDismissResponse {
+  ok: boolean;
+  removed: number;
+  status: string;
+  error: string | null;
+}
+
 interface GameUiPinningTarget {
   signature: string;
   recipeId: number;
@@ -413,18 +642,33 @@ interface CompanionPreferences {
   focusSwitchBehavior: FocusSwitchBehavior;
   focusSwitchCooldownMs: number;
   alwaysOnTop: boolean;
+  mousePassthroughEnabled: boolean;
   gamepadNavigationEnabled: boolean;
   automationEnabled: boolean;
+  autoNormalOrderEnabled: boolean;
+  autoNormalTakeBeverage: boolean;
+  autoNormalStartCooking: boolean;
+  autoNormalCollectCooking: boolean;
+  autoNormalDeliverFood: boolean;
+  autoNormalCompleteOrder: boolean;
+  autoNormalStopOnError: boolean;
   autoPrepCompleteOrder: boolean;
   autoPrepTakeBeverage: boolean;
   autoPrepStartCooking: boolean;
   autoPrepCollectCooking: boolean;
   autoPrepFavoritesOnly: boolean;
   autoPrepStopOnError: boolean;
-  autoPrepCompleteQte: boolean;
+  autoRareConcurrency: number;
+  autoNormalConcurrency: number;
+  autoRareTrayWaitSeconds: number;
+  autoNormalStorageWaitSeconds: number;
+  autoMaxStepRetries: number;
+  autoMaxRollbacks: number;
   filterMissingCookers: boolean;
+  prioritizeMissionRecipes: boolean;
   gameUiPinningEnabled: boolean;
   cookerHighlightEnabled: boolean;
+  showDebugDetails: boolean;
   recipeSortRules: SortRule<RecipeSortKey>[];
   beverageSortRules: SortRule<BeverageSortKey>[];
   serviceOrderSortMode: ServiceOrderSortMode;
@@ -432,19 +676,175 @@ interface CompanionPreferences {
 
 interface AutoFirstOrderState {
   orderKey: string;
+  recipeTarget: RareAutomationRecipeTarget | null;
+  beverageTarget: RareAutomationBeverageTarget | null;
   prepared: boolean;
+  preparedAtMs: number;
   beverageHandled: boolean;
+  beverageHandledAtMs: number;
+  step: AutomationStep;
+  stepStartedAtMs: number;
+  lastProgressAtMs: number;
+  retryCount: number;
+  rollbackCount: number;
+  lastError: string;
   paused: boolean;
 }
 
+interface RareAutomationRecipeTarget {
+  recipeId: number;
+  foodId: number;
+  recipeName: string;
+  cookerName: string;
+  extraIngredientIds: number[];
+  acceptableFoodIds: number[];
+  favorite: boolean;
+  preferenceFallback: boolean;
+}
+
+interface RareAutomationBeverageTarget {
+  beverageId: number;
+  beverageName: string;
+  favorite: boolean;
+}
+
+interface RareAutoOrderDiagnostic {
+  orderKey: string;
+  title: string;
+  foodTag: string;
+  beverageTag: string;
+  recipeName: string;
+  beverageName: string;
+  stepLabel: string;
+  stepSeconds: number;
+  nextAction: string;
+  retryCount: number;
+  rollbackCount: number;
+  lastError: string;
+  prepared: boolean;
+  beverageHandled: boolean;
+  hasServedFood: boolean;
+  hasServedBeverage: boolean;
+  paused: boolean;
+}
+
+interface NormalAutoOrderDiagnostic {
+  orderKey: string;
+  title: string;
+  foodName: string;
+  beverageName: string;
+  source: string;
+  stepLabel: string;
+  stepSeconds: number;
+  nextAction: string;
+  retryCount: number;
+  rollbackCount: number;
+  lastError: string;
+  prepared: boolean;
+  beverageHandled: boolean;
+  collected: boolean;
+  foodDelivered: boolean;
+  completed: boolean;
+  paused: boolean;
+  hasServedFood: boolean;
+  hasServedBeverage: boolean;
+}
+
+interface NormalAutoOrderState {
+  orderKey: string;
+  prepared: boolean;
+  preparedAtMs: number;
+  beverageHandled: boolean;
+  beverageHandledAtMs: number;
+  collected: boolean;
+  foodDelivered: boolean;
+  foodDeliveredAtMs: number;
+  completed: boolean;
+  completedAtMs: number;
+  step: AutomationStep;
+  stepStartedAtMs: number;
+  lastProgressAtMs: number;
+  retryCount: number;
+  rollbackCount: number;
+  lastError: string;
+  paused: boolean;
+}
+
+interface AutomationCookerCycle {
+  bucket: number;
+  used: Map<string, number>;
+  labels: Map<string, string[]>;
+}
+
+interface CookerRequirement {
+  key: string;
+  label: string;
+}
+
+interface CookerReservationResult {
+  ok: boolean;
+  message: string;
+}
+
+interface NormalCookerDemand {
+  counts: Map<string, number>;
+  labels: Map<string, string[]>;
+}
+
+interface AutomationCookerResourceRow {
+  key: string;
+  label: string;
+  capacity: number;
+  normalReserved: number;
+  rareReserved: number;
+  labels: string[];
+}
+
+interface AutomationTrayResourceRow {
+  key: string;
+  label: string;
+  count: number;
+  labels: string[];
+}
+
+interface AutomationResourceOverview {
+  cookers: AutomationCookerResourceRow[];
+  tray: AutomationTrayResourceRow[];
+}
+
+type AutomationStep =
+  | 'idle'
+  | 'match-order'
+  | 'ensure-beverage'
+  | 'ensure-cooking'
+  | 'wait-food-tray'
+  | 'wait-food-stored'
+  | 'deliver-food'
+  | 'complete-order'
+  | 'done'
+  | 'paused';
+
 type ToggleRecipeFavorite = (customer: ICustomerRare, foodTag: string, recipe: IRareRecipeResult) => Promise<void>;
 type ToggleBeverageFavorite = (customer: ICustomerRare, beverageTag: string, beverage: IRareBeverageResult) => Promise<void>;
+
+interface AutomationLogEntry {
+  raw: string;
+  timestamp: string;
+  action: string;
+  target: string;
+  desk: string;
+  orderKey: string;
+  food: string;
+  guest: string;
+  message: string;
+}
 
 export function ModWorkbench() {
   const { mode: themeMode, setMode: setThemeMode } = useThemeMode();
   const [endpoint, setEndpoint] = useState(() =>
     readMigratedStorage(ENDPOINT_STORAGE_KEY, LEGACY_ENDPOINT_STORAGE_KEY, DEFAULT_ENDPOINT),
   );
+  const [endpointDraft, setEndpointDraft] = useState(endpoint);
   const [apiToken, setApiToken] = useState(() =>
     readMigratedStorage(TOKEN_STORAGE_KEY, LEGACY_TOKEN_STORAGE_KEY, ''),
   );
@@ -463,8 +863,11 @@ export function ModWorkbench() {
     readStoredCompanionPreferences(),
   );
   const [snapshot, setSnapshot] = useState<LocalApiSnapshot | null>(null);
+  const [cachedRuntimeData, setCachedRuntimeData] = useState<RuntimeDataCatalogSnapshot | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [connectionPaused, setConnectionPaused] = useState(false);
+  const [connectionFailureCount, setConnectionFailureCount] = useState(0);
   const [lastConnectedAt, setLastConnectedAt] = useState<Date | null>(null);
   const [manualPlace, setManualPlace] = useState<TPlace | null>(null);
   const [rareCustomerId, setRareCustomerId] = useState<number | null>(null);
@@ -473,34 +876,109 @@ export function ModWorkbench() {
   const [favorites, setFavorites] = useState<FavoriteData>(() => emptyFavoriteData());
   const [favoriteError, setFavoriteError] = useState('');
   const [favoriteBusyKey, setFavoriteBusyKey] = useState('');
+  const [rareGuestInvitationScope, setRareGuestInvitationScope] = useState<RareGuestInvitationScope>(() =>
+    readStoredRareGuestInvitationScope(),
+  );
+  const [rareGuestInvitationResult, setRareGuestInvitationResult] = useState<RareGuestInvitationResponse | null>(null);
+  const [rareGuestInvitationError, setRareGuestInvitationError] = useState('');
+  const [rareGuestInvitationBusyKey, setRareGuestInvitationBusyKey] = useState('');
+  const [dismissRareOrderBusyKey, setDismissRareOrderBusyKey] = useState('');
+  const [dismissRareOrderError, setDismissRareOrderError] = useState('');
   const [autoPrepBusy, setAutoPrepBusy] = useState(false);
   const [autoPrepMessage, setAutoPrepMessage] = useState('');
-  const autoFirstOrderStateRef = useRef<AutoFirstOrderState>({ orderKey: '', prepared: false, beverageHandled: false, paused: false });
+  const [autoPrepPaused, setAutoPrepPaused] = useState(false);
+  const [rareOrderDiagnostics, setRareOrderDiagnostics] = useState<RareAutoOrderDiagnostic[]>([]);
+  const [normalOrderBusy, setNormalOrderBusy] = useState(false);
+  const [normalOrderMessage, setNormalOrderMessage] = useState('');
+  const [normalOrderPausedCount, setNormalOrderPausedCount] = useState(0);
+  const [normalOrderDiagnostics, setNormalOrderDiagnostics] = useState<NormalAutoOrderDiagnostic[]>([]);
+  const rareOrderStatesRef = useRef(new Map<string, AutoFirstOrderState>());
+  const rareOrderDiagnosticItemsRef = useRef(new Map<string, ValidOrderPreparationSelection>());
   const autoFirstOrderBusyRef = useRef(false);
+  const normalOrderStatesRef = useRef(new Map<string, NormalAutoOrderState>());
+  const normalOrderBusyRef = useRef(false);
   const lastAutoFirstOrderAtRef = useRef(0);
+  const lastAutoNormalOrderAtRef = useRef(0);
+  const lastNormalOrderSignatureRef = useRef('');
+  const automationCookerCycleRef = useRef<AutomationCookerCycle | null>(null);
   const recommendationCacheRef = useRef(new Map<string, CachedRecommendation>());
   const refreshInFlightRef = useRef(false);
   const lastUiPinningSignatureRef = useRef('');
+  const lastRareGuestInvitationRefreshSignatureRef = useRef('');
 
   const updateCompanionPreferences = useCallback((next: Partial<CompanionPreferences>) => {
     setCompanionPreferences((current) => normalizeCompanionPreferences({ ...current, ...next }));
   }, []);
 
+  useEffect(() => {
+    if (!companionPreferences.showDebugDetails && tab === 'logs') {
+      setTab('overview');
+    }
+  }, [companionPreferences.showDebugDetails, tab]);
+
   const normalizedEndpoint = useMemo(() => normalizeEndpoint(endpoint), [endpoint]);
+  const normalizedEndpointDraft = useMemo(() => normalizeEndpoint(endpointDraft), [endpointDraft]);
+  const applyEndpointConnection = useCallback(() => {
+    setEndpoint(normalizedEndpointDraft);
+    setEndpointDraft(normalizedEndpointDraft);
+    setConnectionPaused(false);
+    setConnectionFailureCount(0);
+    setError('');
+    setSnapshot(null);
+    setCachedRuntimeData(null);
+  }, [normalizedEndpointDraft]);
+  const pauseConnection = useCallback(() => {
+    setConnectionPaused(true);
+    setLoading(false);
+    setError('已停止自动重连。');
+  }, []);
+
+  useEffect(() => {
+    if (!snapshot) return;
+    if (!snapshot.runtimeLoaded) {
+      setCachedRuntimeData(null);
+      return;
+    }
+
+    if (snapshot.runtimeData?.isComplete) {
+      setCachedRuntimeData(snapshot.runtimeData);
+    }
+  }, [snapshot]);
+
   const runtime = snapshot?.recommendationState ?? null;
   const night = snapshot?.nightBusiness ?? null;
   const detectedPlace = normalizePlace(night?.place);
   const selectedPlace = manualPlace ?? detectedPlace;
+  const effectiveRuntimeData = snapshot?.runtimeData?.isComplete
+    ? snapshot.runtimeData
+    : snapshot?.runtimeLoaded
+      ? cachedRuntimeData ?? snapshot?.runtimeData
+      : snapshot?.runtimeData;
+  const recommendationData = useMemo(
+    () => buildRecommendationDataSet(effectiveRuntimeData),
+    [effectiveRuntimeData],
+  );
+  const recommendationIndexes = useMemo(
+    () => buildRecommendationDataIndexes(recommendationData),
+    [recommendationData],
+  );
   const runtimeRareCustomers = useMemo(
-    () => (snapshot?.runtimeRareCustomers ?? []).map(toRuntimeRareCustomer),
+    () => (snapshot?.runtimeRareCustomers ?? [])
+      .map(toRuntimeRareCustomer)
+      .filter(isUsableRareCustomer),
     [snapshot?.runtimeRareCustomers],
   );
   const rareCustomersById = useMemo(
-    () => buildRareCustomerMap(runtimeRareCustomers),
-    [runtimeRareCustomers],
+    () => buildRareCustomerMap(runtimeRareCustomers, recommendationData),
+    [runtimeRareCustomers, recommendationData],
   );
 
-  const runtimeSets = useMemo(() => buildRuntimeSets(runtime), [runtime]);
+  const runtimeSets = useMemo(() => buildRuntimeSets(runtime, recommendationData), [recommendationData, runtime]);
+  const normalOrderSignature = useMemo(
+    () => buildNormalOrderAutomationSignature(snapshot?.normalBusiness?.orders ?? []),
+    [snapshot?.normalBusiness?.orders],
+  );
+  const visibleTabs = companionPreferences.showDebugDetails ? MOD_TABS : BASIC_MOD_TABS;
   const orderRecommendations = useMemo(
     () => buildOrderRecommendations(
       night?.orders ?? [],
@@ -509,23 +987,31 @@ export function ModWorkbench() {
       recommendationCacheRef.current,
       favorites,
       companionPreferences,
+      snapshot?.runtimeMissions?.serveTargets ?? [],
+      recommendationData,
     ),
-    [night?.orders, runtime, rareCustomersById, favorites, companionPreferences],
+    [night?.orders, runtime, rareCustomersById, favorites, companionPreferences, snapshot?.runtimeMissions?.serveTargets, recommendationData],
   );
   const gameUiPinningTarget = useMemo(
     () => companionPreferences.gameUiPinningEnabled || companionPreferences.cookerHighlightEnabled
-      ? buildGameUiPinningTarget(orderRecommendations.recommendations, companionPreferences.serviceOrderSortMode)
+      ? buildGameUiPinningTarget(
+        orderRecommendations.recommendations,
+        companionPreferences.serviceOrderSortMode,
+        recommendationIndexes,
+      )
       : null,
     [
       companionPreferences.cookerHighlightEnabled,
       companionPreferences.gameUiPinningEnabled,
       companionPreferences.serviceOrderSortMode,
       orderRecommendations.recommendations,
+      recommendationIndexes,
     ],
   );
   const snapshotRefreshIntervalMs = tab === 'service' || serviceFocusMode ? 750 : 2000;
 
   useEffect(() => {
+    if (!apiToken || connectionPaused) return;
     const signature = `${companionPreferences.gameUiPinningEnabled ? '1' : '0'}|${companionPreferences.cookerHighlightEnabled ? '1' : '0'}|${gameUiPinningTarget?.signature ?? 'disabled'}`;
     if (lastUiPinningSignatureRef.current === signature) return;
 
@@ -550,16 +1036,24 @@ export function ModWorkbench() {
     };
   }, [
     apiToken,
+    connectionPaused,
     companionPreferences.cookerHighlightEnabled,
     companionPreferences.gameUiPinningEnabled,
     gameUiPinningTarget,
     normalizedEndpoint,
   ]);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (manual = false) => {
+    if (!apiToken) {
+      setError('未收到本地 API Token。请从游戏内启动或按 F8 唤起伴随窗口。');
+      setLoading(false);
+      return;
+    }
+    if (!manual && connectionPaused) return;
     if (refreshInFlightRef.current) return;
     refreshInFlightRef.current = true;
-    setLoading(true);
+    const showLoading = manual || !snapshot;
+    if (showLoading) setLoading(true);
     const abortController = new AbortController();
     const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
 
@@ -567,21 +1061,25 @@ export function ModWorkbench() {
       const data = await readSnapshot(normalizedEndpoint, apiToken, abortController.signal);
       setSnapshot(data);
       setError('');
+      setConnectionPaused(false);
+      setConnectionFailureCount(0);
       setLastConnectedAt(new Date());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      setConnectionFailureCount((current) => Math.min(current + 1, CONNECTION_RETRY_DELAYS_MS.length));
     } finally {
       window.clearTimeout(timeoutId);
       refreshInFlightRef.current = false;
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
-  }, [apiToken, normalizedEndpoint]);
+  }, [apiToken, connectionPaused, normalizedEndpoint, snapshot]);
 
   const refreshFavorites = useCallback(async () => {
     if (!apiToken) {
       setFavorites(emptyFavoriteData());
       return;
     }
+    if (connectionPaused) return;
 
     const abortController = new AbortController();
     const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
@@ -595,7 +1093,61 @@ export function ModWorkbench() {
     } finally {
       window.clearTimeout(timeoutId);
     }
-  }, [apiToken, normalizedEndpoint]);
+  }, [apiToken, connectionPaused, normalizedEndpoint]);
+
+  const refreshRareOrderDiagnostics = useCallback((now = Date.now()) => {
+    const diagnostics = Array.from(rareOrderDiagnosticItemsRef.current.values()).map((selection) => {
+      const orderKey = buildAutoOrderKey(selection.item);
+      const state = rareOrderStatesRef.current.get(orderKey) ?? emptyAutoFirstOrderState(orderKey, now);
+      return buildRareAutoOrderDiagnostic(selection, state, now, companionPreferences);
+    });
+    setRareOrderDiagnostics(diagnostics);
+    setAutoPrepPaused(diagnostics.some((diagnostic) => diagnostic.paused));
+  }, [companionPreferences]);
+
+  const refreshNormalOrderDiagnostics = useCallback((orders = snapshot?.normalBusiness?.orders ?? [], now = Date.now()) => {
+    const diagnostics = buildNormalAutoOrderDiagnostics(orders, normalOrderStatesRef.current, now, companionPreferences);
+    setNormalOrderDiagnostics(diagnostics);
+    setNormalOrderPausedCount(diagnostics.filter((diagnostic) => diagnostic.paused).length);
+  }, [companionPreferences, snapshot?.normalBusiness?.orders]);
+
+  const getAutomationCookerCycle = useCallback((now: number): AutomationCookerCycle => {
+    const bucket = Math.floor(now / AUTO_FIRST_ORDER_TICK_MS);
+    if (!automationCookerCycleRef.current || automationCookerCycleRef.current.bucket !== bucket) {
+      automationCookerCycleRef.current = {
+        bucket,
+        used: new Map<string, number>(),
+        labels: new Map<string, string[]>(),
+      };
+    }
+
+    return automationCookerCycleRef.current;
+  }, []);
+
+  const retryRareAutomationOrder = useCallback((orderKey: string) => {
+    const now = Date.now();
+    const state = rareOrderStatesRef.current.get(orderKey);
+    if (!state) return;
+    rareOrderStatesRef.current.set(orderKey, {
+      ...state,
+      paused: false,
+      step: state.prepared || state.beverageHandled ? 'complete-order' : 'match-order',
+      stepStartedAtMs: now,
+      retryCount: 0,
+      lastError: '已手动重试，等待下一轮自动化继续。',
+    });
+    lastAutoFirstOrderAtRef.current = 0;
+    setAutoPrepMessage('自动化\n已重新启用该稀客订单，下一轮会继续处理。');
+    refreshRareOrderDiagnostics(now);
+  }, [refreshRareOrderDiagnostics]);
+
+  const resetRareAutomationOrder = useCallback((orderKey: string) => {
+    const now = Date.now();
+    rareOrderStatesRef.current.delete(orderKey);
+    lastAutoFirstOrderAtRef.current = 0;
+    setAutoPrepMessage('自动化\n已重置该稀客订单状态，下一轮会重新判断料理、酒水和完成状态。');
+    refreshRareOrderDiagnostics(now);
+  }, [refreshRareOrderDiagnostics]);
 
   const toggleRecipeFavorite = useCallback<ToggleRecipeFavorite>(async (customer, foodTag, recipe) => {
     if (!apiToken || !foodTag) return;
@@ -637,6 +1189,114 @@ export function ModWorkbench() {
     }
   }, [apiToken, favorites, normalizedEndpoint]);
 
+  const loadRareGuestInvitations = useCallback(async () => {
+    if (!apiToken) {
+      setRareGuestInvitationError('未收到本地 API Token。请从游戏内启动或按 F8 唤起伴随窗口。');
+      return;
+    }
+
+    setRareGuestInvitationBusyKey('list');
+    setRareGuestInvitationError('');
+    try {
+      const response = await fetchAvailableRareGuestInvitations(normalizedEndpoint, apiToken, rareGuestInvitationScope);
+      setRareGuestInvitationResult(response);
+      if (!response.ok) {
+        setRareGuestInvitationError(response.error || response.status || '读取可邀请稀客失败');
+      }
+    } catch (err) {
+      setRareGuestInvitationError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRareGuestInvitationBusyKey('');
+    }
+  }, [apiToken, normalizedEndpoint, rareGuestInvitationScope]);
+
+  const inviteAllRareGuests = useCallback(async () => {
+    if (!apiToken) {
+      setRareGuestInvitationError('未收到本地 API Token。请从游戏内启动或按 F8 唤起伴随窗口。');
+      return;
+    }
+
+    setRareGuestInvitationBusyKey('all');
+    setRareGuestInvitationError('');
+    try {
+      const response = await inviteAllAvailableRareGuests(normalizedEndpoint, apiToken, rareGuestInvitationScope);
+      setRareGuestInvitationResult(response);
+      if (!response.ok) {
+        setRareGuestInvitationError(response.error || response.status || '稀客邀请失败');
+      }
+      await refresh(true);
+    } catch (err) {
+      setRareGuestInvitationError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRareGuestInvitationBusyKey('');
+    }
+  }, [apiToken, normalizedEndpoint, rareGuestInvitationScope, refresh]);
+
+  const inviteRareGuest = useCallback(async (guestId: number) => {
+    if (!apiToken) {
+      setRareGuestInvitationError('未收到本地 API Token。请从游戏内启动或按 F8 唤起伴随窗口。');
+      return;
+    }
+
+    const busyKey = `guest:${guestId}`;
+    setRareGuestInvitationBusyKey(busyKey);
+    setRareGuestInvitationError('');
+    try {
+      const response = await inviteAvailableRareGuest(normalizedEndpoint, apiToken, guestId, rareGuestInvitationScope);
+      setRareGuestInvitationResult(response);
+      if (!response.ok) {
+        setRareGuestInvitationError(response.error || response.status || '稀客邀请失败');
+      }
+      await refresh(true);
+    } catch (err) {
+      setRareGuestInvitationError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRareGuestInvitationBusyKey('');
+    }
+  }, [apiToken, normalizedEndpoint, rareGuestInvitationScope, refresh]);
+
+  useEffect(() => {
+    const currentSnapshot = snapshot;
+    if (tab !== 'tasks' || !currentSnapshot || !currentSnapshot.runtimeLoaded || !apiToken) return;
+    if (rareGuestInvitationBusyKey) return;
+    if (!currentSnapshot.activeDayMapLabel && !currentSnapshot.activeDayMapName) return;
+    const signature = `${rareGuestInvitationScope}|${currentSnapshot.activeDayMapLabel ?? ''}|${currentSnapshot.activeSceneName ?? ''}`;
+    if (lastRareGuestInvitationRefreshSignatureRef.current === signature && rareGuestInvitationResult) return;
+    lastRareGuestInvitationRefreshSignatureRef.current = signature;
+    void loadRareGuestInvitations();
+  }, [
+    apiToken,
+    loadRareGuestInvitations,
+    rareGuestInvitationBusyKey,
+    rareGuestInvitationResult,
+    rareGuestInvitationScope,
+    snapshot,
+    tab,
+  ]);
+
+  const dismissRareOrder = useCallback(async (order: NightBusinessOrder) => {
+    if (!apiToken) {
+      setDismissRareOrderError('未收到本地 API Token。请从游戏内启动或按 F8 唤起伴随窗口。');
+      return;
+    }
+
+    const orderKey = buildNightBusinessOrderKey(order);
+    setDismissRareOrderBusyKey(orderKey);
+    setDismissRareOrderError('');
+    try {
+      const response = await dismissRuntimeRareOrder(normalizedEndpoint, apiToken, order);
+      if (!response.ok) {
+        throw new Error(response.error || response.status || '删除稀客订单失败');
+      }
+
+      await refresh(true);
+    } catch (err) {
+      setDismissRareOrderError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDismissRareOrderBusyKey('');
+    }
+  }, [apiToken, normalizedEndpoint, refresh]);
+
   const runAutoFirstOrder = useCallback(async () => {
     if (!companionPreferences.automationEnabled || autoFirstOrderBusyRef.current || autoPrepBusy) return;
     const now = Date.now();
@@ -647,137 +1307,271 @@ export function ModWorkbench() {
     }
 
     if (!hasAutomationActionEnabled(companionPreferences)) {
-      autoFirstOrderStateRef.current = emptyAutoFirstOrderState();
-      setAutoPrepMessage('自动化已开启，请在经营中页面启用至少一个子选项。');
+      rareOrderStatesRef.current.clear();
+      rareOrderDiagnosticItemsRef.current.clear();
+      setRareOrderDiagnostics([]);
+      setAutoPrepPaused(false);
+      if (!companionPreferences.autoNormalOrderEnabled || !hasNormalOrderActionEnabled(companionPreferences)) {
+        setAutoPrepMessage('自动化已开启，请在经营中页面启用至少一个子选项。');
+      } else {
+        setAutoPrepMessage('');
+      }
       return;
     }
 
     const selectionPreferences = companionPreferences.autoPrepCompleteOrder
       ? buildCompleteOrderPreferences(companionPreferences)
       : companionPreferences;
-    const selection = selectNextOrderPreparation(orderRecommendations.recommendations, favorites, selectionPreferences);
-    if (!selection.ok) {
-      autoFirstOrderStateRef.current = emptyAutoFirstOrderState();
-      setAutoPrepMessage(`自动化\n${selection.message}`);
+    const candidateResult = selectOrderPreparationCandidates(
+      orderRecommendations.recommendations,
+      favorites,
+      selectionPreferences,
+      companionPreferences.autoRareConcurrency,
+      rareOrderStatesRef.current,
+    );
+    if (candidateResult.selections.length === 0) {
+      rareOrderStatesRef.current.clear();
+      rareOrderDiagnosticItemsRef.current.clear();
+      setRareOrderDiagnostics([]);
+      setAutoPrepPaused(false);
+      setAutoPrepMessage(`自动化\n${candidateResult.message}`);
       return;
     }
 
-    const orderKey = buildAutoOrderKey(selection.item);
-    const currentState = autoFirstOrderStateRef.current;
-    if (currentState.orderKey !== orderKey) {
-      autoFirstOrderStateRef.current = { orderKey, prepared: false, beverageHandled: false, paused: false };
-    } else if (currentState.paused) {
-      return;
+    const activeKeys = new Set(candidateResult.selections.map((selection) => buildAutoOrderKey(selection.item)));
+    rareOrderDiagnosticItemsRef.current.clear();
+    for (const selection of candidateResult.selections) {
+      rareOrderDiagnosticItemsRef.current.set(buildAutoOrderKey(selection.item), selection);
+    }
+    for (const key of Array.from(rareOrderStatesRef.current.keys())) {
+      if (!activeKeys.has(key)) rareOrderStatesRef.current.delete(key);
     }
 
     autoFirstOrderBusyRef.current = true;
     lastAutoFirstOrderAtRef.current = now;
     setAutoPrepBusy(true);
     try {
-      let missingTrayPart: 'food' | 'beverage' | null = null;
-      if (companionPreferences.autoPrepCompleteOrder) {
-        const completeResponse = await completeFirstRareOrder(
+      const messages: string[] = [];
+      let completedOrderThisTick = false;
+      const cookerCycle = getAutomationCookerCycle(now);
+      const cookerCapacity = buildAutomationCookerCapacity(runtime);
+      const normalCookerDemand = buildNormalCookerDemand(
+        snapshot?.normalBusiness?.orders ?? [],
+        normalOrderStatesRef.current,
+        companionPreferences,
+        runtime,
+        now,
+        recommendationData,
+      );
+
+      for (const selection of candidateResult.selections) {
+        const orderKey = buildAutoOrderKey(selection.item);
+        const prefix = formatRareAutomationPrefix(selection.item);
+        let currentState = rareOrderStatesRef.current.get(orderKey) ?? emptyAutoFirstOrderState(orderKey, now);
+        currentState = lockRareAutomationTargets(currentState, selection);
+        currentState = syncRareStateWithOrderServedState(currentState, selection.item.order, now);
+        if (currentState.paused) {
+          messages.push(`${prefix}\n${formatAutomationState(currentState, companionPreferences)}\n稀客自动化已暂停该订单，订单变化或重新开启后会继续。`);
+          continue;
+        }
+
+        let missingTrayParts = emptyMissingTrayParts();
+        if (companionPreferences.autoPrepCompleteOrder && !completedOrderThisTick) {
+          const completeResponse = await completeFirstRareOrder(
+            normalizedEndpoint,
+            apiToken,
+            selection.item,
+            currentState.recipeTarget,
+            currentState.beverageTarget,
+            buildCompleteOrderPreferences(companionPreferences),
+          );
+
+          if (completeResponse.ok) {
+            rareOrderStatesRef.current.delete(orderKey);
+            completedOrderThisTick = true;
+            messages.push(`${prefix}\n${formatOrderPreparationResponse(completeResponse)}`);
+            continue;
+          }
+
+          currentState = applyRareServedStateFromResponse(currentState, selection.item.order, completeResponse, now);
+          missingTrayParts = getMissingTrayParts(completeResponse);
+          if (!missingTrayParts.food && !missingTrayParts.beverage) {
+            const nextState = updateAutomationAfterResponse(
+              currentState,
+              completeResponse,
+              now,
+              'complete-order',
+              companionPreferences.autoPrepStopOnError,
+              companionPreferences.autoMaxStepRetries,
+            );
+            rareOrderStatesRef.current.set(orderKey, nextState);
+            messages.push(`${prefix}\n${formatOrderPreparationResponse(completeResponse)}\n${formatAutomationState(nextState, companionPreferences)}${nextState.paused ? '\n稀客自动化已暂停该订单，订单变化或重新开启后会继续。' : '\n当前步骤会继续重试。'}`);
+            continue;
+          }
+
+          if (missingTrayParts.beverage && currentState.beverageHandled) {
+            currentState = {
+              ...currentState,
+              beverageHandled: false,
+              beverageHandledAtMs: 0,
+              step: 'ensure-beverage',
+              stepStartedAtMs: now,
+              retryCount: currentState.retryCount + 1,
+              lastError: '目标酒水未在送餐盘中，重新校验取酒。',
+            };
+          }
+
+          if (missingTrayParts.food && currentState.prepared) {
+            const shouldRollback = isAutomationTimestampStale(currentState.preparedAtMs, now, companionPreferences.autoRareTrayWaitSeconds * 1000);
+            if (shouldRollback && currentState.rollbackCount >= companionPreferences.autoMaxRollbacks) {
+              const pausedState = pauseAutomationState(
+                currentState,
+                now,
+                `目标料理长时间未进入送餐盘，已达到回退上限 ${companionPreferences.autoMaxRollbacks} 次。`,
+              );
+              rareOrderStatesRef.current.set(orderKey, pausedState);
+              messages.push(`${prefix}\n${formatOrderPreparationResponse(completeResponse)}\n${formatAutomationState(pausedState, companionPreferences)}\n稀客自动化已暂停该订单，订单变化或重新开启后会继续。`);
+              continue;
+            }
+
+            if (!shouldRollback) {
+              const waitingState = markAutomationWaiting(currentState, 'wait-food-tray', now, '等待目标料理进入送餐盘。');
+              rareOrderStatesRef.current.set(orderKey, waitingState);
+              messages.push(`${prefix}\n${formatOrderPreparationResponse(completeResponse)}\n${formatAutomationState(waitingState, companionPreferences)}`);
+              if (!missingTrayParts.beverage) continue;
+              currentState = waitingState;
+            }
+
+            if (shouldRollback) {
+              currentState = {
+                ...currentState,
+                prepared: false,
+                preparedAtMs: 0,
+                beverageHandled: false,
+                beverageHandledAtMs: 0,
+                step: 'ensure-cooking',
+                stepStartedAtMs: now,
+                rollbackCount: currentState.rollbackCount + 1,
+                retryCount: 0,
+                lastError: '目标料理未进入送餐盘，回退到重新开始料理，并重新校验酒水。',
+              };
+            }
+          }
+        } else if (companionPreferences.autoPrepCompleteOrder && completedOrderThisTick && currentState.prepared && currentState.beverageHandled) {
+          const waitingState = markAutomationWaiting(currentState, 'complete-order', now, '本轮已完成一笔稀客订单，等待下一轮完成。');
+          rareOrderStatesRef.current.set(orderKey, waitingState);
+          messages.push(`${prefix}\n${formatAutomationState(waitingState, companionPreferences)}`);
+          continue;
+        }
+
+        let shouldPrepareFood = companionPreferences.autoPrepStartCooking && !currentState.prepared;
+        const shouldPrepareBeverage = companionPreferences.autoPrepTakeBeverage && !currentState.beverageHandled;
+        const schedulerNote = shouldPrepareFood
+          ? reserveRareCookerSlot(
+            cookerCycle,
+            getRareCookerRequirement(currentState.recipeTarget),
+            `稀客 ${selection.item.order.guestName || '当前订单'} · 桌 ${formatDesk(selection.item.order.deskCode)}`,
+            cookerCapacity,
+            normalCookerDemand,
+          )
+          : { ok: true, message: '' };
+        if (!schedulerNote.ok) {
+          shouldPrepareFood = false;
+        }
+
+        if (!shouldPrepareFood && !shouldPrepareBeverage) {
+          const waitingState = markAutomationWaiting(
+            currentState,
+            schedulerNote.ok
+              ? companionPreferences.autoPrepCompleteOrder ? 'complete-order' : 'idle'
+              : 'ensure-cooking',
+            now,
+            !schedulerNote.ok
+              ? schedulerNote.message
+              : companionPreferences.autoPrepCompleteOrder
+              ? '等待送餐盘出现目标料理或酒水。'
+              : '已按当前设置完成可执行步骤；自动完成订单未开启。',
+          );
+          rareOrderStatesRef.current.set(orderKey, waitingState);
+          messages.push(`${prefix}\n${formatAutomationState(waitingState, companionPreferences)}`);
+          continue;
+        }
+
+        const preparePreferences = {
+          ...companionPreferences,
+          autoPrepTakeBeverage: shouldPrepareBeverage,
+          autoPrepStartCooking: shouldPrepareFood,
+          autoPrepCollectCooking: true,
+        };
+
+        const prepareResponse = await prepareNextRareOrder(
           normalizedEndpoint,
           apiToken,
           selection.item,
-          selection.recipe,
-          selection.beverage,
-          selection.recipeFavorite,
-          selection.beverageFavorite,
-          buildCompleteOrderPreferences(companionPreferences),
+          shouldPrepareFood ? currentState.recipeTarget : null,
+          shouldPrepareBeverage ? currentState.beverageTarget : null,
+          preparePreferences,
         );
 
-        if (completeResponse.ok) {
-          autoFirstOrderStateRef.current = emptyAutoFirstOrderState();
-          setAutoPrepMessage(`自动化\n${formatOrderPreparationResponse(completeResponse)}`);
-          await refresh();
-          return;
-        }
-
-        missingTrayPart = getMissingTrayPart(completeResponse);
-        if (!missingTrayPart) {
-          const message = `自动化\n${formatOrderPreparationResponse(completeResponse)}`;
-          if (companionPreferences.autoPrepStopOnError) {
-            autoFirstOrderStateRef.current = { ...autoFirstOrderStateRef.current, orderKey, paused: true };
-            setAutoPrepMessage(`${message}\n自动化已暂停，订单变化或重新开启后会继续。`);
-          } else {
-            setAutoPrepMessage(message);
-          }
-          await refresh();
-          return;
-        }
-
-        if (missingTrayPart === 'food' && autoFirstOrderStateRef.current.prepared) {
-          setAutoPrepMessage(
-            `自动化\n${formatOrderPreparationResponse(completeResponse)}\n已准备过当前订单，等待料理完成或送餐盘更新。`,
-          );
-          await refresh();
-          return;
-        }
-      }
-
-      const shouldPrepareFood = companionPreferences.autoPrepStartCooking
-        && (companionPreferences.autoPrepCompleteOrder ? missingTrayPart === 'food' : !autoFirstOrderStateRef.current.prepared);
-      const shouldPrepareBeverage = companionPreferences.autoPrepTakeBeverage
-        && (companionPreferences.autoPrepCompleteOrder
-          ? missingTrayPart === 'beverage' || (missingTrayPart === 'food' && !autoFirstOrderStateRef.current.beverageHandled)
-          : !autoFirstOrderStateRef.current.beverageHandled);
-
-      if (!shouldPrepareFood && !shouldPrepareBeverage) {
-        setAutoPrepMessage(
-          companionPreferences.autoPrepCompleteOrder
-            ? '自动化\n等待送餐盘出现目标料理或酒水。'
-            : '自动化\n已按当前设置完成可执行步骤；自动完成订单未开启。',
+        const pendingRareCooking = didOrderCookingStillPending(prepareResponse, '自动开始料理');
+        const startedRareCooking = didCompleteStep(prepareResponse, '自动开始料理');
+        const nextPrepared = currentState.prepared
+          || startedRareCooking
+          || pendingRareCooking;
+        const nextBeverageHandled = currentState.beverageHandled
+          || didCompleteStep(prepareResponse, '自动取酒');
+        const transientFailure = !prepareResponse.ok && isTransientAutoPreparationFailure(prepareResponse);
+        const preparedAtMs = startedRareCooking || pendingRareCooking || (nextPrepared && !currentState.prepared) ? now : currentState.preparedAtMs;
+        const beverageHandledAtMs = nextBeverageHandled && !currentState.beverageHandled ? now : currentState.beverageHandledAtMs;
+        const rollbackCount = startedRareCooking || pendingRareCooking ? 0 : currentState.rollbackCount;
+        const nextState = updateAutomationAfterResponse(
+          {
+            ...currentState,
+            orderKey,
+            prepared: nextPrepared,
+            preparedAtMs,
+            beverageHandled: nextBeverageHandled,
+            beverageHandledAtMs,
+            rollbackCount,
+          },
+          prepareResponse,
+          now,
+          shouldPrepareFood ? 'ensure-cooking' : shouldPrepareBeverage ? 'ensure-beverage' : 'match-order',
+          companionPreferences.autoPrepStopOnError,
+          companionPreferences.autoMaxStepRetries,
         );
-        await refresh();
-        return;
+        rareOrderStatesRef.current.set(orderKey, nextState);
+        const suffix = nextState.paused
+          ? '\n稀客自动化已暂停该订单，订单变化或重新开启后会继续。'
+          : transientFailure
+            ? '\n当前条件暂不可执行，将继续等待并自动重试。'
+            : '';
+        const schedulerSuffix = schedulerNote.ok ? '' : `\n${schedulerNote.message}`;
+        messages.push(`${prefix}\n${formatOrderPreparationResponse(prepareResponse)}\n${formatAutomationState(nextState, companionPreferences)}${schedulerSuffix}${suffix}`);
       }
 
-      const preparePreferences = {
-        ...companionPreferences,
-        autoPrepTakeBeverage: shouldPrepareBeverage,
-        autoPrepStartCooking: shouldPrepareFood,
-        autoPrepCollectCooking: true,
-      };
+      if (candidateResult.messages.length > 0) {
+        messages.push(...candidateResult.messages.map((message) => `跳过\n${message}`));
+      }
 
-      const prepareResponse = await prepareNextRareOrder(
-        normalizedEndpoint,
-        apiToken,
-        selection.item,
-        shouldPrepareFood ? selection.recipe : null,
-        shouldPrepareBeverage ? selection.beverage : null,
-        shouldPrepareFood ? selection.recipeFavorite : null,
-        shouldPrepareBeverage ? selection.beverageFavorite : null,
-        preparePreferences,
-      );
-
-      const nextPrepared = autoFirstOrderStateRef.current.prepared
-        || didCompleteStep(prepareResponse, '自动开始料理');
-      const nextBeverageHandled = autoFirstOrderStateRef.current.beverageHandled
-        || didCompleteStep(prepareResponse, '自动取酒');
-      const transientFailure = !prepareResponse.ok && isTransientAutoPreparationFailure(prepareResponse);
-      autoFirstOrderStateRef.current = {
-        orderKey,
-        prepared: nextPrepared,
-        beverageHandled: nextBeverageHandled,
-        paused: !prepareResponse.ok && !transientFailure && companionPreferences.autoPrepStopOnError,
-      };
-      const suffix = autoFirstOrderStateRef.current.paused
-        ? '\n自动化已暂停，订单变化或重新开启后会继续。'
-        : transientFailure
-          ? '\n当前条件暂不可执行，将继续等待并自动重试。'
-          : '';
-      setAutoPrepMessage(`自动化\n${formatOrderPreparationResponse(prepareResponse)}${suffix}`);
+      refreshRareOrderDiagnostics(now);
+      setAutoPrepMessage(messages.length > 0
+        ? `自动化\n${messages.join('\n\n')}`
+        : '自动化\n当前没有需要执行的新步骤。');
       await refresh();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (companionPreferences.autoPrepStopOnError) {
-        autoFirstOrderStateRef.current = {
-          ...autoFirstOrderStateRef.current,
-          paused: true,
-        };
-        setAutoPrepMessage(`自动化\n${message}\n自动化已暂停，订单变化或重新开启后会继续。`);
+        for (const selection of candidateResult.selections) {
+          const orderKey = buildAutoOrderKey(selection.item);
+          const state = rareOrderStatesRef.current.get(orderKey) ?? emptyAutoFirstOrderState(orderKey, now);
+          rareOrderStatesRef.current.set(orderKey, pauseAutomationState(state, now, message));
+        }
+        refreshRareOrderDiagnostics(now);
+        setAutoPrepMessage(`自动化\n${message}\n稀客自动化已暂停，订单变化或重新开启后会继续。`);
       } else {
+        setAutoPrepPaused(false);
+        refreshRareOrderDiagnostics(now);
         setAutoPrepMessage(`自动化\n${message}`);
       }
     } finally {
@@ -791,7 +1585,253 @@ export function ModWorkbench() {
     favorites,
     normalizedEndpoint,
     orderRecommendations.recommendations,
+    recommendationData,
     refresh,
+    refreshRareOrderDiagnostics,
+    getAutomationCookerCycle,
+    runtime,
+    snapshot?.normalBusiness?.orders,
+  ]);
+
+  const runAutoNormalOrder = useCallback(async () => {
+    if (!companionPreferences.automationEnabled || !companionPreferences.autoNormalOrderEnabled || normalOrderBusyRef.current) return;
+    const now = Date.now();
+    if (now - lastAutoNormalOrderAtRef.current < AUTO_NORMAL_ORDER_TICK_MS) return;
+    if (!hasNormalOrderActionEnabled(companionPreferences)) {
+      normalOrderStatesRef.current.clear();
+      setNormalOrderDiagnostics([]);
+      setNormalOrderPausedCount(0);
+      setNormalOrderMessage('普客自动化已开启，请至少启用一个处理阶段：送达酒水、自动制作料理、收至保温箱、送达料理或完成订单。');
+      return;
+    }
+
+    if (!apiToken) {
+      setNormalOrderMessage('普客自动化已开启，但本地 API Token 不可用。');
+      return;
+    }
+
+    const orders = sortNormalOrders(snapshot?.normalBusiness?.orders ?? []).filter((item) => !item.isFulfilled);
+    const activeKeys = new Set(orders.map(buildNormalAutoOrderKey));
+    for (const key of Array.from(normalOrderStatesRef.current.keys())) {
+      if (!activeKeys.has(key)) normalOrderStatesRef.current.delete(key);
+    }
+    refreshNormalOrderDiagnostics(orders, now);
+
+    if (orders.length === 0) {
+      normalOrderStatesRef.current.clear();
+      setNormalOrderDiagnostics([]);
+      setNormalOrderPausedCount(0);
+      setNormalOrderMessage('普客自动化\n当前没有可处理的普客订单。');
+      lastAutoNormalOrderAtRef.current = now;
+      return;
+    }
+
+    const cookerCycle = getAutomationCookerCycle(now);
+    const cookerCapacity = buildAutomationCookerCapacity(runtime);
+    const schedulerMessages: string[] = [];
+    const runnableOrders: NormalBusinessOrder[] = [];
+    for (const order of orders) {
+      const state = normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order));
+      const needsBeverage = shouldAttemptNormalBeverage(order, state, companionPreferences, now);
+      const needsCooking = shouldAttemptNormalCooking(order, state, companionPreferences, now);
+      const needsCollectionCheck = shouldConfirmNormalCollection(order, state, companionPreferences, now);
+      const needsFoodDelivery = shouldAttemptNormalFoodDelivery(order, state, companionPreferences, now);
+      const needsCompletion = shouldAttemptNormalCompletion(order, state, companionPreferences, now);
+      if (!needsBeverage && !needsCooking && !needsCollectionCheck && !needsFoodDelivery && !needsCompletion) continue;
+
+      if (needsCooking) {
+        const reservation = reserveAutomationCookerSlot(
+          cookerCycle,
+          getNormalCookerRequirement(order, recommendationData),
+          `普客 桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}`,
+          cookerCapacity,
+        );
+        if (!reservation.ok) {
+          schedulerMessages.push(`桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}\n${reservation.message}`);
+          continue;
+        }
+      }
+
+      runnableOrders.push(order);
+      if (runnableOrders.length >= companionPreferences.autoNormalConcurrency) break;
+    }
+    const pausedCount = orders.filter((order) => normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order))?.paused).length;
+    if (runnableOrders.length === 0) {
+      const waitingCount = orders.filter((order) => {
+        const state = normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order));
+        return state?.prepared && !state.collected;
+      }).length;
+      const collectedCount = orders.filter((order) => normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order))?.collected).length;
+      const waitingState = orders
+        .map((order) => normalOrderStatesRef.current.get(buildNormalAutoOrderKey(order)))
+        .find((state) => state && (state.prepared || state.collected || state.paused));
+      const schedulerText = schedulerMessages.length > 0 ? `\n${schedulerMessages.join('\n\n')}` : '';
+      setNormalOrderMessage(waitingCount > 0 || collectedCount > 0 || pausedCount > 0
+        ? `普客自动化\n当前没有需要新开锅的普客订单。\n等待制作或送达 ${waitingCount} 笔，已收至保温箱 ${collectedCount} 笔，暂停 ${pausedCount} 笔。${waitingState ? `\n${formatAutomationState(waitingState, companionPreferences)}` : ''}${schedulerText}`
+        : `普客自动化\n当前没有需要执行的新步骤。${schedulerText}`);
+      refreshNormalOrderDiagnostics(orders, now);
+      lastAutoNormalOrderAtRef.current = now;
+      return;
+    }
+
+    normalOrderBusyRef.current = true;
+    lastAutoNormalOrderAtRef.current = now;
+    setNormalOrderBusy(true);
+    try {
+      const messages: string[] = [];
+      for (const order of runnableOrders) {
+        const orderKey = buildNormalAutoOrderKey(order);
+        const storedState = normalOrderStatesRef.current.get(orderKey) ?? emptyNormalAutoOrderState(orderKey, now);
+        const currentState = isRecoverableNormalPausedState(storedState, now)
+          ? {
+            ...storedState,
+            paused: false,
+            step: 'wait-food-stored' as const,
+            stepStartedAtMs: now,
+            lastProgressAtMs: now,
+            retryCount: 0,
+            rollbackCount: 0,
+            lastError: '等待普客暂存容器超时后已自动恢复，继续确认料理制作状态。',
+          }
+          : storedState;
+        const shouldRetryPrepared = isNormalOrderPreparedStale(currentState, now, companionPreferences);
+        const shouldHandleBeverage = shouldAttemptNormalBeverage(order, currentState, companionPreferences, now);
+        const shouldConfirmCollected = shouldConfirmNormalCollection(order, currentState, companionPreferences, now);
+        const shouldDeliverFood = shouldAttemptNormalFoodDelivery(order, currentState, companionPreferences, now);
+        const shouldCompleteOrder = shouldAttemptNormalCompletion(order, currentState, companionPreferences, now)
+          || (companionPreferences.autoNormalCompleteOrder
+            && !order.isFulfilled
+            && !(currentState.paused && !isRecoverableNormalPausedState(currentState, now))
+            && (order.hasServedFood || currentState.foodDelivered || shouldDeliverFood)
+            && (order.hasServedBeverage || currentState.beverageHandled || shouldHandleBeverage));
+
+        const requestPreferences = {
+          ...companionPreferences,
+          autoNormalTakeBeverage: companionPreferences.autoNormalTakeBeverage && shouldHandleBeverage,
+          autoNormalStartCooking: companionPreferences.autoNormalStartCooking
+            && shouldAttemptNormalCooking(order, currentState, companionPreferences, now),
+          autoNormalCollectCooking: companionPreferences.autoNormalCollectCooking
+            && (!currentState.collected || shouldConfirmCollected),
+          autoNormalDeliverFood: companionPreferences.autoNormalDeliverFood && shouldDeliverFood,
+          autoNormalCompleteOrder: companionPreferences.autoNormalCompleteOrder && shouldCompleteOrder,
+        };
+
+        if (!requestPreferences.autoNormalTakeBeverage
+          && !requestPreferences.autoNormalStartCooking
+          && !requestPreferences.autoNormalCollectCooking
+          && !requestPreferences.autoNormalDeliverFood
+          && !requestPreferences.autoNormalCompleteOrder) {
+          continue;
+        }
+
+        const response = await completeFirstNormalOrder(
+          normalizedEndpoint,
+          apiToken,
+          order,
+          requestPreferences,
+          recommendationData,
+        );
+        const transientFailure = !response.ok && isTransientAutoPreparationFailure(response);
+        const pendingCooking = didNormalOrderCookingStillPending(response);
+        const startedCooking = didCompleteStep(response, '普客开始料理');
+        const warmerMissing = didNormalOrderWarmerMissing(response);
+        const acknowledgedStart = startedCooking
+          || pendingCooking
+          || didAcknowledgeStep(response, '普客料理')
+          || didNormalOrderCollectToWarmer(response);
+        const collectedNow = didNormalOrderCollectToWarmer(response);
+        const beverageHandledNow = didNormalOrderDeliverBeverage(response);
+        const foodDeliveredNow = didNormalOrderDeliverFood(response);
+        const completedNow = didNormalOrderComplete(response);
+        const collected = warmerMissing ? collectedNow : currentState.collected || collectedNow;
+        const prepared = warmerMissing ? acknowledgedStart : currentState.prepared || acknowledgedStart;
+        const beverageHandled = currentState.beverageHandled || order.hasServedBeverage || beverageHandledNow;
+        const foodDelivered = currentState.foodDelivered || order.hasServedFood || foodDeliveredNow;
+        const completed = currentState.completed || order.isFulfilled || completedNow;
+        const rollbackCount = collected || pendingCooking || startedCooking || beverageHandledNow || foodDeliveredNow || completedNow
+          ? 0
+          : currentState.rollbackCount;
+        const nextStep: AutomationStep = completed
+          ? 'done'
+          : requestPreferences.autoNormalCompleteOrder || foodDelivered
+            ? 'complete-order'
+            : requestPreferences.autoNormalTakeBeverage && !beverageHandled
+              ? 'ensure-beverage'
+              : collected
+                ? companionPreferences.autoNormalDeliverFood ? 'deliver-food' : 'done'
+                : prepared
+                  ? 'wait-food-stored'
+                  : 'ensure-cooking';
+        const nextState = updateAutomationAfterResponse(
+          {
+            ...currentState,
+            orderKey,
+            prepared,
+            preparedAtMs: acknowledgedStart || (shouldRetryPrepared && transientFailure)
+              ? now
+              : prepared
+                ? currentState.preparedAtMs
+                : 0,
+            beverageHandled,
+            beverageHandledAtMs: beverageHandledNow && !currentState.beverageHandled ? now : currentState.beverageHandledAtMs,
+            collected,
+            foodDelivered,
+            foodDeliveredAtMs: foodDeliveredNow && !currentState.foodDelivered ? now : currentState.foodDeliveredAtMs,
+            completed,
+            completedAtMs: completedNow && !currentState.completed ? now : currentState.completedAtMs,
+            step: nextStep,
+            rollbackCount,
+          },
+          response,
+          now,
+          nextStep,
+          companionPreferences.autoNormalStopOnError,
+          companionPreferences.autoMaxStepRetries,
+        );
+        const normalizedNextState = {
+          ...nextState,
+          beverageHandled,
+          collected,
+          foodDelivered,
+          completed,
+        };
+        normalOrderStatesRef.current.set(orderKey, normalizedNextState);
+
+        const prefix = `桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}`;
+        const suffix = normalizedNextState.paused
+          ? '\n普客自动化已暂停该订单，订单变化或重新开启后会继续。'
+          : transientFailure
+            ? '\n当前条件暂不可执行，将继续等待并自动重试。'
+            : '';
+        messages.push(`${prefix}\n${formatOrderPreparationResponse(response)}\n${formatAutomationState(normalizedNextState, companionPreferences)}${suffix}`);
+      }
+      refreshNormalOrderDiagnostics(orders, now);
+      setNormalOrderMessage(messages.length > 0
+        ? `普客自动化\n${messages.join('\n\n')}${schedulerMessages.length > 0 ? `\n\n${schedulerMessages.join('\n\n')}` : ''}`
+        : '普客自动化\n当前没有需要执行的新步骤。');
+      await refresh();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (companionPreferences.autoNormalStopOnError) {
+        refreshNormalOrderDiagnostics(orders, now);
+        setNormalOrderMessage(`普客自动化\n${message}\n普客自动化已暂停，订单变化或重新开启后会继续。`);
+      } else {
+        setNormalOrderMessage(`普客自动化\n${message}`);
+      }
+    } finally {
+      normalOrderBusyRef.current = false;
+      setNormalOrderBusy(false);
+    }
+  }, [
+    apiToken,
+    companionPreferences,
+    getAutomationCookerCycle,
+    normalizedEndpoint,
+    recommendationData,
+    refresh,
+    refreshNormalOrderDiagnostics,
+    runtime,
+    snapshot?.normalBusiness?.orders,
   ]);
 
   useEffect(() => {
@@ -805,6 +1845,10 @@ export function ModWorkbench() {
   useEffect(() => {
     localStorage.setItem(TAB_STORAGE_KEY, tab);
   }, [tab]);
+
+  useEffect(() => {
+    localStorage.setItem(RARE_GUEST_INVITATION_SCOPE_STORAGE_KEY, rareGuestInvitationScope);
+  }, [rareGuestInvitationScope]);
 
   useEffect(() => {
     localStorage.setItem(FOCUS_COMPACT_STORAGE_KEY, serviceFocusCompact ? '1' : '0');
@@ -825,8 +1869,15 @@ export function ModWorkbench() {
 
   useEffect(() => {
     if (!companionPreferences.automationEnabled) {
-      autoFirstOrderStateRef.current = emptyAutoFirstOrderState();
+      rareOrderStatesRef.current.clear();
+      rareOrderDiagnosticItemsRef.current.clear();
+      setRareOrderDiagnostics([]);
+      normalOrderStatesRef.current.clear();
+      setNormalOrderDiagnostics([]);
       lastAutoFirstOrderAtRef.current = 0;
+      lastAutoNormalOrderAtRef.current = 0;
+      setAutoPrepPaused(false);
+      setNormalOrderPausedCount(0);
       return undefined;
     }
 
@@ -838,15 +1889,98 @@ export function ModWorkbench() {
   }, [companionPreferences.automationEnabled, runAutoFirstOrder]);
 
   useEffect(() => {
+    if (!companionPreferences.automationEnabled) return undefined;
+
+    void runAutoNormalOrder();
+    const timer = window.setInterval(() => {
+      void runAutoNormalOrder();
+    }, AUTO_NORMAL_ORDER_TICK_MS);
+    return () => window.clearInterval(timer);
+  }, [companionPreferences.automationEnabled, runAutoNormalOrder]);
+
+  useEffect(() => {
+    if (!companionPreferences.automationEnabled || !companionPreferences.autoNormalOrderEnabled) {
+      lastNormalOrderSignatureRef.current = normalOrderSignature;
+      return;
+    }
+
+    if (lastNormalOrderSignatureRef.current === normalOrderSignature) return;
+    lastNormalOrderSignatureRef.current = normalOrderSignature;
+    lastAutoNormalOrderAtRef.current = 0;
+    void runAutoNormalOrder();
+  }, [
+    companionPreferences.automationEnabled,
+    companionPreferences.autoNormalOrderEnabled,
+    normalOrderSignature,
+    runAutoNormalOrder,
+  ]);
+
+  useEffect(() => {
+    if (companionPreferences.automationEnabled && companionPreferences.autoNormalOrderEnabled) return;
+    normalOrderStatesRef.current.clear();
+    setNormalOrderDiagnostics([]);
+    lastAutoNormalOrderAtRef.current = 0;
+    setNormalOrderPausedCount(0);
+    setNormalOrderMessage('');
+  }, [companionPreferences.automationEnabled, companionPreferences.autoNormalOrderEnabled]);
+
+  useEffect(() => {
     void applyCompanionPreferencesToTauri(
       companionPreferences.focusSwitchBehavior,
       companionPreferences.alwaysOnTop,
       companionPreferences.focusSwitchCooldownMs,
+      companionPreferences.mousePassthroughEnabled,
     );
   }, [
     companionPreferences.alwaysOnTop,
     companionPreferences.focusSwitchBehavior,
     companionPreferences.focusSwitchCooldownMs,
+    companionPreferences.mousePassthroughEnabled,
+  ]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return undefined;
+
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    import('@tauri-apps/api/event')
+      .then(async ({ listen }) => {
+        unlisten = await listen<boolean>('mouse-passthrough-changed', (event) => {
+          if (disposed) return;
+          const mousePassthroughEnabled = Boolean(event.payload);
+          setCompanionPreferences((current) => (
+            current.mousePassthroughEnabled === mousePassthroughEnabled
+              ? current
+              : normalizeCompanionPreferences({ ...current, mousePassthroughEnabled })
+          ));
+        });
+      })
+      .catch(() => {
+        // Browser mode and older companion builds do not expose this event.
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isTauriRuntime()) return undefined;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'F10') return;
+      event.preventDefault();
+      updateCompanionPreferences({
+        mousePassthroughEnabled: !companionPreferences.mousePassthroughEnabled,
+      });
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [
+    companionPreferences.mousePassthroughEnabled,
+    updateCompanionPreferences,
   ]);
 
   useEffect(() => {
@@ -862,8 +1996,16 @@ export function ModWorkbench() {
         return { launchEndpoint, launchToken };
       })
       .then(({ launchEndpoint, launchToken }) => {
-        if (!disposed && launchEndpoint) setEndpoint(launchEndpoint);
-        if (!disposed && launchToken) setApiToken(launchToken);
+        if (!disposed && launchEndpoint) {
+          const normalizedLaunchEndpoint = normalizeEndpoint(launchEndpoint);
+          setEndpoint(normalizedLaunchEndpoint);
+          setEndpointDraft(normalizedLaunchEndpoint);
+        }
+        if (!disposed && launchToken) {
+          setApiToken(launchToken);
+          setConnectionPaused(false);
+          setConnectionFailureCount(0);
+        }
       })
       .catch(() => {
         // Browser mode does not expose launch arguments.
@@ -878,7 +2020,7 @@ export function ModWorkbench() {
     enabled: companionPreferences.gamepadNavigationEnabled,
     toggleCooldownMs: companionPreferences.focusSwitchCooldownMs,
     activeTab: tab,
-    tabs: MOD_TABS,
+    tabs: visibleTabs,
     focusMode: serviceFocusMode,
     onTabChange: setTab,
     onToggleWindow: () => {
@@ -896,10 +2038,26 @@ export function ModWorkbench() {
   });
 
   useEffect(() => {
-    refresh();
-    const timer = window.setInterval(refresh, snapshotRefreshIntervalMs);
-    return () => window.clearInterval(timer);
-  }, [refresh, snapshotRefreshIntervalMs]);
+    if (!apiToken || connectionPaused) return;
+    const retryIndex = Math.max(0, Math.min(connectionFailureCount - 1, CONNECTION_RETRY_DELAYS_MS.length - 1));
+    const delay = error
+      ? CONNECTION_RETRY_DELAYS_MS[retryIndex]
+      : snapshot
+        ? snapshotRefreshIntervalMs
+        : 0;
+    const timer = window.setTimeout(() => {
+      void refresh();
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [
+    apiToken,
+    connectionFailureCount,
+    connectionPaused,
+    error,
+    refresh,
+    snapshot,
+    snapshotRefreshIntervalMs,
+  ]);
 
   useEffect(() => {
     refreshFavorites();
@@ -911,10 +2069,12 @@ export function ModWorkbench() {
         recommendations={orderRecommendations.recommendations}
         recommendationIssues={orderRecommendations.recommendationIssues}
         runtimeSets={runtimeSets}
+        dataIndexes={recommendationIndexes}
         favorites={favorites}
         favoriteBusyKey={favoriteBusyKey}
         favoriteError={favoriteError}
         orderSortMode={companionPreferences.serviceOrderSortMode}
+        showDebugDetails={companionPreferences.showDebugDetails}
         compact={serviceFocusCompact}
         recipeLimit={serviceFocusRecipeLimit}
         beverageLimit={serviceFocusBeverageLimit}
@@ -936,15 +2096,30 @@ export function ModWorkbench() {
           <p className="mt-1 text-sm text-muted-foreground">
             {snapshot ? `mystia-steward-companion ${snapshot.pluginVersion}` : '等待本地 API 响应'}
           </p>
+          {companionPreferences.mousePassthroughEnabled && (
+            <Badge variant="secondary" className="mt-2">
+              鼠标穿透中 · F10 解除
+            </Badge>
+          )}
         </div>
-        <div className="flex w-full max-w-xl items-center gap-2">
+        <div className="flex w-full max-w-2xl items-center gap-2">
           <Input
-            value={endpoint}
-            onChange={(event) => setEndpoint(event.target.value)}
+            value={endpointDraft}
+            onChange={(event) => setEndpointDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') applyEndpointConnection();
+            }}
             spellCheck={false}
             className="font-mono text-xs"
           />
-          <Button size="sm" onClick={refresh} disabled={loading}>
+          <Button size="sm" variant="outline" onClick={applyEndpointConnection}>
+            连接
+          </Button>
+          <Button size="sm" variant="outline" onClick={pauseConnection} disabled={connectionPaused}>
+            <Power className="size-4" />
+            停止
+          </Button>
+          <Button size="sm" onClick={() => void refresh(true)} disabled={loading || !apiToken}>
             <RefreshCw className={loading ? 'size-4 animate-spin' : 'size-4'} />
             刷新
           </Button>
@@ -954,9 +2129,17 @@ export function ModWorkbench() {
       <div className={DENSE_THREE_COLUMN_GRID}>
         <StatusCard
           label="连接状态"
-          value={error ? '未连接' : snapshot ? '已连接' : '连接中'}
-          detail={error || (lastConnectedAt ? `最近响应 ${formatTime(lastConnectedAt)}` : normalizedEndpoint)}
-          tone={error ? 'bad' : snapshot ? 'good' : 'neutral'}
+          value={!apiToken ? '未授权' : connectionPaused ? '已停止' : error ? '重试中' : snapshot ? '已连接' : '连接中'}
+          detail={!apiToken
+            ? '未收到游戏启动参数 Token'
+            : connectionPaused
+              ? '点击连接恢复自动重连'
+              : error
+                ? `${error}；${formatRetryDelay(connectionFailureCount)} 后重试`
+                : lastConnectedAt
+                  ? `最近响应 ${formatTime(lastConnectedAt)}`
+                  : normalizedEndpoint}
+          tone={!apiToken || connectionPaused || error ? 'bad' : snapshot ? 'good' : 'neutral'}
         />
         <StatusCard
           label="游戏运行态"
@@ -989,12 +2172,20 @@ export function ModWorkbench() {
           <TabsTrigger value="service" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="service">
             经营中
           </TabsTrigger>
+          <TabsTrigger value="tasks" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="tasks">
+            任务
+          </TabsTrigger>
           <TabsTrigger value="inventory" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="inventory">
             修改
           </TabsTrigger>
-          <TabsTrigger value="logs" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="logs">
-            日志
+          <TabsTrigger value="help" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="help">
+            帮助
           </TabsTrigger>
+          {companionPreferences.showDebugDetails && (
+            <TabsTrigger value="logs" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="logs">
+              日志
+            </TabsTrigger>
+          )}
           <TabsTrigger value="settings" className={MOD_TAB_TRIGGER_CLASS} data-gamepad-tab="true" data-gamepad-tab-value="settings">
             设置
           </TabsTrigger>
@@ -1006,8 +2197,11 @@ export function ModWorkbench() {
             snapshot={snapshot}
             runtime={runtime}
             night={night}
+            data={recommendationData}
+            indexes={recommendationIndexes}
             error={error}
             lastConnectedAt={lastConnectedAt}
+            showDebugDetails={companionPreferences.showDebugDetails}
           />
         </TabsContent>
 
@@ -1017,6 +2211,7 @@ export function ModWorkbench() {
             runtimeSets={runtimeSets}
             selectedPlace={selectedPlace}
             detectedPlace={detectedPlace}
+            data={recommendationData}
             onPlaceChange={setManualPlace}
             onFollowDetectedPlace={() => setManualPlace(null)}
           />
@@ -1029,6 +2224,7 @@ export function ModWorkbench() {
             runtimeRareCustomers={runtimeRareCustomers}
             selectedPlace={selectedPlace}
             detectedPlace={detectedPlace}
+            data={recommendationData}
             rareCustomerId={rareCustomerId}
             requiredFoodTag={requiredFoodTag}
             requiredBeverageTag={requiredBeverageTag}
@@ -1067,6 +2263,8 @@ export function ModWorkbench() {
             detectedPlace={detectedPlace}
             recommendations={orderRecommendations.recommendations}
             recommendationIssues={orderRecommendations.recommendationIssues}
+            data={recommendationData}
+            performanceMs={snapshot?.performanceMs}
             runtimeSets={runtimeSets}
             uiPinningStatus={snapshot?.runtimeUiPinningStatus ?? ''}
             uiPinningTarget={gameUiPinningTarget}
@@ -1075,11 +2273,51 @@ export function ModWorkbench() {
             favoriteError={favoriteError}
             autoPrepBusy={autoPrepBusy}
             autoPrepMessage={autoPrepMessage}
+            autoPrepPaused={autoPrepPaused}
+            rareOrderDiagnostics={rareOrderDiagnostics}
             autoPrepPreferences={companionPreferences}
+            recipeLimit={serviceFocusRecipeLimit}
+            beverageLimit={serviceFocusBeverageLimit}
+            normalOrderBusy={normalOrderBusy}
+            normalOrderMessage={normalOrderMessage}
+            normalOrderPausedCount={normalOrderPausedCount}
+            normalOrderDiagnostics={normalOrderDiagnostics}
+            onRecipeLimitChange={setServiceFocusRecipeLimit}
+            onBeverageLimitChange={setServiceFocusBeverageLimit}
             onPreferenceChange={updateCompanionPreferences}
             onToggleRecipeFavorite={toggleRecipeFavorite}
             onToggleBeverageFavorite={toggleBeverageFavorite}
+            onRetryRareAutomationOrder={retryRareAutomationOrder}
+            onResetRareAutomationOrder={resetRareAutomationOrder}
+            dismissRareOrderBusyKey={dismissRareOrderBusyKey}
+            dismissRareOrderError={dismissRareOrderError}
+            onDismissRareOrder={dismissRareOrder}
             onEnterFocusMode={() => setServiceFocusMode(true)}
+            normalBusiness={snapshot?.normalBusiness ?? null}
+            showDebugDetails={companionPreferences.showDebugDetails}
+          />
+        </TabsContent>
+
+        <TabsContent value="tasks" data-gamepad-scope="content">
+          <ModTasksPanel
+            runtimeLoaded={snapshot?.runtimeLoaded ?? false}
+            activeDayMapName={snapshot?.activeDayMapName ?? ''}
+            activeDayMapLabel={snapshot?.activeDayMapLabel ?? ''}
+            missions={snapshot?.runtimeMissions ?? null}
+            data={recommendationData}
+            inviteScope={rareGuestInvitationScope}
+            inviteBusyKey={rareGuestInvitationBusyKey}
+            inviteAllResult={rareGuestInvitationResult}
+            inviteAllError={rareGuestInvitationError}
+            showDebugDetails={companionPreferences.showDebugDetails}
+            onInviteScopeChange={(scope) => {
+              setRareGuestInvitationScope(scope);
+              setRareGuestInvitationResult(null);
+              lastRareGuestInvitationRefreshSignatureRef.current = '';
+            }}
+            onRefreshRareGuestInvitations={loadRareGuestInvitations}
+            onInviteAllRareGuests={inviteAllRareGuests}
+            onInviteRareGuest={inviteRareGuest}
           />
         </TabsContent>
 
@@ -1089,16 +2327,25 @@ export function ModWorkbench() {
             apiToken={apiToken}
             runtimeSets={runtimeSets}
             runtimeLoaded={snapshot?.runtimeLoaded ?? false}
+            data={recommendationData}
             onRefresh={refresh}
           />
         </TabsContent>
 
-        <TabsContent value="logs" data-gamepad-scope="content">
-          <ModLogsPanel endpoint={normalizedEndpoint} apiToken={apiToken} />
+        <TabsContent value="help" data-gamepad-scope="content">
+          <ModHelpPanel />
         </TabsContent>
+
+        {companionPreferences.showDebugDetails && (
+          <TabsContent value="logs" data-gamepad-scope="content">
+            <ModLogsPanel endpoint={normalizedEndpoint} apiToken={apiToken} />
+          </TabsContent>
+        )}
 
         <TabsContent value="settings" data-gamepad-scope="content">
           <ModSettingsPanel
+            endpoint={normalizedEndpoint}
+            apiToken={apiToken}
             preferences={companionPreferences}
             themeMode={themeMode}
             serviceFocusCompact={serviceFocusCompact}
@@ -1117,77 +2364,410 @@ function ModOverviewPanel({
   snapshot,
   runtime,
   night,
+  data,
+  indexes,
   error,
   lastConnectedAt,
+  showDebugDetails,
 }: {
   endpoint: string;
   snapshot: LocalApiSnapshot | null;
   runtime: RecommendationStateSnapshot | null;
   night: NightBusinessContext | null;
+  data: RecommendationDataSet;
+  indexes: ReturnType<typeof buildRecommendationDataIndexes>;
   error: string;
   lastConnectedAt: Date | null;
+  showDebugDetails: boolean;
 }) {
   const ownedIngredientEntries = useMemo(
-    () => buildLowStockEntries(runtime?.ownedIngredientQty ?? {}, INGREDIENT_NAME_BY_ID),
-    [runtime?.ownedIngredientQty],
+    () => buildLowStockEntries(runtime?.ownedIngredientQty ?? {}, indexes.ingredientNameById),
+    [indexes.ingredientNameById, runtime?.ownedIngredientQty],
   );
   const ownedBeverageEntries = useMemo(
-    () => buildLowStockEntries(runtime?.ownedBeverageQty ?? {}, BEVERAGE_NAME_BY_ID),
-    [runtime?.ownedBeverageQty],
+    () => buildLowStockEntries(runtime?.ownedBeverageQty ?? {}, indexes.beverageNameById),
+    [indexes.beverageNameById, runtime?.ownedBeverageQty],
   );
+  const [overviewTab, setOverviewTab] = useState<OverviewTab>('status');
+
+  return (
+    <div className="space-y-4">
+      <Tabs value={overviewTab} onValueChange={(value) => setOverviewTab(value as OverviewTab)} className="space-y-4">
+        <TabsList className="grid h-9 w-full grid-cols-3">
+          <TabsTrigger value="status" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+            状态
+          </TabsTrigger>
+          <TabsTrigger value="inventory" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+            库存
+          </TabsTrigger>
+          <TabsTrigger value="actions" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+            操作
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="status" className="space-y-4">
+          <Card>
+            <CardContent className={`${DENSE_TWO_COLUMN_GRID_TIGHT} p-4 text-sm`}>
+              <InfoLine label="数据来源" value="游戏实时 API，不读取 .memory 存档" />
+              {showDebugDetails && <InfoLine label="API 地址" value={endpoint} mono />}
+              <InfoLine label="连接状态" value={error ? `未连接: ${error}` : snapshot ? '已连接' : '连接中'} />
+              <InfoLine label="最近响应" value={lastConnectedAt ? formatTime(lastConnectedAt) : '暂无'} />
+              <InfoLine label="场景" value={snapshot?.activeSceneName || '未知'} />
+              <InfoLine label="运行时状态" value={snapshot?.status || '暂无快照'} />
+              {showDebugDetails && <InfoLine label="运行时来源" value={snapshot?.runtimeSource || '未知'} />}
+              <InfoLine
+                label="推荐数据"
+                value={data.source === 'runtime' ? `游戏运行时 (${data.status})` : `等待游戏运行时数据 (${data.status})`}
+              />
+              {showDebugDetails && <InfoLine label="性能耗时" value={formatPerformanceMs(snapshot?.performanceMs)} mono />}
+            </CardContent>
+          </Card>
+
+          <ListPanel title="实时标签">
+            <div className={DENSE_TWO_COLUMN_GRID_TIGHT}>
+              <InfoLine label="流行喜爱" value={runtime?.popularFoodTag || '无'} />
+              <InfoLine label="流行厌恶" value={runtime?.popularHateFoodTag || '无'} />
+              <InfoLine label="当前经营场景" value={night?.place || night?.placeLabel || '无经营场景'} />
+              {showDebugDetails && <InfoLine label="经营扫描" value={night?.source || '暂无'} />}
+            </div>
+          </ListPanel>
+        </TabsContent>
+
+        <TabsContent value="inventory" className="space-y-4">
+          <Card>
+            <CardContent className={`${DENSE_FOUR_COLUMN_GRID} p-4 text-sm`}>
+              <Metric label="可用料理" value={runtime?.availableRecipeIds.length ?? 0} />
+              <Metric label="可用酒水" value={runtime?.availableBeverageIds.length ?? 0} />
+              <Metric label="可用食材" value={runtime?.availableIngredientIds.length ?? 0} />
+              <Metric label="明星店" value={runtime?.famousShopEnabled ? '开启' : '关闭'} />
+            </CardContent>
+          </Card>
+
+          <ListPanel title="低库存概览">
+            <div className={DENSE_TWO_COLUMN_GRID}>
+              <LowStockColumn title="材料" entries={ownedIngredientEntries} />
+              <LowStockColumn title="酒水" entries={ownedBeverageEntries} />
+            </div>
+          </ListPanel>
+        </TabsContent>
+
+        <TabsContent value="actions" className="space-y-4">
+          <ListPanel title="快捷键">
+            <div className={`${DENSE_TWO_COLUMN_GRID_TIGHT} text-sm`}>
+              <InfoLine label="F8" value="在游戏与独立窗口之间切换焦点或重新显示伴随窗口" />
+              <InfoLine label="F10" value="开启或关闭鼠标穿透锁定；穿透后可用它恢复窗口操作" />
+              <InfoLine label="RS Click" value="手柄默认在游戏与独立窗口之间切换" />
+              <InfoLine label="手柄导航" value="左摇杆/十字键移动，A 确认，B 返回，LB/RB 切换页面，LT/RT 滚动" />
+              <InfoLine label="专注模式" value="Y 进入专注模式或切换精简模式，X 收藏当前推荐项" />
+              <InfoLine label="窗口关闭" value="关闭按钮会隐藏到托盘；托盘菜单可重新显示或退出" />
+            </div>
+          </ListPanel>
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+function RareGuestInvitationPanel({
+  runtimeLoaded,
+  activeDayMapName,
+  activeDayMapLabel,
+  inviteScope,
+  inviteBusyKey,
+  inviteAllResult,
+  inviteAllError,
+  showDebugDetails,
+  onInviteScopeChange,
+  onRefreshRareGuestInvitations,
+  onInviteAllRareGuests,
+  onInviteRareGuest,
+}: {
+  runtimeLoaded: boolean;
+  activeDayMapName: string;
+  activeDayMapLabel: string;
+  inviteScope: RareGuestInvitationScope;
+  inviteBusyKey: string;
+  inviteAllResult: RareGuestInvitationResponse | null;
+  inviteAllError: string;
+  showDebugDetails: boolean;
+  onInviteScopeChange: (scope: RareGuestInvitationScope) => void;
+  onRefreshRareGuestInvitations: () => void;
+  onInviteAllRareGuests: () => void;
+  onInviteRareGuest: (guestId: number) => void;
+}) {
+  const availableEntries = inviteAllResult?.available ?? [];
+  const candidateEntries = (inviteAllResult?.candidates?.length ? inviteAllResult.candidates : availableEntries)
+    .slice()
+    .sort(compareInvitationEntries);
+  const isBusy = inviteBusyKey !== '';
+  const isListBusy = inviteBusyKey === 'list';
+  const isAllBusy = inviteBusyKey === 'all';
+  const currentMapText = inviteAllResult?.currentMapName || activeDayMapName || inviteAllResult?.currentMapLabel || activeDayMapLabel || '未知';
+
+  return (
+    <ListPanel
+      title={`稀客邀请 (${availableEntries.length}/${candidateEntries.length})`}
+      action={(
+        <div className="flex min-w-0 flex-wrap justify-end gap-1.5">
+          <div className="grid h-8 grid-cols-2 rounded-md border border-border bg-background/70 p-0.5">
+            <Button
+              type="button"
+              size="xs"
+              variant={inviteScope === 'current' ? 'default' : 'ghost'}
+              className="h-7 px-2"
+              onClick={() => onInviteScopeChange('current')}
+              disabled={isBusy}
+              data-gamepad-clickable="true"
+            >
+              当前
+            </Button>
+            <Button
+              type="button"
+              size="xs"
+              variant={inviteScope === 'all' ? 'default' : 'ghost'}
+              className="h-7 px-2"
+              onClick={() => onInviteScopeChange('all')}
+              disabled={isBusy}
+              data-gamepad-clickable="true"
+            >
+              全部
+            </Button>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8 px-2.5"
+            onClick={onRefreshRareGuestInvitations}
+            disabled={!runtimeLoaded || isBusy}
+            data-gamepad-clickable="true"
+          >
+            {isListBusy ? '刷新中...' : '刷新列表'}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            className="h-8 px-2.5"
+            onClick={onInviteAllRareGuests}
+            disabled={!runtimeLoaded || isBusy || availableEntries.length === 0}
+            data-gamepad-clickable="true"
+          >
+            {isAllBusy ? '邀请中...' : '邀请全部'}
+          </Button>
+        </div>
+      )}
+    >
+      <div className="grid min-w-0 gap-3 text-sm">
+        <div className={DENSE_TWO_COLUMN_GRID_TIGHT}>
+          <InfoLine label="范围" value={inviteScope === 'all' ? '所有日间场景' : `当前: ${currentMapText}`} />
+          <InfoLine label="状态" value={runtimeLoaded ? '按原生羁绊条件判定' : '等待存档加载'} />
+        </div>
+        {inviteAllError && <EmptyRow text={inviteAllError} />}
+        {inviteAllResult ? (
+          <div className="max-w-full min-w-0 overflow-hidden rounded-md border border-border/80 bg-background/35 p-2">
+            <div className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
+              <span className="truncate">新增 {inviteAllResult.invitedCount} · 可邀请 {availableEntries.length} · 候选 {candidateEntries.length}</span>
+              <span className="truncate sm:text-right">{inviteAllResult.status || (inviteAllResult.ok ? '已完成' : '失败')}</span>
+            </div>
+            <div className="mt-2 grid min-w-0 gap-1.5">
+              {candidateEntries.map((entry) => {
+                const busy = inviteBusyKey === `guest:${entry.id}`;
+                const canInvite = entry.canInvite ?? availableEntries.some((item) => item.id === entry.id);
+                const sceneText = formatInvitationScenes(entry);
+                const detailText = entry.reason || (showDebugDetails ? entry.runtimeName || `#${entry.id}` : '');
+                return (
+                  <div
+                    key={`${entry.id}-${entry.runtimeName || entry.name}`}
+                    className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-border/70 bg-background/45 px-2 py-1.5"
+                    data-gamepad-row="rare-invitation"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+                        <span className="truncate text-sm font-medium">{entry.name || entry.runtimeName || `#${entry.id}`}</span>
+                        <span className="text-xs text-muted-foreground">{formatInvitationStatus(entry)}</span>
+                        {sceneText && <span className="truncate text-xs text-muted-foreground">{sceneText}</span>}
+                      </div>
+                      {detailText && <div className="truncate text-xs text-muted-foreground">{detailText}</div>}
+                    </div>
+                    <Button
+                      type="button"
+                      size="xs"
+                      onClick={() => onInviteRareGuest(entry.id)}
+                      disabled={!runtimeLoaded || isBusy || !canInvite}
+                      data-gamepad-clickable="true"
+                    >
+                      {busy ? '邀请中' : '邀请'}
+                    </Button>
+                  </div>
+                );
+              })}
+              {candidateEntries.length === 0 && (
+                <EmptyRow text={isListBusy ? '正在读取稀客候选' : inviteScope === 'all' ? '暂无稀客候选' : '当前场景暂无稀客候选'} />
+              )}
+            </div>
+            {inviteAllResult.invited.length > 0 && (
+              <div className="mt-2 flex max-w-full flex-wrap gap-1">
+                {inviteAllResult.invited.slice(0, 12).map((entry) => (
+                  <Badge key={`${entry.id}-${entry.runtimeName || entry.name}`} variant="secondary" className="max-w-full truncate">
+                    {entry.name || entry.runtimeName || `#${entry.id}`}
+                  </Badge>
+                ))}
+                {inviteAllResult.invited.length > 12 && (
+                  <Badge variant="outline">+{inviteAllResult.invited.length - 12}</Badge>
+                )}
+              </div>
+            )}
+            {inviteAllResult.skipped.length > 0 && (
+              <div className="mt-2 max-w-full break-words text-xs text-muted-foreground">
+                跳过：{summarizeInvitationSkipped(inviteAllResult.skipped)}
+              </div>
+            )}
+          </div>
+        ) : (
+          <EmptyRow text="尚未执行邀请" />
+        )}
+      </div>
+    </ListPanel>
+  );
+}
+
+function ModHelpPanel() {
+  const [query, setQuery] = useState('');
+  const normalizedQuery = normalizeHelpSearchText(query);
+  const filteredCategories = useMemo(
+    () => filterHelpCategories(HELP_CONTENT.categories, normalizedQuery),
+    [normalizedQuery],
+  );
+  const totalItems = HELP_CONTENT.categories.reduce((sum, category) => sum + category.items.length, 0);
+  const visibleItems = filteredCategories.reduce((sum, category) => sum + category.items.length, 0);
 
   return (
     <div className="space-y-4">
       <Card>
-        <CardContent className={`${DENSE_TWO_COLUMN_GRID_TIGHT} p-4 text-sm`}>
-          <InfoLine label="数据来源" value="游戏实时 API，不读取 .memory 存档" />
-          <InfoLine label="API 地址" value={endpoint} mono />
-          <InfoLine label="连接状态" value={error ? `未连接: ${error}` : snapshot ? '已连接' : '连接中'} />
-          <InfoLine label="最近响应" value={lastConnectedAt ? formatTime(lastConnectedAt) : '暂无'} />
-          <InfoLine label="场景" value={snapshot?.activeSceneName || '未知'} />
-          <InfoLine label="运行时状态" value={snapshot?.status || '暂无快照'} />
-          <InfoLine label="运行时来源" value={snapshot?.runtimeSource || '未知'} />
-          <InfoLine label="数据目录" value={snapshot?.dataDirectory || '未知'} mono />
+        <CardContent className="space-y-3 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="text-base font-semibold">帮助</h2>
+              <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{HELP_CONTENT.intro}</p>
+            </div>
+            <div className="flex w-full items-center justify-between gap-3 text-xs text-muted-foreground">
+              <span>条目 {visibleItems}/{totalItems}</span>
+              <span>更新 {HELP_CONTENT.updatedAt}</span>
+            </div>
+          </div>
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索功能、问题或关键词"
+            data-gamepad-clickable="true"
+          />
         </CardContent>
       </Card>
 
-      <Card>
-        <CardContent className={`${DENSE_FOUR_COLUMN_GRID} p-4 text-sm`}>
-          <Metric label="可用料理" value={runtime?.availableRecipeIds.length ?? 0} />
-          <Metric label="可用酒水" value={runtime?.availableBeverageIds.length ?? 0} />
-          <Metric label="可用食材" value={runtime?.availableIngredientIds.length ?? 0} />
-          <Metric label="明星店" value={runtime?.famousShopEnabled ? '开启' : '关闭'} />
-        </CardContent>
-      </Card>
-
-      <div className={DENSE_TWO_COLUMN_GRID}>
-        <ListPanel title="快捷键">
-          <div className="grid gap-2 text-sm">
-            <InfoLine label="F8" value="在游戏与独立窗口之间切换；若启用旧游戏内面板，则打开或关闭游戏内面板" />
-            <InfoLine label="RS Click" value="手柄默认在游戏与独立窗口之间切换" />
-            <InfoLine label="手柄导航" value="左摇杆/十字键移动，A 确认，B 返回，LB/RB 切换页面，LT/RT 滚动" />
-            <InfoLine label="专注模式" value="Y 进入专注模式或切换精简模式，X 收藏当前推荐项" />
-            <InfoLine label="F9" value="刷新游戏运行时数据检测" />
-            <InfoLine label="窗口关闭" value="关闭按钮会隐藏到托盘；托盘菜单可重新显示或退出" />
-          </div>
-        </ListPanel>
-
-        <ListPanel title="实时标签">
-          <InfoLine label="流行喜爱" value={runtime?.popularFoodTag || '无'} />
-          <InfoLine label="流行厌恶" value={runtime?.popularHateFoodTag || '无'} />
-          <InfoLine label="当前经营场景" value={night?.place || night?.placeLabel || '无经营场景'} />
-          <InfoLine label="经营扫描" value={night?.source || '暂无'} />
-        </ListPanel>
-
-        <ListPanel title="低库存概览">
-          <div className={DENSE_TWO_COLUMN_GRID}>
-            <LowStockColumn title="材料" entries={ownedIngredientEntries} />
-            <LowStockColumn title="酒水" entries={ownedBeverageEntries} />
-          </div>
-        </ListPanel>
-      </div>
+      {filteredCategories.length === 0 ? (
+        <EmptyState text="没有匹配的帮助内容" />
+      ) : (
+        <div className="space-y-3">
+          {filteredCategories.map((category) => (
+            <ListPanel
+              key={category.id}
+              title={category.title}
+              action={<span className="text-xs text-muted-foreground">{category.items.length} 项</span>}
+            >
+              {category.description && (
+                <p className="mb-3 text-sm text-muted-foreground">{category.description}</p>
+              )}
+              <div className="space-y-2">
+                {category.items.map((item) => (
+                  <HelpDisclosure key={item.id} item={item} />
+                ))}
+              </div>
+            </ListPanel>
+          ))}
+        </div>
+      )}
     </div>
   );
+}
+
+function HelpDisclosure({ item }: { item: HelpItem }) {
+  return (
+    <Accordion defaultValue={[]}>
+      <AccordionItem value={item.id}>
+        <AccordionTrigger data-gamepad-clickable="true">
+          <div className="min-w-0">
+            <div className="font-medium">{item.title}</div>
+            {item.summary && <div className="mt-1 text-xs text-muted-foreground">{item.summary}</div>}
+          </div>
+        </AccordionTrigger>
+        <AccordionContent className="space-y-3">
+          {item.steps && item.steps.length > 0 && (
+            <HelpTextBlock title="操作" items={item.steps} ordered />
+          )}
+          {item.notes && item.notes.length > 0 && (
+            <HelpTextBlock title="说明" items={item.notes} />
+          )}
+          {item.warnings && item.warnings.length > 0 && (
+            <HelpTextBlock title="注意" items={item.warnings} tone="warning" />
+          )}
+        </AccordionContent>
+      </AccordionItem>
+    </Accordion>
+  );
+}
+
+function HelpTextBlock({
+  title,
+  items,
+  ordered = false,
+  tone = 'default',
+}: {
+  title: string;
+  items: string[];
+  ordered?: boolean;
+  tone?: 'default' | 'warning';
+}) {
+  const List = ordered ? 'ol' : 'ul';
+  return (
+    <div>
+      <div className={tone === 'warning' ? 'text-sm font-medium text-destructive' : 'text-sm font-medium'}>
+        {title}
+      </div>
+      <List className={`mt-1 space-y-1 pl-5 ${ordered ? 'list-decimal' : 'list-disc'} text-muted-foreground`}>
+        {items.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </List>
+    </div>
+  );
+}
+
+function filterHelpCategories(categories: HelpCategory[], query: string): HelpCategory[] {
+  if (!query) return categories;
+
+  return categories
+    .map((category) => ({
+      ...category,
+      items: category.items.filter((item) => helpItemMatchesQuery(category, item, query)),
+    }))
+    .filter((category) => category.items.length > 0);
+}
+
+function helpItemMatchesQuery(category: HelpCategory, item: HelpItem, query: string): boolean {
+  const chunks = [
+    category.title,
+    category.description ?? '',
+    item.title,
+    item.summary ?? '',
+    ...(item.steps ?? []),
+    ...(item.notes ?? []),
+    ...(item.warnings ?? []),
+  ];
+  return normalizeHelpSearchText(chunks.join('\n')).includes(query);
+}
+
+function normalizeHelpSearchText(value: string): string {
+  return value.trim().toLowerCase();
 }
 
 function ModNormalPanel({
@@ -1195,6 +2775,7 @@ function ModNormalPanel({
   runtimeSets,
   selectedPlace,
   detectedPlace,
+  data,
   onPlaceChange,
   onFollowDetectedPlace,
 }: {
@@ -1202,11 +2783,14 @@ function ModNormalPanel({
   runtimeSets: RuntimeSets | null;
   selectedPlace: TPlace | null;
   detectedPlace: TPlace | null;
+  data: RecommendationDataSet;
   onPlaceChange: (place: TPlace) => void;
   onFollowDetectedPlace: () => void;
 }) {
+  const dataIndexes = useMemo(() => buildRecommendationDataIndexes(data), [data]);
   const recipes = useMemo(() => {
     if (!runtime || !runtimeSets || !selectedPlace) return [];
+    const specialFoodRule = buildSpecialFoodRuleRankOptions(runtime.specialRules);
     return computeNormalRecipeResults(
       selectedPlace,
       runtimeSets.recipeIds,
@@ -1214,21 +2798,23 @@ function ModNormalPanel({
       runtime.popularFoodTag,
       runtime.popularHateFoodTag,
       runtime.famousShopEnabled,
+      data,
+      { specialFoodRule },
     )
       .sort(compareNormalRecipesForMod)
       .slice(0, MAX_RECOMMENDATION_ROWS);
-  }, [runtime, runtimeSets, selectedPlace]);
+  }, [data, runtime, runtimeSets, selectedPlace]);
 
   const beverages = useMemo(() => {
     if (!runtimeSets || !selectedPlace) return [];
-    return computeNormalBeverageResults(selectedPlace, runtimeSets.beverageIds)
+    return computeNormalBeverageResults(selectedPlace, runtimeSets.beverageIds, data)
       .sort(compareNormalBeveragesForMod)
       .slice(0, MAX_RECOMMENDATION_ROWS);
-  }, [runtimeSets, selectedPlace]);
+  }, [data, runtimeSets, selectedPlace]);
 
   const customers = useMemo(
-    () => (selectedPlace ? getNormalCustomersByPlace(selectedPlace) : []),
-    [selectedPlace],
+    () => (selectedPlace ? getNormalCustomersByPlace(selectedPlace, data) : []),
+    [data, selectedPlace],
   );
 
   if (!runtime || !runtimeSets) return <RuntimeUnavailable />;
@@ -1246,7 +2832,7 @@ function ModNormalPanel({
 
       {selectedPlace && (
         <div className={DENSE_TWO_COLUMN_GRID}>
-          <ListPanel title={`料理推荐 (${recipes.length})`}>
+          <ListPanel title={`料理推荐 (${recipes.length})`} contentClassName={RECOMMENDATION_SCROLL_AREA}>
             {recipes.length === 0 && <EmptyRow text="暂无可推荐料理" />}
             <div className="space-y-2">
               {recipes.map((recipe, index) => (
@@ -1255,12 +2841,13 @@ function ModNormalPanel({
                   recipe={recipe}
                   index={index}
                   ownedIngredientQty={runtimeSets.ownedIngredientQty}
+                  ingredientIdByName={dataIndexes.ingredientIdByName}
                 />
               ))}
             </div>
           </ListPanel>
 
-          <ListPanel title={`酒水推荐 (${beverages.length})`}>
+          <ListPanel title={`酒水推荐 (${beverages.length})`} contentClassName={RECOMMENDATION_SCROLL_AREA}>
             {beverages.length === 0 && <EmptyRow text="暂无可推荐酒水" />}
             <div className="space-y-2">
               {beverages.map((beverage, index) => (
@@ -1277,7 +2864,7 @@ function ModNormalPanel({
       )}
 
       {selectedPlace && (
-        <ListPanel title={`地区普客 (${customers.length})`}>
+        <ListPanel title={`地区普客 (${customers.length})`} contentClassName="min-h-[8rem]">
           <div className={DENSE_ITEM_GRID}>
             {customers.map((customer) => (
               <div key={customer.id} className="rounded-md border border-border/80 p-2 text-sm">
@@ -1301,6 +2888,7 @@ function ModRarePanel({
   runtimeRareCustomers,
   selectedPlace,
   detectedPlace,
+  data,
   rareCustomerId,
   requiredFoodTag,
   requiredBeverageTag,
@@ -1321,6 +2909,7 @@ function ModRarePanel({
   runtimeRareCustomers: ICustomerRare[];
   selectedPlace: TPlace | null;
   detectedPlace: TPlace | null;
+  data: RecommendationDataSet;
   rareCustomerId: number | null;
   requiredFoodTag: string;
   requiredBeverageTag: string;
@@ -1336,16 +2925,36 @@ function ModRarePanel({
   onToggleRecipeFavorite: ToggleRecipeFavorite;
   onToggleBeverageFavorite: ToggleBeverageFavorite;
 }) {
+  const dataIndexes = useMemo(() => buildRecommendationDataIndexes(data), [data]);
   const customers = useMemo(() => {
     if (!selectedPlace) return [];
     return mergeRareCustomers(
-      getRareCustomersByPlace(selectedPlace),
-      runtimeRareCustomers.filter((customer) => customer.places.includes(selectedPlace)),
+      getRareCustomersByPlace(selectedPlace, data).filter((customer) =>
+        isSelectableRareCustomer(customer),
+      ),
+      runtimeRareCustomers.filter((customer) => (
+        customer.places.includes(selectedPlace) && isSelectableRareCustomer(customer)
+      )),
     );
-  }, [runtimeRareCustomers, selectedPlace]);
-  const selectedCustomer = customers.find((customer) => customer.id === rareCustomerId) ?? customers[0] ?? null;
-  const foodTag = requiredFoodTag || selectedCustomer?.positiveTags.find(isOrderableRareFoodTag) || '';
-  const beverageTag = requiredBeverageTag || selectedCustomer?.beverageTags[0] || '';
+  }, [data, runtimeRareCustomers, selectedPlace]);
+  const selectedCustomer = useMemo(
+    () => customers.find((customer) => customer.id === rareCustomerId) ?? customers[0] ?? null,
+    [customers, rareCustomerId],
+  );
+  const selectedFoodTags = useMemo(
+    () => selectedCustomer?.positiveTags.filter(isOrderableRareFoodTag) ?? [],
+    [selectedCustomer],
+  );
+  const selectedBeverageTags = useMemo(
+    () => selectedCustomer?.beverageTags ?? [],
+    [selectedCustomer],
+  );
+  const foodTag = requiredFoodTag && selectedFoodTags.includes(requiredFoodTag)
+    ? requiredFoodTag
+    : selectedFoodTags[0] ?? '';
+  const beverageTag = requiredBeverageTag && selectedBeverageTags.includes(requiredBeverageTag)
+    ? requiredBeverageTag
+    : selectedBeverageTags[0] ?? '';
 
   useEffect(() => {
     if (!selectedCustomer) {
@@ -1353,8 +2962,8 @@ function ModRarePanel({
       return;
     }
     if (rareCustomerId !== selectedCustomer.id) onRareCustomerChange(selectedCustomer.id);
-    if (!requiredFoodTag && foodTag) onFoodTagChange(foodTag);
-    if (!requiredBeverageTag && beverageTag) onBeverageTagChange(beverageTag);
+    if (requiredFoodTag !== foodTag) onFoodTagChange(foodTag);
+    if (requiredBeverageTag !== beverageTag) onBeverageTagChange(beverageTag);
   }, [
     beverageTag,
     foodTag,
@@ -1369,6 +2978,7 @@ function ModRarePanel({
 
   const recipes = useMemo(() => {
     if (!runtime || !runtimeSets || !selectedCustomer || !foodTag || !beverageTag) return [];
+    const specialFoodRule = buildSpecialFoodRuleRankOptions(runtime.specialRules);
     return rankRecipesForRare(
       selectedCustomer,
       foodTag,
@@ -1381,6 +2991,8 @@ function ModRarePanel({
       4,
       runtimeSets.ownedIngredientQty,
       runtime.famousShopEnabled,
+      { specialFoodRule },
+      data,
     )
       .filter((recipe) => shouldKeepRecipeForCooker(recipe, runtimeSets, preferences.filterMissingCookers))
       .sort((a, b) => compareRareRecipesForService(
@@ -1389,14 +3001,15 @@ function ModRarePanel({
         runtimeSets.ownedIngredientQty,
         preferences.recipeSortRules,
         runtimeSets,
+        dataIndexes,
       ))
       .sort((a, b) => compareFavoriteRecipeResults(a, b, favorites, selectedCustomer.id, foodTag))
       .slice(0, MAX_RECOMMENDATION_ROWS);
-  }, [beverageTag, favorites, foodTag, preferences, runtime, runtimeSets, selectedCustomer]);
+  }, [beverageTag, data, dataIndexes, favorites, foodTag, preferences, runtime, runtimeSets, selectedCustomer]);
 
   const beverages = useMemo(() => {
     if (!runtimeSets || !selectedCustomer || !beverageTag) return [];
-    return rankBeveragesForRare(selectedCustomer, beverageTag, runtimeSets.beverageIds)
+    return rankBeveragesForRare(selectedCustomer, beverageTag, runtimeSets.beverageIds, data)
       .sort((a, b) => compareRareBeveragesForService(
         a,
         b,
@@ -1405,7 +3018,7 @@ function ModRarePanel({
       ))
       .sort((a, b) => compareFavoriteBeverageResults(a, b, favorites, selectedCustomer.id, beverageTag))
       .slice(0, MAX_RECOMMENDATION_ROWS);
-  }, [beverageTag, favorites, preferences.beverageSortRules, runtimeSets, selectedCustomer]);
+  }, [beverageTag, data, favorites, preferences.beverageSortRules, runtimeSets, selectedCustomer]);
 
   if (!runtime || !runtimeSets) return <RuntimeUnavailable />;
 
@@ -1447,7 +3060,7 @@ function ModRarePanel({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {selectedCustomer.positiveTags.filter(isOrderableRareFoodTag).map((tag) => (
+                    {selectedFoodTags.map((tag) => (
                       <SelectItem key={tag} value={tag}>{tag}</SelectItem>
                     ))}
                   </SelectContent>
@@ -1461,7 +3074,7 @@ function ModRarePanel({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {selectedCustomer.beverageTags.map((tag) => (
+                    {selectedBeverageTags.map((tag) => (
                       <SelectItem key={tag} value={tag}>{tag}</SelectItem>
                     ))}
                   </SelectContent>
@@ -1476,7 +3089,7 @@ function ModRarePanel({
           )}
 
           <div className={DENSE_TWO_COLUMN_GRID}>
-            <ListPanel title={`料理推荐 (${recipes.length})`}>
+            <ListPanel title={`料理推荐 (${recipes.length})`} contentClassName={RECOMMENDATION_SCROLL_AREA}>
               {recipes.length === 0 && <EmptyRow text="暂无满足点单的料理" />}
               <div className="space-y-2">
                 {recipes.map((recipe, index) => (
@@ -1485,6 +3098,7 @@ function ModRarePanel({
                     recipe={recipe}
                     index={index}
                     ownedIngredientQty={runtimeSets.ownedIngredientQty}
+                    ingredientIdByName={dataIndexes.ingredientIdByName}
                     favorite={findRecipeFavorite(favorites, selectedCustomer.id, foodTag, recipe)}
                     favoriteKey={recipeFavoriteKey(selectedCustomer.id, foodTag, recipe)}
                     favoriteBusyKey={favoriteBusyKey}
@@ -1494,7 +3108,7 @@ function ModRarePanel({
               </div>
             </ListPanel>
 
-            <ListPanel title={`酒水推荐 (${beverages.length})`}>
+            <ListPanel title={`酒水推荐 (${beverages.length})`} contentClassName={RECOMMENDATION_SCROLL_AREA}>
               {beverages.length === 0 && <EmptyRow text="暂无满足点单的酒水" />}
               <div className="space-y-2">
                 {beverages.map((beverage, index) => (
@@ -1524,6 +3138,8 @@ function ModServicePanel({
   detectedPlace,
   recommendations,
   recommendationIssues,
+  data,
+  performanceMs,
   runtimeSets,
   uiPinningStatus,
   uiPinningTarget,
@@ -1532,17 +3148,36 @@ function ModServicePanel({
   favoriteError,
   autoPrepBusy,
   autoPrepMessage,
+  autoPrepPaused,
+  rareOrderDiagnostics,
   autoPrepPreferences,
+  recipeLimit,
+  beverageLimit,
+  normalOrderBusy,
+  normalOrderMessage,
+  normalOrderPausedCount,
+  normalOrderDiagnostics,
+  normalBusiness,
+  dismissRareOrderBusyKey,
+  dismissRareOrderError,
+  onRecipeLimitChange,
+  onBeverageLimitChange,
   onPreferenceChange,
   onToggleRecipeFavorite,
   onToggleBeverageFavorite,
+  onRetryRareAutomationOrder,
+  onResetRareAutomationOrder,
+  onDismissRareOrder,
   onEnterFocusMode,
+  showDebugDetails,
 }: {
   runtime: RecommendationStateSnapshot | null;
   night: NightBusinessContext | null;
   detectedPlace: TPlace | null;
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
+  data: RecommendationDataSet;
+  performanceMs?: Record<string, number>;
   runtimeSets: RuntimeSets | null;
   uiPinningStatus: string;
   uiPinningTarget: GameUiPinningTarget | null;
@@ -1551,40 +3186,66 @@ function ModServicePanel({
   favoriteError: string;
   autoPrepBusy: boolean;
   autoPrepMessage: string;
+  autoPrepPaused: boolean;
+  rareOrderDiagnostics: RareAutoOrderDiagnostic[];
   autoPrepPreferences: CompanionPreferences;
+  recipeLimit: number;
+  beverageLimit: number;
+  normalOrderBusy: boolean;
+  normalOrderMessage: string;
+  normalOrderPausedCount: number;
+  normalOrderDiagnostics: NormalAutoOrderDiagnostic[];
+  normalBusiness: NormalBusinessContext | null;
+  dismissRareOrderBusyKey: string;
+  dismissRareOrderError: string;
+  onRecipeLimitChange: (value: number) => void;
+  onBeverageLimitChange: (value: number) => void;
   onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
   onToggleRecipeFavorite: ToggleRecipeFavorite;
   onToggleBeverageFavorite: ToggleBeverageFavorite;
+  onRetryRareAutomationOrder: (orderKey: string) => void;
+  onResetRareAutomationOrder: (orderKey: string) => void;
+  onDismissRareOrder: (order: NightBusinessOrder) => void;
   onEnterFocusMode: () => void;
+  showDebugDetails: boolean;
 }) {
+  const dataIndexes = useMemo(() => buildRecommendationDataIndexes(data), [data]);
   const activeGuests = night?.activeRareGuests ?? [];
   const orders = useMemo(
     () => sortNightOrders(night?.orders ?? [], autoPrepPreferences.serviceOrderSortMode),
     [autoPrepPreferences.serviceOrderSortMode, night?.orders],
   );
+  const automationResources = useMemo(
+    () => buildAutomationResourceOverview({
+      runtime,
+      recommendations,
+      favorites,
+      preferences: autoPrepPreferences,
+      normalOrders: normalBusiness?.orders ?? [],
+      rareDiagnostics: rareOrderDiagnostics,
+      normalDiagnostics: normalOrderDiagnostics,
+      data,
+    }),
+    [
+      autoPrepPreferences,
+      favorites,
+      normalBusiness?.orders,
+      normalOrderDiagnostics,
+      rareOrderDiagnostics,
+      recommendations,
+      runtime,
+      data,
+    ],
+  );
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap justify-end gap-2">
-        <Button size="sm" onClick={onEnterFocusMode}>
-          稀客订单专注模式
-        </Button>
-      </div>
-
-      {autoPrepPreferences.automationEnabled && (
-        <ServiceAutomationPanel
-          preferences={autoPrepPreferences}
-          busy={autoPrepBusy}
-          message={autoPrepMessage}
-          onPreferenceChange={onPreferenceChange}
-        />
-      )}
-
       <Card>
         <CardContent className={`${DENSE_THREE_COLUMN_GRID} p-4 text-sm`}>
           <InfoLine label="经营场景" value={detectedPlace ?? night?.placeLabel ?? '无经营场景'} />
-          <InfoLine label="扫描状态" value={night?.source || '暂无'} />
           <InfoLine label="推荐数据" value={runtime ? '已就绪' : '暂不可用'} />
+          {showDebugDetails && <InfoLine label="扫描状态" value={night?.source || '暂无'} />}
+          {showDebugDetails && <InfoLine label="性能耗时" value={formatPerformanceMs(performanceMs)} mono />}
           <InfoLine
             label="已摆放厨具"
             value={runtimeSets?.hasCookerSnapshot
@@ -1592,58 +3253,297 @@ function ModServicePanel({
               : runtime?.placedCookerStatus ? `未读取 · ${runtime.placedCookerStatus}` : '未读取'}
           />
           <InfoLine label="目标厨具" value={uiPinningTarget?.cookerName || '暂无'} />
-          <InfoLine label="界面置顶" value={uiPinningStatus || '暂无'} />
+          {showDebugDetails && <InfoLine label="界面置顶" value={uiPinningStatus || '暂无'} />}
         </CardContent>
       </Card>
 
-      <div className={DENSE_TWO_COLUMN_GRID}>
-        <ListPanel title="当前稀客">
-          {activeGuests.length === 0 && <EmptyRow text="暂无稀客" />}
-          {activeGuests.map((guest) => {
-            const fund = formatGuestFund(guest);
-            return (
-              <div key={`${guest.deskCode}-${guest.guestId}-${guest.source}`} className="flex items-center justify-between border-b py-2 text-sm last:border-b-0">
-                <span className="min-w-0 font-medium">
-                  <span>{guest.guestName}</span>
-                  {fund && <span className="ml-1 text-muted-foreground">· 金钱 {fund}</span>}
+      <SpecialRuleNotice rules={runtime?.specialRules} status={runtime?.specialRuleStatus} showDebugDetails={showDebugDetails} />
+
+      {autoPrepPreferences.automationEnabled && <AutomationResourcePanel overview={automationResources} />}
+
+      <Tabs defaultValue="rare" className="space-y-4">
+        <TabsList className="grid h-9 w-full grid-cols-2">
+          <TabsTrigger value="rare" className={MOD_TAB_TRIGGER_CLASS}>
+            稀客
+          </TabsTrigger>
+          <TabsTrigger value="normal" className={MOD_TAB_TRIGGER_CLASS}>
+            普客
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="rare" className="space-y-4">
+          {autoPrepPreferences.automationEnabled && (
+            <RareServiceAutomationPanel
+              preferences={autoPrepPreferences}
+              busy={autoPrepBusy}
+              message={autoPrepMessage}
+              paused={autoPrepPaused}
+              diagnostics={rareOrderDiagnostics}
+              showDebugDetails={showDebugDetails}
+              onPreferenceChange={onPreferenceChange}
+              onRetryOrder={onRetryRareAutomationOrder}
+              onResetOrder={onResetRareAutomationOrder}
+            />
+          )}
+
+          <div className={DENSE_TWO_COLUMN_GRID}>
+            <ListPanel title="当前稀客" contentClassName="min-h-[9rem]">
+              {activeGuests.length === 0 && <EmptyRow text="暂无稀客" />}
+              {activeGuests.map((guest) => {
+                const fund = formatGuestFund(guest);
+                return (
+                  <div key={`${guest.deskCode}-${guest.guestId}-${guest.source}`} className="flex items-center justify-between border-b py-2 text-sm last:border-b-0">
+                    <span className="min-w-0 font-medium">
+                      <span>{guest.guestName}</span>
+                      {fund && <span className="ml-1 text-muted-foreground">· 金钱 {fund}</span>}
+                    </span>
+                    <span className="text-muted-foreground">
+                      桌 {formatDesk(guest.deskCode)}
+                      {showDebugDetails ? ` · ${guest.source}` : ''}
+                    </span>
+                  </div>
+                );
+              })}
+            </ListPanel>
+
+            <ListPanel title="当前稀客点单" contentClassName="min-h-[9rem]">
+              {orders.length === 0 && <EmptyRow text={night?.error || '暂无点单'} />}
+              {dismissRareOrderError && <EmptyRow text={dismissRareOrderError} />}
+              {orders.map((order) => {
+                const orderKey = buildNightBusinessOrderKey(order);
+                const busy = dismissRareOrderBusyKey === orderKey;
+                return (
+                  <div key={orderKey} className="border-b py-2 text-sm last:border-b-0">
+                    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
+                      <div className="min-w-0">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="truncate font-medium" title={order.guestName}>{order.guestName}</span>
+                          <span className="shrink-0 text-muted-foreground">桌 {formatDesk(order.deskCode)}</span>
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-1.5">
+                          <Badge variant="outline">
+                            料理 {order.foodTag || '无'}{showDebugDetails ? ` (${order.foodTagId})` : ''}
+                          </Badge>
+                          <Badge variant="outline">
+                            酒水 {order.beverageTag || '无'}{showDebugDetails ? ` (${order.beverageTagId})` : ''}
+                          </Badge>
+                          {showDebugDetails && <Badge variant="secondary">{order.source}</Badge>}
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="size-8 text-muted-foreground hover:text-destructive"
+                        title="删除这笔稀客订单缓存"
+                        aria-label="删除这笔稀客订单缓存"
+                        disabled={busy}
+                        data-gamepad-clickable="true"
+                        data-gamepad-focus-key={`rare-order-dismiss:${orderKey}`}
+                        onClick={() => onDismissRareOrder(order)}
+                      >
+                        <Trash2 className="size-4" />
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </ListPanel>
+          </div>
+
+          <CurrentOrderRecommendations
+            recommendations={recommendations}
+            recommendationIssues={recommendationIssues}
+            runtimeSets={runtimeSets}
+            dataIndexes={dataIndexes}
+            orderSortMode={autoPrepPreferences.serviceOrderSortMode}
+            showDebugDetails={showDebugDetails}
+            favorites={favorites}
+            favoriteBusyKey={favoriteBusyKey}
+            favoriteError={favoriteError}
+            action={(
+              <ServiceRecommendationHeaderActions
+                recipeLimit={recipeLimit}
+                beverageLimit={beverageLimit}
+                onRecipeLimitChange={onRecipeLimitChange}
+                onBeverageLimitChange={onBeverageLimitChange}
+                onEnterFocusMode={onEnterFocusMode}
+              />
+            )}
+            recipeLimit={recipeLimit}
+            beverageLimit={beverageLimit}
+            onToggleRecipeFavorite={onToggleRecipeFavorite}
+            onToggleBeverageFavorite={onToggleBeverageFavorite}
+          />
+        </TabsContent>
+
+        <TabsContent value="normal" className="space-y-4">
+          {autoPrepPreferences.automationEnabled && (
+            <NormalServiceAutomationPanel
+              preferences={autoPrepPreferences}
+              busy={normalOrderBusy}
+              message={normalOrderMessage}
+              pausedCount={normalOrderPausedCount}
+              diagnostics={normalOrderDiagnostics}
+              showDebugDetails={showDebugDetails}
+              onPreferenceChange={onPreferenceChange}
+            />
+          )}
+
+          <ListPanel title={`${showDebugDetails ? '普客订单诊断' : '普客订单'} (${normalBusiness?.orders.length ?? 0})`} contentClassName="min-h-[18rem]">
+            {autoPrepPreferences.automationEnabled && autoPrepPreferences.autoNormalOrderEnabled ? (
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
+                <span className="text-muted-foreground">
+                  普客自动化会按开关处理普客订单，可执行送达酒水、制作料理、收至保温箱、送达料理和完成订单。
                 </span>
-                <span className="text-muted-foreground">桌 {formatDesk(guest.deskCode)} · {guest.source}</span>
+                {normalOrderBusy && <Badge variant="secondary">处理中</Badge>}
               </div>
-            );
-          })}
-        </ListPanel>
+            ) : autoPrepPreferences.automationEnabled ? (
+              <div className="mb-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                开启“启用普客处理”后，可按阶段开关自动处理普客订单。
+              </div>
+            ) : (
+              <div className="mb-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                设置页开启“启用自动化（实验性）”后，可启用普客订单自动处理。
+              </div>
+            )}
+            {normalOrderMessage && !autoPrepPreferences.automationEnabled && (
+              <div className="mb-3 whitespace-pre-line rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+                {normalOrderMessage}
+              </div>
+            )}
+            {!normalBusiness && <EmptyRow text="普客订单只在经营场景中读取" />}
+            {normalBusiness?.error && <EmptyRow text={normalBusiness.error} />}
+            {normalBusiness?.orders.length === 0 && !normalBusiness.error && (
+              <EmptyRow text={normalBusiness.source || '暂无普客订单'} />
+            )}
+            {sortNormalOrders(normalBusiness?.orders ?? []).map((order) => (
+              <div
+                key={`${order.deskCode}-${order.guestName}-${order.foodId}-${order.beverageId}-${order.source}`}
+                className="border-b py-2 text-sm last:border-b-0"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="min-w-0 truncate font-medium" title={order.guestName || '普客'}>
+                    {order.guestName || '普客'}
+                  </span>
+                  <span className="shrink-0 text-muted-foreground">桌 {formatDesk(order.deskCode)}</span>
+                </div>
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  <Badge variant="outline">料理 {order.foodName || `#${order.foodId}`}</Badge>
+                  <Badge variant="outline">酒水 {order.beverageName || `#${order.beverageId}`}</Badge>
+                  {order.hasServedFood && <Badge variant="secondary">已有料理</Badge>}
+                  {order.hasServedBeverage && <Badge variant="secondary">已有酒水</Badge>}
+                  {order.isFulfilled && <Badge variant="secondary">已满足</Badge>}
+                  {showDebugDetails && <Badge variant="secondary">{order.source}</Badge>}
+                </div>
+              </div>
+            ))}
+          </ListPanel>
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
 
-        <ListPanel title="当前稀客点单">
-          {orders.length === 0 && <EmptyRow text={night?.error || '暂无点单'} />}
-          {orders.map((order) => (
-            <div key={`${order.deskCode}-${order.guestId}-${order.foodTagId}-${order.beverageTagId}`} className="border-b py-2 text-sm last:border-b-0">
-              <div className="flex items-center justify-between gap-3">
-                <span className="font-medium">{order.guestName}</span>
-                <span className="text-muted-foreground">桌 {formatDesk(order.deskCode)}</span>
-              </div>
-              <div className="mt-1 flex flex-wrap gap-1.5">
-                <Badge variant="outline">料理 {order.foodTag || '无'} ({order.foodTagId})</Badge>
-                <Badge variant="outline">酒水 {order.beverageTag || '无'} ({order.beverageTagId})</Badge>
-                <Badge variant="secondary">{order.source}</Badge>
-              </div>
-            </div>
+function AutomationResourcePanel({ overview }: { overview: AutomationResourceOverview }) {
+  const hasCookerRows = overview.cookers.length > 0;
+  const hasTrayRows = overview.tray.length > 0;
+
+  return (
+    <div className={DENSE_TWO_COLUMN_GRID}>
+      <ListPanel title="厨具预约">
+        {!hasCookerRows && <EmptyRow text="暂无厨具预约" />}
+        <div className="space-y-2">
+          {overview.cookers.map((row) => (
+            <ResourceUsageRow
+              key={row.key}
+              label={row.label}
+              value={`${row.normalReserved + row.rareReserved}/${row.capacity}`}
+              status={row.normalReserved + row.rareReserved > row.capacity ? 'over' : row.normalReserved + row.rareReserved > 0 ? 'active' : 'idle'}
+              details={[
+                row.normalReserved > 0 ? `普客 ${row.normalReserved}` : '',
+                row.rareReserved > 0 ? `稀客 ${row.rareReserved}` : '',
+                ...row.labels.slice(0, 2),
+              ].filter(Boolean)}
+              overflow={Math.max(0, row.labels.length - 2)}
+            />
           ))}
-        </ListPanel>
-      </div>
+        </div>
+      </ListPanel>
 
-      {(recommendations.length > 0 || recommendationIssues.length > 0) && (
-        <CurrentOrderRecommendations
-          recommendations={recommendations}
-          recommendationIssues={recommendationIssues}
-          runtimeSets={runtimeSets}
-          orderSortMode={autoPrepPreferences.serviceOrderSortMode}
-          favorites={favorites}
-          favoriteBusyKey={favoriteBusyKey}
-          favoriteError={favoriteError}
-          onToggleRecipeFavorite={onToggleRecipeFavorite}
-          onToggleBeverageFavorite={onToggleBeverageFavorite}
-        />
+      <ListPanel title="送餐盘压力">
+        {!hasTrayRows && <EmptyRow text="暂无送餐盘占用" />}
+        <div className="space-y-2">
+          {overview.tray.map((row) => (
+            <ResourceUsageRow
+              key={row.key}
+              label={row.label}
+              value={String(row.count)}
+              status={row.count > 0 ? 'active' : 'idle'}
+              details={row.labels.slice(0, 3)}
+              overflow={Math.max(0, row.labels.length - 3)}
+            />
+          ))}
+        </div>
+      </ListPanel>
+    </div>
+  );
+}
+
+function ResourceUsageRow({
+  label,
+  value,
+  status,
+  details,
+  overflow,
+}: {
+  label: string;
+  value: string;
+  status: 'active' | 'idle' | 'over';
+  details: string[];
+  overflow: number;
+}) {
+  const badgeVariant = status === 'over' ? 'destructive' : status === 'active' ? 'secondary' : 'outline';
+  return (
+    <div className="rounded-md border border-border bg-background/70 px-2.5 py-2 text-sm">
+      <div className="flex items-center justify-between gap-3">
+        <span className="font-medium text-foreground">{label}</span>
+        <Badge variant={badgeVariant}>{value}</Badge>
+      </div>
+      {details.length > 0 && (
+        <div className="mt-1 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
+          {details.map((item, index) => (
+            <span key={`${item}-${index}`} className="max-w-full truncate rounded-sm border border-border px-1.5 py-0.5">
+              {item}
+            </span>
+          ))}
+          {overflow > 0 && <span className="px-1.5 py-0.5">+{overflow}</span>}
+        </div>
       )}
+    </div>
+  );
+}
+
+function ServiceRecommendationHeaderActions({
+  recipeLimit,
+  beverageLimit,
+  onRecipeLimitChange,
+  onBeverageLimitChange,
+  onEnterFocusMode,
+}: {
+  recipeLimit: number;
+  beverageLimit: number;
+  onRecipeLimitChange: (value: number) => void;
+  onBeverageLimitChange: (value: number) => void;
+  onEnterFocusMode: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-end gap-2">
+      <FocusLimitInput label="料理" value={recipeLimit} onChange={onRecipeLimitChange} />
+      <FocusLimitInput label="酒水" value={beverageLimit} onChange={onBeverageLimitChange} />
+      <Button size="sm" onClick={onEnterFocusMode}>
+        稀客订单专注模式
+      </Button>
     </div>
   );
 }
@@ -1652,7 +3552,9 @@ function ServiceFocusPage({
   recommendations,
   recommendationIssues,
   runtimeSets,
+  dataIndexes,
   orderSortMode,
+  showDebugDetails,
   favorites,
   favoriteBusyKey,
   favoriteError,
@@ -1669,7 +3571,9 @@ function ServiceFocusPage({
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
   runtimeSets: RuntimeSets | null;
+  dataIndexes: ReturnType<typeof buildRecommendationDataIndexes>;
   orderSortMode: ServiceOrderSortMode;
+  showDebugDetails: boolean;
   favorites: FavoriteData;
   favoriteBusyKey: string;
   favoriteError: string;
@@ -1708,7 +3612,7 @@ function ServiceFocusPage({
             value={beverageLimit}
             onChange={onBeverageLimitChange}
           />
-          <Button size="sm" variant="outline" onClick={onExit}>退出专注模式</Button>
+          <Button size="sm" onClick={onExit}>退出专注模式</Button>
         </div>
       </div>
 
@@ -1717,7 +3621,9 @@ function ServiceFocusPage({
           recommendations={recommendations}
           recommendationIssues={recommendationIssues}
           runtimeSets={runtimeSets}
+          dataIndexes={dataIndexes}
           orderSortMode={orderSortMode}
+          showDebugDetails={showDebugDetails}
           favorites={favorites}
           favoriteBusyKey={favoriteBusyKey}
           favoriteError={favoriteError}
@@ -1738,10 +3644,13 @@ function CurrentOrderRecommendations({
   recommendations,
   recommendationIssues,
   runtimeSets,
+  dataIndexes,
   orderSortMode,
+  showDebugDetails = false,
   favorites,
   favoriteBusyKey,
   favoriteError,
+  action,
   compact = false,
   recipeLimit = MAX_RECOMMENDATION_ROWS,
   beverageLimit = MAX_RECOMMENDATION_ROWS,
@@ -1751,10 +3660,13 @@ function CurrentOrderRecommendations({
   recommendations: OrderRecommendation[];
   recommendationIssues: RecommendationIssue[];
   runtimeSets: RuntimeSets | null;
+  dataIndexes: ReturnType<typeof buildRecommendationDataIndexes>;
   orderSortMode: ServiceOrderSortMode;
+  showDebugDetails?: boolean;
   favorites: FavoriteData;
   favoriteBusyKey: string;
   favoriteError: string;
+  action?: ReactNode;
   compact?: boolean;
   recipeLimit?: number;
   beverageLimit?: number;
@@ -1770,12 +3682,17 @@ function CurrentOrderRecommendations({
   );
 
   return (
-    <ListPanel title="当前点单推荐">
+    <ListPanel
+      title="当前点单推荐"
+      action={action}
+      contentClassName={compact ? 'min-h-[24rem] max-h-[calc(100vh-12rem)] overflow-auto pr-1' : 'min-h-[32rem] max-h-[calc(100vh-20rem)] overflow-auto pr-1'}
+    >
       {favoriteError && (
         <div className="mb-2 rounded-md border border-destructive/30 px-3 py-2 text-sm text-destructive">
           {favoriteError}
         </div>
       )}
+      {rows.length === 0 && <EmptyRow text="暂无当前稀客点单推荐" />}
       <div className={compact ? 'space-y-2' : 'space-y-4'}>
         {rows.map((row) => {
           if (row.kind === 'issue') {
@@ -1796,11 +3713,13 @@ function CurrentOrderRecommendations({
               key={`${row.item.order.deskCode}-${row.item.order.guestId}-${row.item.order.foodTagId}-${row.item.order.beverageTagId}`}
               item={row.item}
               runtimeSets={runtimeSets}
+              dataIndexes={dataIndexes}
               favorites={favorites}
               favoriteBusyKey={favoriteBusyKey}
               compact={compact}
               recipeLimit={recipeLimit}
               beverageLimit={beverageLimit}
+              showDebugDetails={showDebugDetails}
               onToggleRecipeFavorite={onToggleRecipeFavorite}
               onToggleBeverageFavorite={onToggleBeverageFavorite}
             />
@@ -1811,17 +3730,56 @@ function CurrentOrderRecommendations({
   );
 }
 
+function SpecialRuleNotice({
+  rules,
+  status,
+  showDebugDetails,
+}: {
+  rules?: RuntimeSpecialRuleContext[];
+  status?: string;
+  showDebugDetails: boolean;
+}) {
+  const activeRules = (rules ?? []).filter((rule) => rule.status.startsWith('active'));
+  if (activeRules.length === 0) return null;
+
+  return (
+    <div className="rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-sm text-amber-950 dark:border-amber-400/30 dark:bg-amber-400/10 dark:text-amber-100">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-medium">特殊规则</span>
+        {activeRules.map((rule) => {
+          const tags = rule.foodTagTargets.map((target) => target.name).filter(Boolean);
+          return (
+            <span key={rule.ruleId} className="inline-flex items-center gap-1">
+              <span>{rule.displayName}</span>
+              <span className="text-xs opacity-80">
+                {tags.length > 0
+                  ? `目标 ${tags.join(rule.matchMode === 'all' ? ' + ' : ' / ')}`
+                  : '等待目标 Tag'}
+              </span>
+            </span>
+          );
+        })}
+      </div>
+      {showDebugDetails && status && (
+        <div className="mt-1 break-all text-xs opacity-75">{status}</div>
+      )}
+    </div>
+  );
+}
+
 function ModInventoryPanel({
   endpoint,
   apiToken,
   runtimeSets,
   runtimeLoaded,
+  data,
   onRefresh,
 }: {
   endpoint: string;
   apiToken: string;
   runtimeSets: RuntimeSets | null;
   runtimeLoaded: boolean;
+  data: RecommendationDataSet;
   onRefresh: () => Promise<void>;
 }) {
   const [search, setSearch] = useState('');
@@ -1830,12 +3788,31 @@ function ModInventoryPanel({
 
   const normalizedSearch = search.trim().toLowerCase();
   const ingredientRows = useMemo(
-    () => filterInventoryItems(INGREDIENTS, normalizedSearch),
-    [normalizedSearch],
+    () => filterInventoryItems(data.ingredients, normalizedSearch),
+    [data.ingredients, normalizedSearch],
   );
   const beverageRows = useMemo(
-    () => filterInventoryItems(BEVERAGES.filter((beverage) => beverage.id >= 0), normalizedSearch),
-    [normalizedSearch],
+    () => filterInventoryItems(data.beverages.filter((beverage) => beverage.id >= 0), normalizedSearch),
+    [data.beverages, normalizedSearch],
+  );
+  const bulkIngredientIds = useMemo(
+    () => runtimeSets
+      ? data.ingredients
+        .filter((ingredient) => ingredient.id >= 0 && runtimeSets.ingredientIds.has(ingredient.id))
+        .map((ingredient) => ingredient.id)
+      : [],
+    [data.ingredients, runtimeSets],
+  );
+  const bulkBeverageIds = useMemo(
+    () => runtimeSets
+      ? data.beverages
+        .filter((beverage) => {
+          if (beverage.id < 0 || !runtimeSets.beverageIds.has(beverage.id)) return false;
+          return (runtimeSets.ownedBeverageQty[beverage.id] ?? 0) >= 0;
+        })
+        .map((beverage) => beverage.id)
+      : [],
+    [data.beverages, runtimeSets],
   );
 
   const applyQuantity = useCallback(async (kind: 'ingredient' | 'beverage', id: number, quantity: number) => {
@@ -1848,6 +3825,31 @@ function ModInventoryPanel({
       const result = await writeInventoryQuantity(endpoint, apiToken, kind, id, targetQuantity);
       if (!result.ok) throw new Error(result.error || '库存修改失败');
       setMessage(`${kind === 'ingredient' ? '材料' : '酒水'} #${id}: ${result.previousQuantity} -> ${result.quantity}`);
+      await onRefresh();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyKey('');
+    }
+  }, [apiToken, endpoint, onRefresh]);
+
+  const applyBulkQuantity = useCallback(async (
+    kind: 'ingredient' | 'beverage',
+    ids: number[],
+    quantity: number,
+  ) => {
+    const key = inventoryBulkKey(kind);
+    const targetQuantity = normalizeEditableQuantity(quantity);
+    setBusyKey(key);
+    setMessage('');
+
+    try {
+      const result = await writeInventoryBulkQuantity(endpoint, apiToken, kind, ids, targetQuantity);
+      const label = kind === 'ingredient' ? '材料' : '酒水';
+      const suffix = result.failed > 0 && result.errors.length > 0
+        ? `；失败：${result.errors.slice(0, 3).join('；')}`
+        : '';
+      setMessage(`${label}批量设为 ${targetQuantity}：变更 ${result.changed}，未变 ${result.unchanged}，失败 ${result.failed}${suffix}`);
       await onRefresh();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err));
@@ -1870,7 +3872,25 @@ function ModInventoryPanel({
               修改会写入当前游戏运行时库存；请在游戏内保存后再退出。经营中修改可能会和实时消耗同时发生。
             </div>
           </div>
-          <div className="flex min-w-0 items-center gap-2">
+          <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!apiToken || busyKey !== '' || bulkIngredientIds.length === 0}
+              data-gamepad-focus-key="inventory:bulk:ingredient"
+              onClick={() => applyBulkQuantity('ingredient', bulkIngredientIds, 99)}
+            >
+              材料设为 99
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!apiToken || busyKey !== '' || bulkBeverageIds.length === 0}
+              data-gamepad-focus-key="inventory:bulk:beverage"
+              onClick={() => applyBulkQuantity('beverage', bulkBeverageIds, 99)}
+            >
+              酒水设为 99
+            </Button>
             <Input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
@@ -1914,6 +3934,163 @@ function ModInventoryPanel({
   );
 }
 
+function ModTasksPanel({
+  runtimeLoaded,
+  activeDayMapName,
+  activeDayMapLabel,
+  missions,
+  data,
+  inviteScope,
+  inviteBusyKey,
+  inviteAllResult,
+  inviteAllError,
+  showDebugDetails,
+  onInviteScopeChange,
+  onRefreshRareGuestInvitations,
+  onInviteAllRareGuests,
+  onInviteRareGuest,
+}: {
+  runtimeLoaded: boolean;
+  activeDayMapName: string;
+  activeDayMapLabel: string;
+  missions: RuntimeMissionContext | null;
+  data: RecommendationDataSet;
+  inviteScope: RareGuestInvitationScope;
+  inviteBusyKey: string;
+  inviteAllResult: RareGuestInvitationResponse | null;
+  inviteAllError: string;
+  showDebugDetails: boolean;
+  onInviteScopeChange: (scope: RareGuestInvitationScope) => void;
+  onRefreshRareGuestInvitations: () => void;
+  onInviteAllRareGuests: () => void;
+  onInviteRareGuest: (guestId: number) => void;
+}) {
+  const [statusFilters, setStatusFilters] = useState<MissionStatusFilter[]>(DEFAULT_MISSION_STATUS_FILTERS);
+  const [showExtraInfo, setShowExtraInfo] = useState(false);
+  const recipeByFoodId = useMemo(() => buildRecommendationDataIndexes(data).recipeByFoodId, [data]);
+
+  if (!runtimeLoaded) {
+    return <RuntimeUnavailable />;
+  }
+
+  const rows = missions?.availableMissions ?? [];
+  const statusCounts = countMissionStatuses(rows);
+  const filteredRows = rows.filter((mission) => matchesMissionStatusFilter(mission, statusFilters));
+  const toggleStatusFilter = (filter: MissionStatusFilter) => {
+    setStatusFilters((current) => {
+      if (current.includes(filter)) return current.filter((item) => item !== filter);
+      return [...current, filter];
+    });
+  };
+
+  return (
+    <div className="space-y-4">
+      <RareGuestInvitationPanel
+        runtimeLoaded={runtimeLoaded}
+        activeDayMapName={activeDayMapName}
+        activeDayMapLabel={activeDayMapLabel}
+        inviteScope={inviteScope}
+        inviteBusyKey={inviteBusyKey}
+        inviteAllResult={inviteAllResult}
+        inviteAllError={inviteAllError}
+        showDebugDetails={showDebugDetails}
+        onInviteScopeChange={onInviteScopeChange}
+        onRefreshRareGuestInvitations={onRefreshRareGuestInvitations}
+        onInviteAllRareGuests={onInviteAllRareGuests}
+        onInviteRareGuest={onInviteRareGuest}
+      />
+
+      <Card>
+        <CardContent className={`${DENSE_THREE_COLUMN_GRID} p-4 text-sm`}>
+          <InfoLine label="任务数据" value={missions ? '已读取' : '暂不可用'} />
+          <InfoLine label="可推进任务" value={`${filteredRows.length}/${rows.length} 个`} />
+          {showDebugDetails && <InfoLine label="扫描状态" value={missions?.source || missions?.error || '暂无'} />}
+        </CardContent>
+      </Card>
+
+      <ListPanel
+        title={`可推进任务 (${filteredRows.length})`}
+        action={(
+          <div className="flex flex-wrap gap-1.5">
+            {showDebugDetails && (
+              <Button
+                type="button"
+                size="sm"
+                variant={showExtraInfo ? 'default' : 'outline'}
+                className="h-8 px-2.5"
+                aria-pressed={showExtraInfo}
+                data-gamepad-clickable="true"
+                onClick={() => setShowExtraInfo((value) => !value)}
+              >
+                显示额外信息
+              </Button>
+            )}
+            {MISSION_STATUS_FILTER_OPTIONS.map((filter) => (
+              <Button
+                key={filter}
+                type="button"
+                size="sm"
+                variant={statusFilters.includes(filter) ? 'default' : 'outline'}
+                className="h-8 px-2.5"
+                data-gamepad-clickable="true"
+                onClick={() => toggleStatusFilter(filter)}
+              >
+                {getMissionStatusFilterLabel(filter)} {statusCounts[filter]}
+              </Button>
+            ))}
+          </div>
+        )}
+      >
+        {!missions && <EmptyRow text="任务快照暂不可用" />}
+        {missions?.error && <EmptyRow text={missions.error} />}
+        {rows.length === 0 && missions && !missions.error && (
+          <EmptyRow text="当前进度未读取到可接或正在推进的任务" />
+        )}
+        {rows.length > 0 && filteredRows.length === 0 && (
+          <EmptyRow text="当前筛选条件下没有任务" />
+        )}
+        {filteredRows.map((mission) => {
+          const places = mission.places?.filter(Boolean) ?? [];
+          const status = normalizeMissionStatus(mission);
+          const shouldShowMissingPlace = places.length === 0 && status === 'available';
+          const displayTitle = getMissionDisplayTitle(mission, showDebugDetails && showExtraInfo);
+          return (
+          <div
+            key={`${mission.characterLabel}-${mission.label}`}
+            className="border-b py-2 text-sm last:border-b-0"
+            data-gamepad-row="true"
+            data-gamepad-row-key={`task:${mission.characterLabel}:${mission.label}`}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <span className="min-w-0 truncate font-medium" title={showDebugDetails && showExtraInfo ? mission.title || mission.label : displayTitle}>
+                {displayTitle}
+              </span>
+              <span className="shrink-0 text-muted-foreground">{mission.characterName || mission.characterLabel}</span>
+            </div>
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {showDebugDetails && showExtraInfo && (
+                <>
+                  <Badge variant="outline">{mission.label}</Badge>
+                  <Badge variant="secondary">{mission.source}</Badge>
+                </>
+              )}
+              <Badge variant={status === 'fulfilled' ? 'default' : status === 'tracking' ? 'secondary' : 'outline'}>
+                {getMissionStatusFilterLabel(status)}
+              </Badge>
+              {mission.targetRecipeId != null && (
+                <Badge variant="outline">料理 {mission.targetRecipeName || recipeByFoodId.get(mission.targetRecipeId)?.name || `#${mission.targetRecipeId}`}</Badge>
+              )}
+              {places.map((place) => <Badge key={place} variant="outline">场景 {place}</Badge>)}
+              {shouldShowMissingPlace && <Badge variant="outline">场景 未读取</Badge>}
+            </div>
+          </div>
+          );
+        })}
+      </ListPanel>
+    </div>
+  );
+}
+
 function InventoryEditColumn<TItem extends IIngredient | IBeverage>({
   title,
   kind,
@@ -1939,7 +4116,7 @@ function InventoryEditColumn<TItem extends IIngredient | IBeverage>({
           const key = inventoryDraftKey(kind, item.id);
           const quantity = ownedQty[item.id] ?? 0;
           const editable = Boolean(apiToken) && item.id >= 0 && quantity >= 0;
-          const busy = busyKey === key;
+          const busy = busyKey === key || busyKey === inventoryBulkKey(kind);
 
           return (
             <div
@@ -1956,6 +4133,15 @@ function InventoryEditColumn<TItem extends IIngredient | IBeverage>({
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!editable || busy}
+                    data-gamepad-focus-key={`inventory:${key}:sub10`}
+                    onClick={() => onApply(kind, item.id, quantity - 10)}
+                  >
+                    -10
+                  </Button>
                   <Button
                     size="sm"
                     variant="outline"
@@ -1987,11 +4173,21 @@ function InventoryEditColumn<TItem extends IIngredient | IBeverage>({
 function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: string }) {
   const [settings, setSettings] = useState<LocalApiLogSettings | null>(null);
   const [logs, setLogs] = useState<LocalApiLogs | null>(null);
+  const [automationLogs, setAutomationLogs] = useState<LocalApiLogs | null>(null);
+  const [automationLogFilter, setAutomationLogFilter] = useState('');
+  const [diagnosticPackage, setDiagnosticPackage] = useState<DiagnosticPackageResponse | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
 
   const refreshLogs = useCallback(async () => {
+    if (!apiToken) {
+      setSettings(null);
+      setLogs(null);
+      setAutomationLogs(null);
+      setError('未收到本地 API Token。');
+      return;
+    }
     const abortController = new AbortController();
     const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
     setLoading(true);
@@ -1999,7 +4195,17 @@ function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: stri
     try {
       const nextSettings = await readLogSettings(endpoint, apiToken, abortController.signal);
       setSettings(nextSettings);
-      setLogs(nextSettings.logAccessEnabled ? await readLogs(endpoint, apiToken, abortController.signal) : null);
+      if (nextSettings.logAccessEnabled) {
+        const [nextLogs, nextAutomationLogs] = await Promise.all([
+          readLogs(endpoint, apiToken, abortController.signal),
+          readAutomationLogs(endpoint, apiToken, abortController.signal),
+        ]);
+        setLogs(nextLogs);
+        setAutomationLogs(nextAutomationLogs);
+      } else {
+        setLogs(null);
+        setAutomationLogs(null);
+      }
       setError('');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -2017,11 +4223,18 @@ function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: stri
     try {
       const nextSettings = await writeLogSettings(endpoint, apiToken, next, abortController.signal);
       setSettings(nextSettings);
-      if (!nextSettings.logAccessEnabled) setLogs(null);
+      if (!nextSettings.logAccessEnabled) {
+        setLogs(null);
+        setAutomationLogs(null);
+      }
       setError('');
       if (nextSettings.logAccessEnabled) {
-        const nextLogs = await readLogs(endpoint, apiToken, abortController.signal);
+        const [nextLogs, nextAutomationLogs] = await Promise.all([
+          readLogs(endpoint, apiToken, abortController.signal),
+          readAutomationLogs(endpoint, apiToken, abortController.signal),
+        ]);
         setLogs(nextLogs);
+        setAutomationLogs(nextAutomationLogs);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -2031,7 +4244,7 @@ function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: stri
     }
   }, [apiToken, endpoint]);
 
-  const openFolder = useCallback(async (target: 'log' | 'diagnostics') => {
+  const openFolder = useCallback(async (target: 'log' | 'diagnostics' | 'automation') => {
     const abortController = new AbortController();
     const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
     setActionLoading(true);
@@ -2048,22 +4261,64 @@ function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: stri
     }
   }, [apiToken, endpoint]);
 
+  const exportDiagnostics = useCallback(async () => {
+    const abortController = new AbortController();
+    const timeoutId = window.setTimeout(() => abortController.abort(), 8000);
+    setActionLoading(true);
+
+    try {
+      const result = await exportDiagnosticPackage(endpoint, apiToken, abortController.signal);
+      if (!result.ok) throw new Error(result.error || '导出诊断包失败');
+      setDiagnosticPackage(result);
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      window.clearTimeout(timeoutId);
+      setActionLoading(false);
+    }
+  }, [apiToken, endpoint]);
+
   const visibleLogLines = useMemo(
     () => (logs?.lines ?? []).slice(-MAX_LOG_LINES_IN_VIEW),
     [logs?.lines],
   );
+  const automationLogEntries = useMemo(
+    () => (automationLogs?.lines ?? []).map(parseAutomationLogLine).slice(-MAX_LOG_LINES_IN_VIEW),
+    [automationLogs?.lines],
+  );
+  const filteredAutomationLogEntries = useMemo(() => {
+    const keyword = automationLogFilter.trim().toLowerCase();
+    if (!keyword) return automationLogEntries.slice(-160);
+    return automationLogEntries
+      .filter((entry) => [
+        entry.raw,
+        entry.action,
+        entry.target,
+        entry.desk,
+        entry.orderKey,
+        entry.food,
+        entry.guest,
+        entry.message,
+      ].join(' ').toLowerCase().includes(keyword))
+      .slice(-160);
+  }, [automationLogEntries, automationLogFilter]);
   const configuredLogLimit = settings
     ? `${settings.maxLogLines ?? MAX_LOG_LINES_IN_VIEW} 行 / ${formatBytes(settings.maxLogBytes ?? 0)}`
     : '未知';
   const responseLogLimit = logs
     ? `${logs.maxLines ?? settings?.maxLogLines ?? MAX_LOG_LINES_IN_VIEW} 行 / ${formatBytes(logs.maxBytes ?? settings?.maxLogBytes ?? 0)}`
     : configuredLogLimit;
+  const automationLogNotice = automationLogs?.error
+    || (settings && !settings.logAccessEnabled ? '日志读取已关闭。' : '')
+    || (automationLogs?.exists === false ? '尚未生成 automation-jobs.log。自动化执行开锅、收取或 pending 变化后会写入。' : '');
 
   useEffect(() => {
+    if (!apiToken) return;
     refreshLogs();
     const timer = window.setInterval(refreshLogs, 2000);
     return () => window.clearInterval(timer);
-  }, [refreshLogs]);
+  }, [apiToken, refreshLogs]);
 
   return (
     <div className="space-y-4">
@@ -2102,6 +4357,14 @@ function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: stri
               <FolderOpen className="size-4" />
               打开诊断文件夹
             </Button>
+            <Button size="sm" variant="outline" onClick={() => openFolder('automation')} disabled={!apiToken || actionLoading}>
+              <FolderOpen className="size-4" />
+              打开自动化日志
+            </Button>
+            <Button size="sm" variant="outline" onClick={exportDiagnostics} disabled={!apiToken || actionLoading}>
+              <Archive className="size-4" />
+              导出诊断包
+            </Button>
             <Button size="sm" variant="outline" onClick={refreshLogs} disabled={loading}>
               <RefreshCw className={loading ? 'size-4 animate-spin' : 'size-4'} />
               刷新
@@ -2118,6 +4381,56 @@ function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: stri
           <InfoLine label="窗口缓存" value={`最多显示 ${MAX_LOG_LINES_IN_VIEW} 行`} />
           <InfoLine label="经营诊断" value={settings?.nightBusinessDiagnosticsEnabled ? '开启' : '关闭'} />
           <InfoLine label="诊断日志目录" value={settings?.nightBusinessDiagnosticsDirectory || '未知'} mono />
+          <InfoLine label="最近诊断包" value={diagnosticPackage?.path || '未导出'} mono />
+          <InfoLine label="打包内容" value={diagnosticPackage ? `${diagnosticPackage.files.length} 个文件` : '未导出'} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="space-y-3 p-4">
+          <div className={DENSE_CARD_HEADER_GRID}>
+            <div className="min-w-0">
+              <div className="text-sm font-semibold">自动化作业日志</div>
+              <div className="mt-1 truncate text-xs text-muted-foreground" title={automationLogs?.path || ''}>
+                {automationLogs?.path || '等待日志响应'}
+              </div>
+            </div>
+            <Badge variant={automationLogs?.exists ? 'secondary' : 'outline'}>
+              {automationLogs?.exists ? `${automationLogEntries.length} 行` : '未生成'}
+            </Badge>
+          </div>
+          <Input
+            value={automationLogFilter}
+            onChange={(event) => setAutomationLogFilter(event.target.value)}
+            placeholder="过滤 action / 桌号 / 料理 / orderKey"
+            className="h-8"
+          />
+          {automationLogNotice ? (
+              <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                {automationLogNotice}
+              </div>
+            ) : filteredAutomationLogEntries.length > 0 ? (
+              <div className="max-h-[32vh] space-y-1 overflow-auto pr-1">
+                {filteredAutomationLogEntries.map((entry, index) => (
+                  <div key={`${entry.timestamp}-${index}`} className="rounded-md border border-border bg-background/70 px-2.5 py-2 text-xs">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <Badge variant="outline">{entry.action || 'unknown'}</Badge>
+                      {entry.target && <Badge variant="secondary">{entry.target}</Badge>}
+                      {entry.desk && <span className="text-muted-foreground">桌 {entry.desk}</span>}
+                      <span className="font-mono text-muted-foreground">{entry.timestamp}</span>
+                    </div>
+                    <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1 text-muted-foreground">
+                      <InfoLine label="料理" value={entry.food || '无'} />
+                      <InfoLine label="客人" value={entry.guest || '无'} />
+                    </div>
+                    {entry.orderKey && <div className="mt-1 truncate font-mono text-[11px] text-muted-foreground" title={entry.orderKey}>key {entry.orderKey}</div>}
+                    {entry.message && <div className="mt-1 whitespace-pre-wrap text-foreground">{entry.message}</div>}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyRow text="暂无匹配的自动化日志" />
+            )}
         </CardContent>
       </Card>
 
@@ -2137,6 +4450,8 @@ function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToken: stri
 }
 
 function ModSettingsPanel({
+  endpoint,
+  apiToken,
   preferences,
   themeMode,
   serviceFocusCompact,
@@ -2144,6 +4459,8 @@ function ModSettingsPanel({
   onThemeModeChange,
   onServiceFocusCompactChange,
 }: {
+  endpoint: string;
+  apiToken: string;
   preferences: CompanionPreferences;
   themeMode: ThemeMode;
   serviceFocusCompact: boolean;
@@ -2151,234 +4468,587 @@ function ModSettingsPanel({
   onThemeModeChange: (mode: ThemeMode) => void;
   onServiceFocusCompactChange: (value: boolean) => void;
 }) {
+  const [logSettings, setLogSettings] = useState<LocalApiLogSettings | null>(null);
+  const [consoleBusy, setConsoleBusy] = useState(false);
+  const [consoleError, setConsoleError] = useState('');
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('window');
+
+  const refreshConsoleSettings = useCallback(async () => {
+    if (!apiToken) {
+      setLogSettings(null);
+      return;
+    }
+
+    const abortController = new AbortController();
+    const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
+    try {
+      const nextSettings = await readLogSettings(endpoint, apiToken, abortController.signal);
+      setLogSettings(nextSettings);
+      setConsoleError('');
+    } catch (err) {
+      setConsoleError(err instanceof Error ? err.message : String(err));
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  }, [apiToken, endpoint]);
+
+  const toggleNativeConsole = useCallback(async () => {
+    if (!apiToken) return;
+
+    const abortController = new AbortController();
+    const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
+    setConsoleBusy(true);
+    try {
+      const nextSettings = await writeLogSettings(
+        endpoint,
+        apiToken,
+        { nativeConsole: !(logSettings?.nativeBepInExConsoleEnabled ?? false) },
+        abortController.signal,
+      );
+      setLogSettings(nextSettings);
+      setConsoleError('');
+    } catch (err) {
+      setConsoleError(err instanceof Error ? err.message : String(err));
+    } finally {
+      window.clearTimeout(timeoutId);
+      setConsoleBusy(false);
+    }
+  }, [apiToken, endpoint, logSettings?.nativeBepInExConsoleEnabled]);
+
+  useEffect(() => {
+    if (!preferences.showDebugDetails) return;
+    refreshConsoleSettings();
+  }, [preferences.showDebugDetails, refreshConsoleSettings]);
+
+  useEffect(() => {
+    if (!preferences.showDebugDetails && settingsTab === 'debug') {
+      setSettingsTab('window');
+    }
+  }, [preferences.showDebugDetails, settingsTab]);
+
   return (
-    <div className={DENSE_TWO_COLUMN_GRID}>
-      <ListPanel title="窗口">
-        <div className="space-y-4">
-          <OpacitySlider
-            value={preferences.windowOpacity}
-            onChange={(windowOpacity) => onPreferenceChange({ windowOpacity })}
-          />
-          <SettingChoice
-            label="焦点切换"
-            value={preferences.focusSwitchBehavior}
-            options={[
-              { value: 'hide', label: '隐藏窗口', description: '切回游戏时隐藏伴随窗口。' },
-              { value: 'keep-visible', label: '保持悬浮', description: '只切回游戏焦点，窗口继续置顶显示。' },
-            ]}
-            onChange={(focusSwitchBehavior) => onPreferenceChange({ focusSwitchBehavior })}
-          />
-          <FocusSwitchCooldownInput
-            value={preferences.focusSwitchCooldownMs}
-            onChange={(focusSwitchCooldownMs) => onPreferenceChange({ focusSwitchCooldownMs })}
-          />
-          <SwitchControl
-            label="始终置顶"
-            checked={preferences.alwaysOnTop}
-            onCheckedChange={(alwaysOnTop) => onPreferenceChange({ alwaysOnTop })}
-          />
+    <Tabs value={settingsTab} onValueChange={(value) => setSettingsTab(value as SettingsTab)} className="space-y-4">
+      <TabsList className={preferences.showDebugDetails ? 'grid h-9 w-full grid-cols-5' : 'grid h-9 w-full grid-cols-4'}>
+        <TabsTrigger value="window" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+          窗口
+        </TabsTrigger>
+        <TabsTrigger value="recommendation" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+          推荐
+        </TabsTrigger>
+        <TabsTrigger value="sorting" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+          排序
+        </TabsTrigger>
+        <TabsTrigger value="automation" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+          自动化
+        </TabsTrigger>
+        {preferences.showDebugDetails && (
+          <TabsTrigger value="debug" className={INNER_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+            调试
+          </TabsTrigger>
+        )}
+      </TabsList>
+
+      <TabsContent value="window" className="space-y-4">
+        <div className={DENSE_TWO_COLUMN_GRID}>
+          <ListPanel title="窗口">
+            <div className="space-y-4">
+              <OpacitySlider
+                value={preferences.windowOpacity}
+                onChange={(windowOpacity) => onPreferenceChange({ windowOpacity })}
+              />
+              <SettingChoice
+                label="焦点切换"
+                value={preferences.focusSwitchBehavior}
+                options={[
+                  { value: 'hide', label: '隐藏窗口', description: '切回游戏时隐藏伴随窗口。' },
+                  { value: 'keep-visible', label: '保持悬浮', description: '只切回游戏焦点，窗口继续置顶显示。' },
+                ]}
+                onChange={(focusSwitchBehavior) => onPreferenceChange({ focusSwitchBehavior })}
+              />
+              <FocusSwitchCooldownInput
+                value={preferences.focusSwitchCooldownMs}
+                onChange={(focusSwitchCooldownMs) => onPreferenceChange({ focusSwitchCooldownMs })}
+              />
+              <SwitchControl
+                label="始终置顶"
+                checked={preferences.alwaysOnTop}
+                onCheckedChange={(alwaysOnTop) => onPreferenceChange({ alwaysOnTop })}
+              />
+              <SwitchControl
+                label="鼠标穿透锁定"
+                checked={preferences.mousePassthroughEnabled}
+                onCheckedChange={(mousePassthroughEnabled) => onPreferenceChange({ mousePassthroughEnabled })}
+              />
+              <div className="text-xs text-muted-foreground">
+                开启后伴随窗口会忽略鼠标点击，点击会落到下方游戏或其他窗口；按 F10、F8/RS Click 或托盘菜单可恢复操作。
+              </div>
+            </div>
+          </ListPanel>
+
+          <ListPanel title="显示">
+            <div className="space-y-4">
+              <SettingChoice
+                label="主题"
+                value={themeMode}
+                options={[
+                  { value: 'system', label: '跟随系统', description: '使用系统浅色或深色主题。' },
+                  { value: 'light', label: '浅色', description: '固定使用浅色主题。' },
+                  { value: 'dark', label: '深色', description: '固定使用深色主题。' },
+                ]}
+                onChange={onThemeModeChange}
+              />
+              <SwitchControl
+                label="手柄导航"
+                checked={preferences.gamepadNavigationEnabled}
+                onCheckedChange={(gamepadNavigationEnabled) => onPreferenceChange({ gamepadNavigationEnabled })}
+              />
+              <div className="text-xs text-muted-foreground">
+                关闭手柄导航只影响伴随窗口内的手柄操作；F8 仍可在伴随窗口聚焦时切回游戏。
+              </div>
+              <SwitchControl
+                label="显示调试信息"
+                checked={preferences.showDebugDetails}
+                onCheckedChange={(showDebugDetails) => onPreferenceChange({ showDebugDetails })}
+              />
+              <div className="text-xs text-muted-foreground">
+                开启后显示日志页、扫描状态、运行时来源、性能耗时和订单内部来源；普通使用建议保持关闭。
+              </div>
+            </div>
+          </ListPanel>
+
+          <ListPanel title="稀客专注模式">
+            <div className="space-y-4">
+              <SwitchControl
+                label="默认精简模式"
+                checked={serviceFocusCompact}
+                onCheckedChange={onServiceFocusCompactChange}
+              />
+              <div className="text-xs text-muted-foreground">
+                料理和酒水显示数量在进入专注模式后直接调整，设置会自动记住。
+              </div>
+            </div>
+          </ListPanel>
         </div>
-      </ListPanel>
+      </TabsContent>
 
-      <ListPanel title="显示">
-        <div className="space-y-4">
-          <SettingChoice
-            label="主题"
-            value={themeMode}
-            options={[
-              { value: 'system', label: '跟随系统', description: '使用系统浅色或深色主题。' },
-              { value: 'light', label: '浅色', description: '固定使用浅色主题。' },
-              { value: 'dark', label: '深色', description: '固定使用深色主题。' },
-            ]}
-            onChange={onThemeModeChange}
-          />
-          <SwitchControl
-            label="手柄导航"
-            checked={preferences.gamepadNavigationEnabled}
-            onCheckedChange={(gamepadNavigationEnabled) => onPreferenceChange({ gamepadNavigationEnabled })}
-          />
-          <div className="text-xs text-muted-foreground">
-            关闭手柄导航只影响伴随窗口内的手柄操作；F8 仍可在伴随窗口聚焦时切回游戏。
+      <TabsContent value="recommendation" className="space-y-4">
+        <ListPanel title="推荐">
+          <div className="space-y-4">
+            <SwitchControl
+              label="排除缺失厨具"
+              checked={preferences.filterMissingCookers}
+              onCheckedChange={(filterMissingCookers) => onPreferenceChange({ filterMissingCookers })}
+            />
+            <div className="text-xs text-muted-foreground">
+              进入经营场景后，若读取到已摆放厨具，推荐列表会隐藏当前场景无法制作的料理。
+            </div>
+            <SwitchControl
+              label="优先任务料理"
+              checked={preferences.prioritizeMissionRecipes}
+              onCheckedChange={(prioritizeMissionRecipes) => onPreferenceChange({ prioritizeMissionRecipes })}
+            />
+            <div className="text-xs text-muted-foreground">
+              当前稀客存在经营投喂任务时，把任务指定料理优先放到推荐第一位；只影响排序，不会自动完成任务。
+            </div>
+            <SettingChoice
+              label="经营中订单排序"
+              value={preferences.serviceOrderSortMode}
+              options={[
+                { value: 'ordered', label: '点单顺序', description: '按订单首次出现时间排列，保持当前默认行为。' },
+                { value: 'guest', label: '稀客分组', description: '同一稀客的订单放在一起，组内仍按点单先后排列。' },
+              ]}
+              onChange={(serviceOrderSortMode) => onPreferenceChange({ serviceOrderSortMode })}
+            />
+            <SwitchControl
+              label="游戏界面置顶推荐（实验性）"
+              checked={preferences.gameUiPinningEnabled}
+              onCheckedChange={(gameUiPinningEnabled) => onPreferenceChange({ gameUiPinningEnabled })}
+            />
+            <div className="text-xs text-muted-foreground">
+              打开料理或酒水选择界面时，尝试把当前第一笔订单的推荐材料、料理和酒水排到前面；失败时只记录诊断，不修改库存。
+            </div>
+            <SwitchControl
+              label="目标厨具高亮（实验性）"
+              checked={preferences.cookerHighlightEnabled}
+              onCheckedChange={(cookerHighlightEnabled) => onPreferenceChange({ cookerHighlightEnabled })}
+            />
+            <div className="text-xs text-muted-foreground">
+              经营中有推荐目标厨具时，尝试让对应已摆放厨具显示黄色脉冲高亮；只改变可见提示，不自动操作厨具。
+            </div>
           </div>
+        </ListPanel>
+      </TabsContent>
+
+      <TabsContent value="sorting" className="space-y-4">
+        <div className={DENSE_TWO_COLUMN_GRID}>
+          <ListPanel title="料理排序">
+            <SortRulesControl
+              rules={preferences.recipeSortRules}
+              options={RECIPE_SORT_OPTIONS}
+              onChange={(recipeSortRules) => onPreferenceChange({ recipeSortRules })}
+              onReset={() => onPreferenceChange({ recipeSortRules: buildDefaultSortRules(RECIPE_SORT_OPTIONS) })}
+            />
+          </ListPanel>
+
+          <ListPanel title="酒水排序">
+            <SortRulesControl
+              rules={preferences.beverageSortRules}
+              options={BEVERAGE_SORT_OPTIONS}
+              onChange={(beverageSortRules) => onPreferenceChange({ beverageSortRules })}
+              onReset={() => onPreferenceChange({ beverageSortRules: buildDefaultSortRules(BEVERAGE_SORT_OPTIONS) })}
+            />
+          </ListPanel>
         </div>
-      </ListPanel>
+      </TabsContent>
 
-      <ListPanel title="稀客专注模式">
-        <div className="space-y-4">
-          <SwitchControl
-            label="默认精简模式"
-            checked={serviceFocusCompact}
-            onCheckedChange={onServiceFocusCompactChange}
-          />
-          <div className="text-xs text-muted-foreground">
-            料理和酒水显示数量在进入专注模式后直接调整，设置会自动记住。
+      <TabsContent value="automation" className="space-y-4">
+        <ListPanel title="自动化">
+          <div className="space-y-4">
+            <SwitchControl
+              label="启用自动化（实验性）"
+              checked={preferences.automationEnabled}
+              onCheckedChange={(automationEnabled) => onPreferenceChange({ automationEnabled })}
+            />
+            <div className="text-xs text-muted-foreground">
+              关闭时不会显示或执行任何自动化动作；开启后可在“经营中”页面配置具体子功能。
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <AutomationNumberInput
+                label="稀客并发"
+                value={preferences.autoRareConcurrency}
+                min={MIN_AUTO_ORDER_CONCURRENCY}
+                max={MAX_RARE_AUTO_ORDER_CONCURRENCY}
+                onChange={(autoRareConcurrency) => onPreferenceChange({ autoRareConcurrency })}
+              />
+              <AutomationNumberInput
+                label="普客并发"
+                value={preferences.autoNormalConcurrency}
+                min={MIN_AUTO_ORDER_CONCURRENCY}
+                max={MAX_NORMAL_AUTO_ORDER_CONCURRENCY}
+                onChange={(autoNormalConcurrency) => onPreferenceChange({ autoNormalConcurrency })}
+              />
+              <AutomationNumberInput
+                label="稀客等待送餐盘"
+                value={preferences.autoRareTrayWaitSeconds}
+                min={MIN_AUTO_WAIT_SECONDS}
+                max={MAX_AUTO_WAIT_SECONDS}
+                unit="秒"
+                onChange={(autoRareTrayWaitSeconds) => onPreferenceChange({ autoRareTrayWaitSeconds })}
+              />
+              <AutomationNumberInput
+                label="普客保温箱复查"
+                value={preferences.autoNormalStorageWaitSeconds}
+                min={MIN_AUTO_WAIT_SECONDS}
+                max={MAX_AUTO_WAIT_SECONDS}
+                unit="秒"
+                onChange={(autoNormalStorageWaitSeconds) => onPreferenceChange({ autoNormalStorageWaitSeconds })}
+              />
+              <AutomationNumberInput
+                label="最大重试"
+                value={preferences.autoMaxStepRetries}
+                min={MIN_AUTO_STEP_RETRIES}
+                max={MAX_AUTO_STEP_RETRIES_LIMIT}
+                onChange={(autoMaxStepRetries) => onPreferenceChange({ autoMaxStepRetries })}
+              />
+              <AutomationNumberInput
+                label="最大回退"
+                value={preferences.autoMaxRollbacks}
+                min={MIN_AUTO_ROLLBACKS}
+                max={MAX_AUTO_ROLLBACKS_LIMIT}
+                onChange={(autoMaxRollbacks) => onPreferenceChange({ autoMaxRollbacks })}
+              />
+            </div>
+            <div className="text-xs text-muted-foreground">
+              参数会在下一轮自动化轮询生效。并发过高可能抢占厨具；等待时间过短可能导致重复开锅。
+            </div>
           </div>
-        </div>
-      </ListPanel>
+        </ListPanel>
+      </TabsContent>
 
-      <ListPanel title="推荐">
-        <div className="space-y-4">
-          <SwitchControl
-            label="排除缺失厨具"
-            checked={preferences.filterMissingCookers}
-            onCheckedChange={(filterMissingCookers) => onPreferenceChange({ filterMissingCookers })}
-          />
-          <div className="text-xs text-muted-foreground">
-            进入经营场景后，若读取到已摆放厨具，推荐列表会隐藏当前场景无法制作的料理。
-          </div>
-          <SettingChoice
-            label="经营中订单排序"
-            value={preferences.serviceOrderSortMode}
-            options={[
-              { value: 'ordered', label: '点单顺序', description: '按订单首次出现时间排列，保持当前默认行为。' },
-              { value: 'guest', label: '稀客分组', description: '同一稀客的订单放在一起，组内仍按点单先后排列。' },
-            ]}
-            onChange={(serviceOrderSortMode) => onPreferenceChange({ serviceOrderSortMode })}
-          />
-          <SwitchControl
-            label="游戏界面置顶推荐（实验性）"
-            checked={preferences.gameUiPinningEnabled}
-            onCheckedChange={(gameUiPinningEnabled) => onPreferenceChange({ gameUiPinningEnabled })}
-          />
-          <div className="text-xs text-muted-foreground">
-            打开料理或酒水选择界面时，尝试把当前第一笔订单的推荐材料、料理和酒水排到前面；失败时只记录诊断，不修改库存。
-          </div>
-          <SwitchControl
-            label="目标厨具高亮（实验性）"
-            checked={preferences.cookerHighlightEnabled}
-            onCheckedChange={(cookerHighlightEnabled) => onPreferenceChange({ cookerHighlightEnabled })}
-          />
-          <div className="text-xs text-muted-foreground">
-            经营中有推荐目标厨具时，尝试让对应已摆放厨具显示黄色脉冲高亮；只改变可见提示，不自动操作厨具。
-          </div>
-        </div>
-      </ListPanel>
-
-      <ListPanel title="料理排序">
-        <SortRulesControl
-          rules={preferences.recipeSortRules}
-          options={RECIPE_SORT_OPTIONS}
-          onChange={(recipeSortRules) => onPreferenceChange({ recipeSortRules })}
-          onReset={() => onPreferenceChange({ recipeSortRules: buildDefaultSortRules(RECIPE_SORT_OPTIONS) })}
-        />
-      </ListPanel>
-
-      <ListPanel title="酒水排序">
-        <SortRulesControl
-          rules={preferences.beverageSortRules}
-          options={BEVERAGE_SORT_OPTIONS}
-          onChange={(beverageSortRules) => onPreferenceChange({ beverageSortRules })}
-          onReset={() => onPreferenceChange({ beverageSortRules: buildDefaultSortRules(BEVERAGE_SORT_OPTIONS) })}
-        />
-      </ListPanel>
-
-      <ListPanel title="自动化">
-        <div className="space-y-4">
-          <SwitchControl
-            label="启用自动化（实验性）"
-            checked={preferences.automationEnabled}
-            onCheckedChange={(automationEnabled) => onPreferenceChange({ automationEnabled })}
-          />
-          <div className="text-xs text-muted-foreground">
-            关闭时不会显示或执行任何自动化动作；开启后可在“经营中”页面配置具体子功能。
-          </div>
-        </div>
-      </ListPanel>
-    </div>
+      {preferences.showDebugDetails && (
+        <TabsContent value="debug" className="space-y-4">
+          <ListPanel title="BepInEx">
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  variant={logSettings?.nativeBepInExConsoleEnabled ? 'default' : 'outline'}
+                  onClick={toggleNativeConsole}
+                  disabled={!apiToken || consoleBusy}
+                >
+                  <Power className="size-4" />
+                  {logSettings?.nativeBepInExConsoleEnabled ? '关闭原生日志窗口' : '开启原生日志窗口'}
+                </Button>
+                <Button size="sm" variant="outline" onClick={refreshConsoleSettings} disabled={!apiToken || consoleBusy}>
+                  <RefreshCw className="size-4" />
+                  刷新状态
+                </Button>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <InfoLine label="下次启动" value={logSettings?.nativeBepInExConsoleEnabled ? '开启' : '关闭'} />
+                <InfoLine label="当前窗口" value={logSettings?.nativeBepInExConsoleVisible ? '可见' : '未显示'} />
+              </div>
+              <div className="text-xs text-muted-foreground">
+                关闭后会隐藏当前 BepInEx 控制台，并将 BepInEx.cfg 的原生 Console log 设为下次启动关闭；日志页仍可读取 LogOutput.log。
+              </div>
+              {consoleError && (
+                <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  {consoleError}
+                </div>
+              )}
+            </div>
+          </ListPanel>
+        </TabsContent>
+      )}
+    </Tabs>
   );
 }
 
-function ServiceAutomationPanel({
+function RareServiceAutomationPanel({
   preferences,
   busy,
   message,
+  paused,
+  diagnostics,
+  showDebugDetails,
   onPreferenceChange,
+  onRetryOrder,
+  onResetOrder,
 }: {
   preferences: CompanionPreferences;
   busy: boolean;
   message: string;
+  paused: boolean;
+  diagnostics: RareAutoOrderDiagnostic[];
+  showDebugDetails: boolean;
   onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
+  onRetryOrder: (orderKey: string) => void;
+  onResetOrder: (orderKey: string) => void;
 }) {
   return (
-    <ListPanel title="自动化（实验性）">
-      <div className={DENSE_TWO_COLUMN_GRID_TIGHT}>
-        <SwitchControl
+    <ListPanel title="稀客自动化（实验性）">
+      <div className={AUTOMATION_SWITCH_GRID}>
+        <AutomationSwitchCell
           label="自动完成订单"
           checked={preferences.autoPrepCompleteOrder}
           onCheckedChange={(autoPrepCompleteOrder) => onPreferenceChange({ autoPrepCompleteOrder })}
         />
-        <SwitchControl
+        <AutomationSwitchCell
           label="自动取酒"
           checked={preferences.autoPrepTakeBeverage}
           onCheckedChange={(autoPrepTakeBeverage) => onPreferenceChange({ autoPrepTakeBeverage })}
         />
-        <SwitchControl
+        <AutomationSwitchCell
           label="自动开始料理"
           checked={preferences.autoPrepStartCooking}
           onCheckedChange={(autoPrepStartCooking) => onPreferenceChange({ autoPrepStartCooking })}
         />
-        <SwitchControl
+        <AutomationSwitchCell
           label="自动收取料理"
           checked={preferences.autoPrepCollectCooking}
           onCheckedChange={(autoPrepCollectCooking) => onPreferenceChange({ autoPrepCollectCooking })}
         />
-        <SwitchControl
+        <AutomationSwitchCell
           label="只处理收藏配方"
           checked={preferences.autoPrepFavoritesOnly}
           onCheckedChange={(autoPrepFavoritesOnly) => onPreferenceChange({ autoPrepFavoritesOnly })}
         />
-        <SwitchControl
+        <AutomationSwitchCell
           label="出错时暂停"
           checked={preferences.autoPrepStopOnError}
           onCheckedChange={(autoPrepStopOnError) => onPreferenceChange({ autoPrepStopOnError })}
         />
       </div>
-      {preferences.autoPrepStartCooking && (
-        <div className="mt-3 rounded-md border border-border bg-muted/30 p-3">
-          <SwitchControl
-            label="自动完成原生 QTE"
-            checked={preferences.autoPrepCompleteQte}
-            onCheckedChange={(autoPrepCompleteQte) => onPreferenceChange({ autoPrepCompleteQte })}
-          />
-          <div className="mt-2 text-xs text-muted-foreground">
-            {preferences.autoPrepCompleteQte
-              ? '不会打开音游面板，会直接尝试完成原生 QTE 奖励结算，并继续开始料理。'
-              : '跳过原生 QTE 会保持当前自动料理速度，但不会累计音游数值或触发对应 Buff。'}
-          </div>
-        </div>
-      )}
-      <div className="mt-3 text-xs text-muted-foreground">
-        自动化只处理当前排序第一笔稀客订单；子选项关闭时不会执行对应动作。
-      </div>
-      <AutoPrepStatus busy={busy} message={message} preferences={preferences} />
+      <RareAutoPrepStatus
+        busy={busy}
+        paused={paused}
+        message={message}
+        preferences={preferences}
+        diagnostics={diagnostics}
+        showDebugDetails={showDebugDetails}
+        onRetryOrder={onRetryOrder}
+        onResetOrder={onResetOrder}
+      />
     </ListPanel>
   );
 }
 
-function AutoPrepStatus({
+function NormalServiceAutomationPanel({
+  preferences,
   busy,
   message,
-  preferences,
+  pausedCount,
+  diagnostics,
+  showDebugDetails,
+  onPreferenceChange,
 }: {
+  preferences: CompanionPreferences;
   busy: boolean;
   message: string;
-  preferences: CompanionPreferences;
+  pausedCount: number;
+  diagnostics: NormalAutoOrderDiagnostic[];
+  showDebugDetails: boolean;
+  onPreferenceChange: (next: Partial<CompanionPreferences>) => void;
 }) {
-  if (!message) return null;
+  return (
+    <ListPanel title="普客自动化（实验性）">
+      <div className={AUTOMATION_SWITCH_GRID}>
+        <AutomationSwitchCell
+          label="启用普客处理"
+          checked={preferences.autoNormalOrderEnabled}
+          onCheckedChange={(autoNormalOrderEnabled) => onPreferenceChange({ autoNormalOrderEnabled })}
+        />
+        {preferences.autoNormalOrderEnabled && (
+          <>
+            <AutomationSwitchCell
+              label="自动送达酒水"
+              checked={preferences.autoNormalTakeBeverage}
+              onCheckedChange={(autoNormalTakeBeverage) => onPreferenceChange({ autoNormalTakeBeverage })}
+            />
+            <AutomationSwitchCell
+              label="自动开始料理"
+              checked={preferences.autoNormalStartCooking}
+              onCheckedChange={(autoNormalStartCooking) => onPreferenceChange({ autoNormalStartCooking })}
+            />
+            <AutomationSwitchCell
+              label="自动收取料理"
+              checked={preferences.autoNormalCollectCooking}
+              onCheckedChange={(autoNormalCollectCooking) => onPreferenceChange({ autoNormalCollectCooking })}
+            />
+            <AutomationSwitchCell
+              label="自动送达料理"
+              checked={preferences.autoNormalDeliverFood}
+              onCheckedChange={(autoNormalDeliverFood) => onPreferenceChange({ autoNormalDeliverFood })}
+            />
+            <AutomationSwitchCell
+              label="自动完成订单"
+              checked={preferences.autoNormalCompleteOrder}
+              onCheckedChange={(autoNormalCompleteOrder) => onPreferenceChange({ autoNormalCompleteOrder })}
+            />
+            <AutomationSwitchCell
+              label="出错时暂停"
+              checked={preferences.autoNormalStopOnError}
+              onCheckedChange={(autoNormalStopOnError) => onPreferenceChange({ autoNormalStopOnError })}
+            />
+          </>
+        )}
+      </div>
+      <NormalAutoPrepStatus
+        busy={busy}
+        pausedCount={pausedCount}
+        message={message}
+        preferences={preferences}
+        diagnostics={diagnostics}
+        showDebugDetails={showDebugDetails}
+      />
+    </ListPanel>
+  );
+}
 
+function RareAutoPrepStatus({
+  busy,
+  paused,
+  message,
+  preferences,
+  diagnostics,
+  showDebugDetails,
+  onRetryOrder,
+  onResetOrder,
+}: {
+  busy: boolean;
+  paused: boolean;
+  message: string;
+  preferences: CompanionPreferences;
+  diagnostics: RareAutoOrderDiagnostic[];
+  showDebugDetails: boolean;
+  onRetryOrder: (orderKey: string) => void;
+  onResetOrder: (orderKey: string) => void;
+}) {
   return (
     <div className="mt-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
-      <div className="font-medium text-foreground">自动化{busy ? '处理中' : '状态'}</div>
-      <div className="mt-1 whitespace-pre-line text-muted-foreground">{message}</div>
+      <div className="font-medium text-foreground">稀客自动化{busy ? '处理中' : '状态'}</div>
+      {diagnostics.length === 0 ? (
+        <div className="mt-2 rounded-md border border-border bg-background/70 px-2.5 py-2 text-xs text-muted-foreground">
+          暂无正在处理的稀客订单。
+        </div>
+      ) : (
+        <div className="mt-2 space-y-2">
+          {diagnostics.map((diagnostic) => (
+            <div key={diagnostic.orderKey} className="rounded-md border border-border bg-background/70 px-2.5 py-2">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="truncate font-medium text-foreground">{diagnostic.title}</div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">
+                    料理 {diagnostic.foodTag || '无'} · 酒水 {diagnostic.beverageTag || '无'}
+                  </div>
+                </div>
+                <div className="flex shrink-0 gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onRetryOrder(diagnostic.orderKey)}
+                    disabled={busy || !diagnostic.paused}
+                    data-gamepad-focus-key={`rare-auto:${diagnostic.orderKey}:retry`}
+                  >
+                    重试
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onResetOrder(diagnostic.orderKey)}
+                    disabled={busy}
+                    data-gamepad-focus-key={`rare-auto:${diagnostic.orderKey}:reset`}
+                  >
+                    重置
+                  </Button>
+                </div>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground md:grid-cols-5">
+                <InfoLine label="料理" value={diagnostic.recipeName || '未选择'} />
+                <InfoLine label="酒水" value={diagnostic.beverageName || '未选择'} />
+                <InfoLine label="步骤" value={`${diagnostic.stepLabel} · ${diagnostic.stepSeconds}秒`} />
+                <InfoLine label="下次" value={diagnostic.nextAction} />
+                {showDebugDetails && (
+                  <InfoLine
+                    label="计数"
+                    value={`重试 ${diagnostic.retryCount}/${preferences.autoMaxStepRetries} · 回退 ${diagnostic.rollbackCount}/${preferences.autoMaxRollbacks}`}
+                  />
+                )}
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+                <Badge variant={diagnostic.paused ? 'destructive' : 'secondary'}>
+                  {diagnostic.paused ? '暂停' : '运行'}
+                </Badge>
+                <Badge variant={diagnostic.prepared ? 'secondary' : 'outline'}>
+                  料理{diagnostic.prepared ? '已开锅' : '待处理'}
+                </Badge>
+                <Badge variant={diagnostic.beverageHandled ? 'secondary' : 'outline'}>
+                  酒水{diagnostic.beverageHandled ? '已处理' : '待处理'}
+                </Badge>
+                <Badge variant={diagnostic.hasServedFood ? 'secondary' : 'outline'}>
+                  订单{diagnostic.hasServedFood ? '已有料理' : '未送料理'}
+                </Badge>
+                <Badge variant={diagnostic.hasServedBeverage ? 'secondary' : 'outline'}>
+                  订单{diagnostic.hasServedBeverage ? '已有酒水' : '未送酒水'}
+                </Badge>
+              </div>
+              {diagnostic.lastError && (
+                <div className="mt-1 text-xs text-muted-foreground">最近：{diagnostic.lastError}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="mt-2 whitespace-pre-line text-muted-foreground">
+        {message || '等待稀客订单或自动化条件。'}
+      </div>
       <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+        <Badge variant={paused ? 'destructive' : 'secondary'}>{paused ? '已暂停' : '运行中'}</Badge>
+        <Badge variant="outline">每轮最多 {preferences.autoRareConcurrency}</Badge>
         <Badge variant={preferences.autoPrepCompleteOrder ? 'secondary' : 'outline'}>完成 {preferences.autoPrepCompleteOrder ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepTakeBeverage ? 'secondary' : 'outline'}>取酒 {preferences.autoPrepTakeBeverage ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepStartCooking ? 'secondary' : 'outline'}>料理 {preferences.autoPrepStartCooking ? '开' : '关'}</Badge>
-        {preferences.autoPrepStartCooking && (
-          <Badge variant={preferences.autoPrepCompleteQte ? 'secondary' : 'outline'}>
-            QTE {preferences.autoPrepCompleteQte ? '自动完成' : '跳过'}
-          </Badge>
-        )}
+        {preferences.autoPrepStartCooking && <Badge variant="secondary">QTE 自动完成</Badge>}
         <Badge variant={preferences.autoPrepCollectCooking ? 'secondary' : 'outline'}>收取 {preferences.autoPrepCollectCooking ? '开' : '关'}</Badge>
         <Badge variant={preferences.autoPrepFavoritesOnly ? 'secondary' : 'outline'}>收藏限定 {preferences.autoPrepFavoritesOnly ? '开' : '关'}</Badge>
       </div>
@@ -2386,48 +5056,101 @@ function AutoPrepStatus({
   );
 }
 
-function StatusCard({
-  label,
-  value,
-  detail,
-  tone,
+function NormalAutoPrepStatus({
+  busy,
+  pausedCount,
+  message,
+  preferences,
+  diagnostics,
+  showDebugDetails,
 }: {
-  label: string;
-  value: string;
-  detail: string;
-  tone: 'good' | 'bad' | 'neutral';
+  busy: boolean;
+  pausedCount: number;
+  message: string;
+  preferences: CompanionPreferences;
+  diagnostics: NormalAutoOrderDiagnostic[];
+  showDebugDetails: boolean;
 }) {
-  const toneClass = tone === 'good'
-    ? 'text-emerald-700 dark:text-emerald-300'
-    : tone === 'bad'
-      ? 'text-destructive'
-      : 'text-foreground';
-
   return (
-    <Card>
-      <CardContent className="p-4">
-        <div className="text-xs text-muted-foreground">{label}</div>
-        <div className={`mt-1 text-lg font-semibold ${toneClass}`}>{value}</div>
-        <div className="mt-1 truncate text-xs text-muted-foreground" title={detail}>{detail}</div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function Metric({ label, value }: { label: string; value: number | string }) {
-  return (
-    <div>
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="mt-1 text-base font-semibold">{value}</div>
-    </div>
-  );
-}
-
-function InfoLine({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div className="min-w-0">
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className={`mt-1 truncate text-sm ${mono ? 'font-mono text-xs' : 'font-medium'}`} title={value}>{value}</div>
+    <div className="mt-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
+      <div className="font-medium text-foreground">普客自动化{busy ? '处理中' : '状态'}</div>
+      {diagnostics.length === 0 ? (
+        <div className="mt-2 rounded-md border border-border bg-background/70 px-2.5 py-2 text-xs text-muted-foreground">
+          暂无正在处理的普客订单。
+        </div>
+      ) : (
+        <div className="mt-2 space-y-2">
+          {diagnostics.map((diagnostic) => (
+            <div key={diagnostic.orderKey} className="rounded-md border border-border bg-background/70 px-2.5 py-2">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="truncate font-medium text-foreground">{diagnostic.title}</div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">
+                    料理 {diagnostic.foodName || '无'} · 酒水 {diagnostic.beverageName || '无'}
+                  </div>
+                </div>
+                <Badge variant={diagnostic.paused ? 'destructive' : 'secondary'}>
+                  {diagnostic.paused ? '暂停' : '运行'}
+                </Badge>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground md:grid-cols-5">
+                <InfoLine label="步骤" value={`${diagnostic.stepLabel} · ${diagnostic.stepSeconds}秒`} />
+                <InfoLine label="下次" value={diagnostic.nextAction} />
+                {showDebugDetails && (
+                  <>
+                    <InfoLine
+                      label="计数"
+                      value={`重试 ${diagnostic.retryCount}/${preferences.autoMaxStepRetries} · 回退 ${diagnostic.rollbackCount}/${preferences.autoMaxRollbacks}`}
+                    />
+                    <InfoLine label="来源" value={diagnostic.source || '未知'} />
+                    <InfoLine label="Key" value={diagnostic.orderKey} mono />
+                  </>
+                )}
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+                <Badge variant={diagnostic.beverageHandled ? 'secondary' : 'outline'}>
+                  酒水{diagnostic.beverageHandled ? '已送达' : '待处理'}
+                </Badge>
+                <Badge variant={diagnostic.prepared ? 'secondary' : 'outline'}>
+                  料理{diagnostic.prepared ? '已开锅' : '待处理'}
+                </Badge>
+                <Badge variant={diagnostic.collected ? 'secondary' : 'outline'}>
+                  保温箱{diagnostic.collected ? '已收取' : '待收取'}
+                </Badge>
+                <Badge variant={diagnostic.foodDelivered ? 'secondary' : 'outline'}>
+                  料理{diagnostic.foodDelivered ? '已送达' : '未送达'}
+                </Badge>
+                <Badge variant={diagnostic.hasServedFood ? 'secondary' : 'outline'}>
+                  订单{diagnostic.hasServedFood ? '已有料理' : '未送料理'}
+                </Badge>
+                <Badge variant={diagnostic.hasServedBeverage ? 'secondary' : 'outline'}>
+                  订单{diagnostic.hasServedBeverage ? '已有酒水' : '未送酒水'}
+                </Badge>
+                <Badge variant={diagnostic.completed ? 'secondary' : 'outline'}>
+                  订单{diagnostic.completed ? '已完成' : '待完成'}
+                </Badge>
+              </div>
+              {diagnostic.lastError && (
+                <div className="mt-1 text-xs text-muted-foreground">最近：{diagnostic.lastError}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="mt-1 whitespace-pre-line text-muted-foreground">
+        {message || '等待普客订单或自动化条件。'}
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
+        <Badge variant={pausedCount > 0 ? 'destructive' : 'secondary'}>暂停订单 {pausedCount}</Badge>
+        <Badge variant="outline">每轮最多 {preferences.autoNormalConcurrency}</Badge>
+        <Badge variant={preferences.autoNormalOrderEnabled ? 'secondary' : 'outline'}>启用 {preferences.autoNormalOrderEnabled ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoNormalTakeBeverage ? 'secondary' : 'outline'}>酒水 {preferences.autoNormalTakeBeverage ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoNormalStartCooking ? 'secondary' : 'outline'}>料理 {preferences.autoNormalStartCooking ? '开' : '关'}</Badge>
+        {preferences.autoNormalStartCooking && <Badge variant="secondary">QTE 自动完成</Badge>}
+        <Badge variant={preferences.autoNormalCollectCooking ? 'secondary' : 'outline'}>收取 {preferences.autoNormalCollectCooking ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoNormalDeliverFood ? 'secondary' : 'outline'}>送料理 {preferences.autoNormalDeliverFood ? '开' : '关'}</Badge>
+        <Badge variant={preferences.autoNormalCompleteOrder ? 'secondary' : 'outline'}>完成 {preferences.autoNormalCompleteOrder ? '开' : '关'}</Badge>
+      </div>
     </div>
   );
 }
@@ -2435,17 +5158,6 @@ function InfoLine({ label, value, mono = false }: { label: string; value: string
 function formatGuestFund(guest: NightBusinessGuest): string {
   if (typeof guest.fund !== 'number' || !Number.isFinite(guest.fund)) return '';
   return String(Math.trunc(guest.fund));
-}
-
-function ListPanel({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <Card>
-      <CardContent className="p-4">
-        <h2 className="mb-2 text-base font-semibold">{title}</h2>
-        {children}
-      </CardContent>
-    </Card>
-  );
 }
 
 function LowStockColumn({
@@ -2490,18 +5202,6 @@ function TagSummary({
   );
 }
 
-function EmptyRow({ text }: { text: string }) {
-  return <div className="py-6 text-center text-sm text-muted-foreground">{text}</div>;
-}
-
-function EmptyState({ text }: { text: string }) {
-  return (
-    <Card>
-      <CardContent className="py-10 text-center text-sm text-muted-foreground">{text}</CardContent>
-    </Card>
-  );
-}
-
 function RuntimeUnavailable() {
   return <EmptyState text="尚未读取到游戏实时数据。请确认游戏已加载存档，且 Mod 本地 API 已连接。" />;
 }
@@ -2516,24 +5216,23 @@ function SwitchControl({
   onCheckedChange: (value: boolean) => void;
 }) {
   return (
-    <label className="flex items-center gap-2 text-sm">
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        onClick={() => onCheckedChange(!checked)}
-        className={`relative h-5 w-9 shrink-0 rounded-full border transition-colors ${
-          checked ? 'border-primary bg-primary' : 'border-border bg-muted'
-        }`}
-      >
-        <span
-          className={`absolute left-0 top-1/2 size-4 -translate-y-1/2 rounded-full bg-background shadow-sm transition-transform ${
-            checked ? 'translate-x-4' : 'translate-x-0.5'
-          }`}
-        />
-      </button>
-      <span className="whitespace-nowrap">{label}</span>
-    </label>
+    <SwitchField label={label} checked={checked} onCheckedChange={onCheckedChange} />
+  );
+}
+
+function AutomationSwitchCell({
+  label,
+  checked,
+  onCheckedChange,
+}: {
+  label: string;
+  checked: boolean;
+  onCheckedChange: (value: boolean) => void;
+}) {
+  return (
+    <div className={AUTOMATION_SWITCH_CELL}>
+      <SwitchControl label={label} checked={checked} onCheckedChange={onCheckedChange} />
+    </div>
   );
 }
 
@@ -2589,6 +5288,41 @@ function FocusSwitchCooldownInput({
   );
 }
 
+function AutomationNumberInput({
+  label,
+  value,
+  min,
+  max,
+  unit = '',
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  unit?: string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="grid gap-1 text-sm">
+      <span className="font-medium">{label}</span>
+      <div className="flex items-center gap-2">
+        <Input
+          type="number"
+          min={min}
+          max={max}
+          step={1}
+          value={value}
+          onChange={(event) => onChange(clampInteger(Number(event.target.value), min, max, value))}
+          className="h-8"
+        />
+        {unit && <span className="shrink-0 text-xs text-muted-foreground">{unit}</span>}
+      </div>
+      <span className="text-xs text-muted-foreground">{min} - {max}</span>
+    </label>
+  );
+}
+
 function OpacitySlider({
   value,
   onChange,
@@ -2599,27 +5333,16 @@ function OpacitySlider({
   const percent = Math.round(normalizeWindowOpacity(value) * 100);
 
   return (
-    <div>
-      <div className="mb-2 flex items-center justify-between gap-3 text-sm">
-        <span className="font-medium">窗口透明度</span>
-        <span className="text-muted-foreground">{percent}%</span>
-      </div>
-      <input
-        type="range"
-        min={Math.round(MIN_WINDOW_OPACITY * 100)}
-        max={100}
-        step={1}
-        value={percent}
-        aria-label="窗口透明度"
-        data-gamepad-slider="true"
-        data-gamepad-step="1"
-        onChange={(event) => onChange(normalizeWindowOpacity(Number(event.target.value) / 100))}
-        className="h-2 w-full accent-primary"
-      />
-      <div className="mt-1 text-xs text-muted-foreground">
-        仅调整窗口和面板背景，文字、按钮和标签不会整体变淡。
-      </div>
-    </div>
+    <SliderField
+      label="窗口透明度"
+      value={percent}
+      min={Math.round(MIN_WINDOW_OPACITY * 100)}
+      max={100}
+      step={1}
+      valueText={`${percent}%`}
+      description="仅调整窗口和面板背景，文字、按钮和标签不会整体变淡。"
+      onChange={(nextPercent) => onChange(normalizeWindowOpacity(nextPercent / 100))}
+    />
   );
 }
 
@@ -2631,31 +5354,10 @@ function SettingChoice<TValue extends string>({
 }: {
   label: string;
   value: TValue;
-  options: { value: TValue; label: string; description: string }[];
+  options: ChoiceOption<TValue>[];
   onChange: (value: TValue) => void;
 }) {
-  return (
-    <div>
-      <div className="mb-2 text-sm font-medium">{label}</div>
-      <div className={`grid gap-2 ${options.length > 2 ? 'grid-cols-3' : 'grid-cols-2'}`}>
-        {options.map((option) => (
-          <button
-            key={option.value}
-            type="button"
-            onClick={() => onChange(option.value)}
-            className={`rounded-lg border p-2 text-left transition-colors ${
-              value === option.value
-                ? 'border-primary bg-primary/10 text-foreground'
-                : 'border-border bg-background/50 text-foreground hover:bg-muted'
-            }`}
-          >
-            <div className="text-sm font-medium">{option.label}</div>
-            <div className="mt-1 text-xs text-muted-foreground">{option.description}</div>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
+  return <ChoiceGroup label={label} value={value} options={options} onChange={onChange} />;
 }
 
 function SortRulesControl<K extends string>({
@@ -2692,21 +5394,10 @@ function SortRulesControl<K extends string>({
             className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 rounded-md border border-border bg-background/50 p-2 text-sm"
           >
             <label className="flex min-w-0 items-center gap-2">
-              <button
-                type="button"
-                role="switch"
-                aria-checked={rule.enabled}
-                onClick={() => updateRule(rule.key, { enabled: !rule.enabled })}
-                className={`relative h-5 w-9 shrink-0 rounded-full border transition-colors ${
-                  rule.enabled ? 'border-primary bg-primary' : 'border-border bg-muted'
-                }`}
-              >
-                <span
-                  className={`absolute left-0 top-1/2 size-4 -translate-y-1/2 rounded-full bg-background shadow-sm transition-transform ${
-                    rule.enabled ? 'translate-x-4' : 'translate-x-0.5'
-                  }`}
-                />
-              </button>
+              <Switch
+                checked={rule.enabled}
+                onCheckedChange={(enabled) => updateRule(rule.key, { enabled })}
+              />
               <span className="truncate">{label}</span>
             </label>
             <Button
@@ -2780,16 +5471,23 @@ function NormalRecipeRow({
   recipe,
   index,
   ownedIngredientQty,
+  ingredientIdByName,
 }: {
   recipe: INormalRecipeResult;
   index: number;
   ownedIngredientQty: Record<number, number>;
+  ingredientIdByName: Map<string, number>;
 }) {
   return (
     <div className="rounded-md border border-border/80 p-2 text-sm">
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-xs text-muted-foreground">#{index + 1}</span>
         <span className="font-medium">{recipe.recipe.name}</span>
+        {recipe.satisfiesSpecialRule && recipe.specialRuleTags.length > 0 && (
+          <Badge className="border-amber-300/70 bg-amber-50 text-amber-950 dark:border-amber-400/30 dark:bg-amber-400/10 dark:text-amber-100">
+            特殊 {recipe.specialRuleTags.join('/')}
+          </Badge>
+        )}
         <Badge variant="secondary">{recipe.recipe.cooker || '未知厨具'}</Badge>
       </div>
       <div className="mt-1 text-xs text-muted-foreground">
@@ -2802,7 +5500,7 @@ function NormalRecipeRow({
         <CustomerScoreBadges scores={recipe.customerScores} />
       </div>
       <div className="mt-1 text-xs text-muted-foreground">
-        基础配方: {formatIngredientNamesWithQty(recipe.recipe.ingredients, ownedIngredientQty) || '无'}
+        基础配方: {formatIngredientNamesWithQty(recipe.recipe.ingredients, ownedIngredientQty, ingredientIdByName) || '无'}
       </div>
     </div>
   );
@@ -2842,21 +5540,25 @@ function NormalBeverageRow({
 function OrderRecommendationPanel({
   item,
   runtimeSets,
+  dataIndexes,
   favorites,
   favoriteBusyKey,
   compact = false,
   recipeLimit = MAX_RECOMMENDATION_ROWS,
   beverageLimit = MAX_RECOMMENDATION_ROWS,
+  showDebugDetails = false,
   onToggleRecipeFavorite,
   onToggleBeverageFavorite,
 }: {
   item: OrderRecommendation;
   runtimeSets: RuntimeSets | null;
+  dataIndexes: ReturnType<typeof buildRecommendationDataIndexes>;
   favorites: FavoriteData;
   favoriteBusyKey: string;
   compact?: boolean;
   recipeLimit?: number;
   beverageLimit?: number;
+  showDebugDetails?: boolean;
   onToggleRecipeFavorite: ToggleRecipeFavorite;
   onToggleBeverageFavorite: ToggleBeverageFavorite;
 }) {
@@ -2885,7 +5587,7 @@ function OrderRecommendationPanel({
                 目标厨具 {targetCookerName}
               </Badge>
             )}
-            <Badge variant="secondary">{item.order.source}</Badge>
+            {showDebugDetails && <Badge variant="secondary">{item.order.source}</Badge>}
           </div>
         </div>
       </div>
@@ -2901,6 +5603,7 @@ function OrderRecommendationPanel({
                 recipe={recipe}
                 index={index}
                 ownedIngredientQty={runtimeSets?.ownedIngredientQty ?? {}}
+                ingredientIdByName={dataIndexes.ingredientIdByName}
                 favorite={findRecipeFavorite(favorites, item.customer.id, item.order.foodTag, recipe)}
                 favoriteKey={recipeFavoriteKey(item.customer.id, item.order.foodTag, recipe)}
                 favoriteBusyKey={favoriteBusyKey}
@@ -2918,6 +5621,7 @@ function OrderRecommendationPanel({
                       recipe={recipe}
                       index={visibleRecipes.length + index}
                       ownedIngredientQty={runtimeSets?.ownedIngredientQty ?? {}}
+                      ingredientIdByName={dataIndexes.ingredientIdByName}
                       compact={compact}
                     />
                   ))}
@@ -2971,6 +5675,7 @@ function RecipeRecommendationRow({
   recipe,
   index,
   ownedIngredientQty,
+  ingredientIdByName,
   favorite,
   favoriteKey = '',
   favoriteBusyKey = '',
@@ -2980,6 +5685,7 @@ function RecipeRecommendationRow({
   recipe: IRareRecipeResult;
   index: number;
   ownedIngredientQty: Record<number, number>;
+  ingredientIdByName: Map<string, number>;
   favorite?: FavoriteRecipeEntry | null;
   favoriteKey?: string;
   favoriteBusyKey?: string;
@@ -2989,8 +5695,14 @@ function RecipeRecommendationRow({
   const totalCost = recipe.baseCost + recipe.extraCost;
   const extras = recipe.extraIngredients.length === 0
     ? '不加料'
-    : recipe.extraIngredients.map((ingredient) => formatIngredientWithQty(ingredient.name, ownedIngredientQty)).join(', ');
-  const baseRecipe = formatIngredientNamesWithQty(recipe.recipe.ingredients, ownedIngredientQty) || '无';
+    : recipe.extraIngredients
+      .map((ingredient) => formatIngredientWithQty(ingredient.name, ownedIngredientQty, ingredientIdByName))
+      .join(', ');
+  const baseRecipe = formatIngredientNamesWithQty(
+    recipe.recipe.ingredients,
+    ownedIngredientQty,
+    ingredientIdByName,
+  ) || '无';
   const busy = favoriteBusyKey === (favorite?.id ?? favoriteKey);
 
   return (
@@ -3006,6 +5718,16 @@ function RecipeRecommendationRow({
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
           <span className="text-xs text-muted-foreground">#{index + 1}</span>
           <span className="font-medium">{recipe.recipe.name}</span>
+          {recipe.missionPriority && (
+            <Badge className="border-amber-300/70 bg-amber-50 text-amber-950 dark:border-amber-400/30 dark:bg-amber-400/10 dark:text-amber-100">
+              任务
+            </Badge>
+          )}
+          {recipe.satisfiesSpecialRule && recipe.specialRuleTags.length > 0 && (
+            <Badge className="border-amber-300/70 bg-amber-50 text-amber-950 dark:border-amber-400/30 dark:bg-amber-400/10 dark:text-amber-100">
+              特殊 {recipe.specialRuleTags.join('/')}
+            </Badge>
+          )}
           <Badge variant="secondary">{RATING_LABELS[recipe.rating]}</Badge>
           <span className="text-xs text-muted-foreground">
             分数 {recipe.foodScore} · 成本 {totalCost}
@@ -3130,6 +5852,10 @@ async function readLogs(endpoint: string, apiToken: string, signal: AbortSignal)
   return readLocalApiJson<LocalApiLogs>(endpoint, apiToken, '/logs', signal);
 }
 
+async function readAutomationLogs(endpoint: string, apiToken: string, signal: AbortSignal): Promise<LocalApiLogs> {
+  return readLocalApiJson<LocalApiLogs>(endpoint, apiToken, '/logs/automation', signal);
+}
+
 async function readLogSettings(endpoint: string, apiToken: string, signal: AbortSignal): Promise<LocalApiLogSettings> {
   return readLocalApiJson<LocalApiLogSettings>(endpoint, apiToken, '/logs/settings', signal);
 }
@@ -3137,22 +5863,107 @@ async function readLogSettings(endpoint: string, apiToken: string, signal: Abort
 async function writeLogSettings(
   endpoint: string,
   apiToken: string,
-  next: { logAccess?: boolean; diagnostics?: boolean },
+  next: { logAccess?: boolean; diagnostics?: boolean; nativeConsole?: boolean },
   signal: AbortSignal,
 ): Promise<LocalApiLogSettings> {
   const params = new URLSearchParams();
   if (typeof next.logAccess === 'boolean') params.set('logAccess', String(next.logAccess));
   if (typeof next.diagnostics === 'boolean') params.set('diagnostics', String(next.diagnostics));
+  if (typeof next.nativeConsole === 'boolean') params.set('nativeConsole', String(next.nativeConsole));
   return readLocalApiJson<LocalApiLogSettings>(endpoint, apiToken, `/logs/config?${params.toString()}`, signal);
 }
 
 async function openLogFolder(
   endpoint: string,
   apiToken: string,
-  target: 'log' | 'diagnostics',
+  target: 'log' | 'diagnostics' | 'automation',
   signal: AbortSignal,
 ): Promise<LocalApiFolderResponse> {
   return readLocalApiJson<LocalApiFolderResponse>(endpoint, apiToken, `/logs/open-folder?target=${target}`, signal);
+}
+
+async function exportDiagnosticPackage(
+  endpoint: string,
+  apiToken: string,
+  signal: AbortSignal,
+): Promise<DiagnosticPackageResponse> {
+  return readLocalApiJson<DiagnosticPackageResponse>(endpoint, apiToken, '/logs/export-diagnostics?open=true', signal);
+}
+
+async function inviteAllAvailableRareGuests(
+  endpoint: string,
+  apiToken: string,
+  scope: RareGuestInvitationScope,
+): Promise<RareGuestInvitationResponse> {
+  const params = new URLSearchParams({ scope });
+  return mutateRareGuestInvitation(endpoint, apiToken, `/rare-guests/invite-all?${params.toString()}`);
+}
+
+async function fetchAvailableRareGuestInvitations(
+  endpoint: string,
+  apiToken: string,
+  scope: RareGuestInvitationScope,
+): Promise<RareGuestInvitationResponse> {
+  const params = new URLSearchParams({ scope });
+  return mutateRareGuestInvitation(endpoint, apiToken, `/rare-guests/invitations?${params.toString()}`);
+}
+
+async function inviteAvailableRareGuest(
+  endpoint: string,
+  apiToken: string,
+  guestId: number,
+  scope: RareGuestInvitationScope,
+): Promise<RareGuestInvitationResponse> {
+  const params = new URLSearchParams({ guestId: String(guestId), scope });
+  return mutateRareGuestInvitation(endpoint, apiToken, `/rare-guests/invite?${params.toString()}`);
+}
+
+async function mutateRareGuestInvitation(
+  endpoint: string,
+  apiToken: string,
+  path: string,
+): Promise<RareGuestInvitationResponse> {
+  const abortController = new AbortController();
+  const timeoutId = window.setTimeout(() => abortController.abort(), 5000);
+
+  try {
+    return await readLocalApiJson<RareGuestInvitationResponse>(
+      endpoint,
+      apiToken,
+      path,
+      abortController.signal,
+    );
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+async function dismissRuntimeRareOrder(
+  endpoint: string,
+  apiToken: string,
+  order: NightBusinessOrder,
+): Promise<RareOrderDismissResponse> {
+  const params = new URLSearchParams({
+    deskCode: String(order.deskCode),
+    guestName: order.guestName,
+    foodTagId: String(order.foodTagId),
+    beverageTagId: String(order.beverageTagId),
+  });
+  if (order.guestId != null) params.set('guestId', String(order.guestId));
+
+  const abortController = new AbortController();
+  const timeoutId = window.setTimeout(() => abortController.abort(), 2500);
+
+  try {
+    return await readLocalApiJson<RareOrderDismissResponse>(
+      endpoint,
+      apiToken,
+      `/orders/rare/dismiss?${params.toString()}`,
+      abortController.signal,
+    );
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 async function writeInventoryQuantity(
@@ -3175,6 +5986,33 @@ async function writeInventoryQuantity(
       endpoint,
       apiToken,
       `/inventory/set?${params.toString()}`,
+      abortController.signal,
+    );
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+async function writeInventoryBulkQuantity(
+  endpoint: string,
+  apiToken: string,
+  itemType: 'ingredient' | 'beverage',
+  itemIds: number[],
+  quantity: number,
+): Promise<InventoryBulkEditResponse> {
+  const params = new URLSearchParams({
+    type: itemType,
+    ids: itemIds.join(','),
+    qty: String(normalizeEditableQuantity(quantity)),
+  });
+  const abortController = new AbortController();
+  const timeoutId = window.setTimeout(() => abortController.abort(), 8000);
+
+  try {
+    return await readLocalApiJson<InventoryBulkEditResponse>(
+      endpoint,
+      apiToken,
+      `/inventory/bulk-set?${params.toString()}`,
       abortController.signal,
     );
   } finally {
@@ -3219,10 +6057,8 @@ async function prepareNextRareOrder(
   endpoint: string,
   apiToken: string,
   item: OrderRecommendation,
-  recipe: IRareRecipeResult | null,
-  beverage: IRareBeverageResult | null,
-  recipeFavorite: FavoriteRecipeEntry | null,
-  beverageFavorite: FavoriteBeverageEntry | null,
+  recipeTarget: RareAutomationRecipeTarget | null,
+  beverageTarget: RareAutomationBeverageTarget | null,
   preferences: CompanionPreferences,
 ): Promise<OrderPreparationResponse> {
   return rareOrderAction(
@@ -3230,10 +6066,8 @@ async function prepareNextRareOrder(
     apiToken,
     '/orders/prepare-next',
     item,
-    recipe,
-    beverage,
-    recipeFavorite,
-    beverageFavorite,
+    recipeTarget,
+    beverageTarget,
     preferences,
   );
 }
@@ -3242,10 +6076,8 @@ async function completeFirstRareOrder(
   endpoint: string,
   apiToken: string,
   item: OrderRecommendation,
-  recipe: IRareRecipeResult | null,
-  beverage: IRareBeverageResult | null,
-  recipeFavorite: FavoriteRecipeEntry | null,
-  beverageFavorite: FavoriteBeverageEntry | null,
+  recipeTarget: RareAutomationRecipeTarget | null,
+  beverageTarget: RareAutomationBeverageTarget | null,
   preferences: CompanionPreferences,
 ): Promise<OrderPreparationResponse> {
   return rareOrderAction(
@@ -3253,12 +6085,52 @@ async function completeFirstRareOrder(
     apiToken,
     '/orders/complete-first',
     item,
-    recipe,
-    beverage,
-    recipeFavorite,
-    beverageFavorite,
+    recipeTarget,
+    beverageTarget,
     preferences,
   );
+}
+
+async function completeFirstNormalOrder(
+  endpoint: string,
+  apiToken: string,
+  order: NormalBusinessOrder,
+  preferences: CompanionPreferences,
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
+): Promise<OrderPreparationResponse> {
+  const indexes = buildRecommendationDataIndexes(data);
+  const recipe = indexes.recipeByFoodId.get(order.foodId)
+    ?? data.recipes.find((item) => item.recipeId === order.foodId)
+    ?? null;
+  const params = new URLSearchParams({
+    orderKey: order.orderKey ?? '',
+    deskCode: String(order.deskCode),
+    guestName: order.guestName || '普客',
+    foodId: String(order.foodId),
+    recipeId: recipe ? String(recipe.recipeId) : '-1',
+    recipeName: order.foodName || recipe?.name || '',
+    beverageId: String(order.beverageId),
+    beverageName: order.beverageName || indexes.beverageNameById.get(order.beverageId) || '',
+    autoTakeBeverage: String(preferences.autoNormalTakeBeverage),
+    autoStartCooking: String(preferences.autoNormalStartCooking),
+    autoCollectCooking: String(preferences.autoNormalCollectCooking),
+    autoDeliverFood: String(preferences.autoNormalDeliverFood),
+    autoCompleteOrder: String(preferences.autoNormalCompleteOrder),
+    stopOnError: String(preferences.autoNormalStopOnError),
+  });
+  const abortController = new AbortController();
+  const timeoutId = window.setTimeout(() => abortController.abort(), 5000);
+
+  try {
+    return await readLocalApiJson<OrderPreparationResponse>(
+      endpoint,
+      apiToken,
+      `/orders/normal/complete-first?${params.toString()}`,
+      abortController.signal,
+    );
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 async function rareOrderAction(
@@ -3266,10 +6138,8 @@ async function rareOrderAction(
   apiToken: string,
   path: string,
   item: OrderRecommendation,
-  recipe: IRareRecipeResult | null,
-  beverage: IRareBeverageResult | null,
-  recipeFavorite: FavoriteRecipeEntry | null,
-  beverageFavorite: FavoriteBeverageEntry | null,
+  recipeTarget: RareAutomationRecipeTarget | null,
+  beverageTarget: RareAutomationBeverageTarget | null,
   preferences: CompanionPreferences,
 ): Promise<OrderPreparationResponse> {
   const params = new URLSearchParams({
@@ -3278,19 +6148,21 @@ async function rareOrderAction(
     guestName: item.order.guestName,
     foodTag: item.order.foodTag,
     beverageTag: item.order.beverageTag,
-    recipeId: recipe ? String(recipe.recipe.recipeId) : '-1',
-    recipeName: recipe?.recipe.name ?? '',
-    extraIngredientIds: recipe ? recipe.extraIngredients.map((ingredient) => ingredient.id).join(',') : '',
-    beverageId: beverage ? String(beverage.beverage.id) : '-1',
-    beverageName: beverage?.beverage.name ?? '',
+    foodId: recipeTarget ? String(recipeTarget.foodId) : '-1',
+    recipeId: recipeTarget ? String(recipeTarget.recipeId) : '-1',
+    recipeName: recipeTarget?.recipeName ?? '',
+    extraIngredientIds: recipeTarget ? recipeTarget.extraIngredientIds.join(',') : '',
+    acceptableFoodIds: recipeTarget ? recipeTarget.acceptableFoodIds.join(',') : '',
+    trayBacklogMinSeconds: String(RARE_TRAY_BACKLOG_REUSE_SECONDS),
+    beverageId: beverageTarget ? String(beverageTarget.beverageId) : '-1',
+    beverageName: beverageTarget?.beverageName ?? '',
     autoTakeBeverage: String(preferences.autoPrepTakeBeverage),
     autoStartCooking: String(preferences.autoPrepStartCooking),
     autoCollectCooking: String(preferences.autoPrepCollectCooking),
-    completeQte: String(preferences.autoPrepStartCooking && preferences.autoPrepCompleteQte),
     favoritesOnly: String(preferences.autoPrepFavoritesOnly),
     stopOnError: String(preferences.autoPrepStopOnError),
-    recipeFavorite: String(Boolean(recipeFavorite)),
-    beverageFavorite: String(Boolean(beverageFavorite)),
+    recipeFavorite: String(Boolean(recipeTarget?.favorite)),
+    beverageFavorite: String(Boolean(beverageTarget?.favorite)),
   });
   const abortController = new AbortController();
   const timeoutId = window.setTimeout(() => abortController.abort(), 5000);
@@ -3397,10 +6269,59 @@ async function readLocalApiJson<T>(endpoint: string, apiToken: string, path: str
   return await response.json() as T;
 }
 
-function buildRuntimeSets(runtime: RecommendationStateSnapshot | null): RuntimeSets | null {
+function summarizeInvitationSkipped(entries: RareGuestInvitationEntry[]): string {
+  const counts = new Map<string, number>();
+  for (const entry of entries) {
+    const reason = entry.reason || '未知原因';
+    counts.set(reason, (counts.get(reason) ?? 0) + 1);
+  }
+
+  return Array.from(counts.entries())
+    .map(([reason, count]) => `${reason} ${count}`)
+    .join(' · ');
+}
+
+function compareInvitationEntries(left: RareGuestInvitationEntry, right: RareGuestInvitationEntry): number {
+  const leftCanInvite = left.canInvite ? 1 : 0;
+  const rightCanInvite = right.canInvite ? 1 : 0;
+  if (leftCanInvite !== rightCanInvite) return rightCanInvite - leftCanInvite;
+
+  const leftCurrent = left.isCurrentScene ? 1 : 0;
+  const rightCurrent = right.isCurrentScene ? 1 : 0;
+  if (leftCurrent !== rightCurrent) return rightCurrent - leftCurrent;
+
+  const sceneCompare = formatInvitationScenes(left).localeCompare(formatInvitationScenes(right), 'zh-Hans-CN');
+  if (sceneCompare !== 0) return sceneCompare;
+
+  return (left.name || left.runtimeName || `#${left.id}`).localeCompare(
+    right.name || right.runtimeName || `#${right.id}`,
+    'zh-Hans-CN',
+  );
+}
+
+function formatInvitationScenes(entry: RareGuestInvitationEntry): string {
+  const scenes = (entry.sceneNames?.length ? entry.sceneNames : entry.sceneLabels ?? [])
+    .filter(Boolean);
+  if (scenes.length === 0) return '';
+  return scenes.slice(0, 2).join(' / ') + (scenes.length > 2 ? ` +${scenes.length - 2}` : '');
+}
+
+function formatInvitationStatus(entry: RareGuestInvitationEntry): string {
+  if (entry.canInvite) return '可邀请';
+  if (entry.status === 'invited') return '已邀请';
+  if (entry.status === 'low-kizuna' && typeof entry.kizunaLevel === 'number') return `羁绊 ${entry.kizunaLevel}`;
+  if (entry.status === 'unavailable') return '不可见';
+  if (entry.status === 'missing-dialog') return '无邀请对话';
+  return entry.reason || '不可邀请';
+}
+
+function buildRuntimeSets(
+  runtime: RecommendationStateSnapshot | null,
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
+): RuntimeSets | null {
   if (!runtime) return null;
   const ingredientIds = new Set(runtime.availableIngredientIds);
-  const allIngredientIds = (allIngredients as IIngredient[]).map((ingredient) => ingredient.id);
+  const allIngredientIds = data.ingredients.map((ingredient) => ingredient.id);
   const unavailableIngredientIds = new Set(allIngredientIds.filter((id) => !ingredientIds.has(id)));
 
   return {
@@ -3414,6 +6335,365 @@ function buildRuntimeSets(runtime: RecommendationStateSnapshot | null): RuntimeS
     placedCookerNames: buildPlacedCookerNameSet(runtime),
     hasCookerSnapshot: (runtime.placedCookers?.length ?? 0) > 0 || (runtime.placedCookerTypeIds?.length ?? 0) > 0,
   };
+}
+
+function buildAutomationCookerCapacity(runtime: RecommendationStateSnapshot | null | undefined): Map<string, number> {
+  const capacity = new Map<string, number>();
+  if (!runtime) return capacity;
+
+  for (const cooker of runtime.placedCookers ?? []) {
+    const keys = new Set<string>();
+    for (const typeName of cooker.typeNames ?? []) {
+      const normalized = normalizeCookerName(typeName);
+      if (normalized) keys.add(normalized);
+    }
+
+    for (const typeId of cooker.typeIds ?? []) {
+      const mapped = COOKER_TYPE_NAME_BY_ID.get(typeId);
+      const normalized = normalizeCookerName(mapped);
+      if (normalized) keys.add(normalized);
+    }
+
+    const name = normalizeCookerName(cooker.name);
+    if (name) keys.add(name);
+
+    for (const key of keys) {
+      capacity.set(key, (capacity.get(key) ?? 0) + 1);
+    }
+  }
+
+  if (capacity.size === 0) {
+    for (const typeId of runtime.placedCookerTypeIds ?? []) {
+      const key = normalizeCookerName(COOKER_TYPE_NAME_BY_ID.get(typeId));
+      if (!key) continue;
+      capacity.set(key, Math.max(1, capacity.get(key) ?? 0));
+    }
+  }
+
+  return capacity;
+}
+
+function getCookerSlotCapacity(key: string, capacity: Map<string, number>): number {
+  return Math.max(1, capacity.get(key) ?? 1);
+}
+
+function getRareCookerRequirement(target: RareAutomationRecipeTarget | null): CookerRequirement | null {
+  const key = normalizeCookerName(target?.cookerName);
+  if (!key) return null;
+  return {
+    key,
+    label: key,
+  };
+}
+
+function getNormalCookerRequirement(
+  order: NormalBusinessOrder,
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
+): CookerRequirement | null {
+  const recipe = getNormalOrderRecipe(order, data);
+  if (!recipe) return null;
+  return getRecipeCookerRequirement(recipe);
+}
+
+function getRecipeCookerRequirement(recipe: IRecipe | null | undefined): CookerRequirement | null {
+  const key = normalizeCookerName(recipe?.cooker);
+  if (!key) return null;
+  return {
+    key,
+    label: key,
+  };
+}
+
+function getNormalOrderRecipe(
+  order: NormalBusinessOrder,
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
+): IRecipe | null {
+  const indexes = buildRecommendationDataIndexes(data);
+  return indexes.recipeByFoodId.get(order.foodId)
+    ?? data.recipes.find((item) => item.recipeId === order.foodId)
+    ?? null;
+}
+
+function buildNormalCookerDemand(
+  orders: NormalBusinessOrder[],
+  states: Map<string, NormalAutoOrderState>,
+  preferences: CompanionPreferences,
+  runtime: RecommendationStateSnapshot | null | undefined,
+  now: number,
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
+): NormalCookerDemand {
+  const counts = new Map<string, number>();
+  const labels = new Map<string, string[]>();
+  if (!preferences.automationEnabled || !preferences.autoNormalOrderEnabled || !preferences.autoNormalStartCooking) {
+    return { counts, labels };
+  }
+
+  const capacity = buildAutomationCookerCapacity(runtime);
+  let reservedOrders = 0;
+  for (const order of sortNormalOrders(orders).filter((item) => !item.isFulfilled)) {
+    const state = states.get(buildNormalAutoOrderKey(order));
+    if (!shouldAttemptNormalCooking(order, state, preferences, now)) continue;
+
+    const cooker = getNormalCookerRequirement(order, data);
+    if (!cooker) continue;
+
+    const limit = getCookerSlotCapacity(cooker.key, capacity);
+    const used = counts.get(cooker.key) ?? 0;
+    if (used >= limit) continue;
+
+    counts.set(cooker.key, used + 1);
+    const items = labels.get(cooker.key) ?? [];
+    items.push(`桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}`);
+    labels.set(cooker.key, items);
+    reservedOrders += 1;
+    if (reservedOrders >= preferences.autoNormalConcurrency) break;
+  }
+
+  return { counts, labels };
+}
+
+function buildAutomationResourceOverview({
+  runtime,
+  recommendations,
+  favorites,
+  preferences,
+  normalOrders,
+  rareDiagnostics,
+  normalDiagnostics,
+  data,
+}: {
+  runtime: RecommendationStateSnapshot | null;
+  recommendations: OrderRecommendation[];
+  favorites: FavoriteData;
+  preferences: CompanionPreferences;
+  normalOrders: NormalBusinessOrder[];
+  rareDiagnostics: RareAutoOrderDiagnostic[];
+  normalDiagnostics: NormalAutoOrderDiagnostic[];
+  data: RecommendationDataSet;
+}): AutomationResourceOverview {
+  if (!preferences.automationEnabled) {
+    return { cookers: [], tray: [] };
+  }
+
+  const capacity = buildAutomationCookerCapacity(runtime);
+  const cookerRows = new Map<string, AutomationCookerResourceRow>();
+  for (const [key, count] of capacity.entries()) {
+    ensureCookerResourceRow(cookerRows, key, key, count);
+  }
+
+  const normalDiagnosticByKey = new Map(normalDiagnostics.map((item) => [item.orderKey, item]));
+  if (preferences.autoNormalOrderEnabled && preferences.autoNormalStartCooking) {
+    let normalReserved = 0;
+    for (const order of sortNormalOrders(normalOrders).filter((item) => !item.isFulfilled)) {
+      if (normalReserved >= preferences.autoNormalConcurrency) break;
+      const diagnostic = normalDiagnosticByKey.get(buildNormalAutoOrderKey(order));
+      if (diagnostic?.prepared || diagnostic?.collected || diagnostic?.paused || diagnostic?.hasServedFood) continue;
+      const cooker = getNormalCookerRequirement(order, data);
+      if (!cooker) continue;
+      const row = ensureCookerResourceRow(cookerRows, cooker.key, cooker.label, getCookerSlotCapacity(cooker.key, capacity));
+      if (row.normalReserved + row.rareReserved >= row.capacity) continue;
+      row.normalReserved += 1;
+      row.labels.push(`普客 桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}`);
+      normalReserved += 1;
+    }
+  }
+
+  const rareDiagnosticByKey = new Map(rareDiagnostics.map((item) => [item.orderKey, item]));
+  if (preferences.autoPrepStartCooking) {
+    const candidates = selectOrderPreparationCandidates(
+      recommendations,
+      favorites,
+      preferences,
+      preferences.autoRareConcurrency,
+      new Map(),
+    );
+    for (const selection of candidates.selections) {
+      const diagnostic = rareDiagnosticByKey.get(buildAutoOrderKey(selection.item));
+      if (diagnostic?.prepared || diagnostic?.hasServedFood || diagnostic?.paused) continue;
+      const cooker = getRareCookerRequirement(selection.recipeTarget);
+      if (!cooker) continue;
+      const row = ensureCookerResourceRow(cookerRows, cooker.key, cooker.label, getCookerSlotCapacity(cooker.key, capacity));
+      if (row.normalReserved + row.rareReserved >= row.capacity) continue;
+      row.rareReserved += 1;
+      row.labels.push(`稀客 ${selection.item.order.guestName || '未知'} · 桌 ${formatDesk(selection.item.order.deskCode)}`);
+    }
+  }
+
+  return {
+    cookers: [...cookerRows.values()]
+      .filter((row) => row.normalReserved + row.rareReserved > 0)
+      .sort((left, right) => left.label.localeCompare(right.label, 'zh-CN')),
+    tray: buildTrayResourceRows(rareDiagnostics),
+  };
+}
+
+function ensureCookerResourceRow(
+  rows: Map<string, AutomationCookerResourceRow>,
+  key: string,
+  label: string,
+  capacity: number,
+): AutomationCookerResourceRow {
+  const existing = rows.get(key);
+  if (existing) {
+    existing.capacity = Math.max(existing.capacity, capacity);
+    return existing;
+  }
+
+  const row: AutomationCookerResourceRow = {
+    key,
+    label,
+    capacity: Math.max(1, capacity),
+    normalReserved: 0,
+    rareReserved: 0,
+    labels: [],
+  };
+  rows.set(key, row);
+  return row;
+}
+
+function buildTrayResourceRows(diagnostics: RareAutoOrderDiagnostic[]): AutomationTrayResourceRow[] {
+  const foodLabels: string[] = [];
+  const beverageLabels: string[] = [];
+  for (const diagnostic of diagnostics) {
+    if (diagnostic.paused) continue;
+    if (diagnostic.prepared && !diagnostic.hasServedFood) {
+      foodLabels.push(`${diagnostic.title} · ${diagnostic.recipeName || '料理'}`);
+    }
+
+    if (diagnostic.beverageHandled && !diagnostic.hasServedBeverage) {
+      beverageLabels.push(`${diagnostic.title} · ${diagnostic.beverageName || '酒水'}`);
+    }
+  }
+
+  return [
+    {
+      key: 'food',
+      label: '料理占用/待送',
+      count: foodLabels.length,
+      labels: foodLabels,
+    },
+    {
+      key: 'beverage',
+      label: '酒水占用/待送',
+      count: beverageLabels.length,
+      labels: beverageLabels,
+    },
+  ].filter((row) => row.count > 0);
+}
+
+function shouldAttemptNormalCooking(
+  order: NormalBusinessOrder,
+  state: NormalAutoOrderState | undefined,
+  preferences: CompanionPreferences,
+  now: number,
+): boolean {
+  if (!preferences.autoNormalStartCooking) return false;
+  if (order.hasServedFood || order.foodId < 0) return false;
+  if (state?.collected) return false;
+  if (state?.paused && !isRecoverableNormalPausedState(state, now)) return false;
+  return !state?.prepared || isNormalOrderPreparedStale(state, now, preferences);
+}
+
+function shouldAttemptNormalBeverage(
+  order: NormalBusinessOrder,
+  state: NormalAutoOrderState | undefined,
+  preferences: CompanionPreferences,
+  now: number,
+): boolean {
+  if (!preferences.autoNormalTakeBeverage) return false;
+  if (order.hasServedBeverage || order.beverageId < 0) return false;
+  if (state?.beverageHandled) return false;
+  if (state?.paused && !isRecoverableNormalPausedState(state, now)) return false;
+  return true;
+}
+
+function shouldConfirmNormalCollection(
+  order: NormalBusinessOrder,
+  state: NormalAutoOrderState | undefined,
+  preferences: CompanionPreferences,
+  now: number,
+): boolean {
+  if (!preferences.autoNormalCollectCooking) return false;
+  if (order.hasServedFood || order.foodId < 0) return false;
+  if (!state) return false;
+  if (state.paused && !isRecoverableNormalPausedState(state, now)) return false;
+  if (state.collected) {
+    return isAutomationTimestampStale(state.stepStartedAtMs, now, preferences.autoNormalStorageWaitSeconds * 1000);
+  }
+
+  if (!state.prepared) return false;
+  return isNormalOrderPreparedStale(state, now, preferences);
+}
+
+function shouldAttemptNormalFoodDelivery(
+  order: NormalBusinessOrder,
+  state: NormalAutoOrderState | undefined,
+  preferences: CompanionPreferences,
+  now: number,
+): boolean {
+  if (!preferences.autoNormalDeliverFood) return false;
+  if (order.hasServedFood || order.foodId < 0) return false;
+  if (state?.foodDelivered) return false;
+  if (state?.paused && !isRecoverableNormalPausedState(state, now)) return false;
+  return Boolean(state?.collected);
+}
+
+function shouldAttemptNormalCompletion(
+  order: NormalBusinessOrder,
+  state: NormalAutoOrderState | undefined,
+  preferences: CompanionPreferences,
+  now: number,
+): boolean {
+  if (!preferences.autoNormalCompleteOrder) return false;
+  if (order.isFulfilled || state?.completed) return false;
+  if (state?.paused && !isRecoverableNormalPausedState(state, now)) return false;
+  const hasFood = order.hasServedFood || state?.foodDelivered;
+  const hasBeverage = order.hasServedBeverage || state?.beverageHandled;
+  return Boolean(hasFood && hasBeverage);
+}
+
+function reserveAutomationCookerSlot(
+  cycle: AutomationCookerCycle,
+  cooker: CookerRequirement | null,
+  label: string,
+  capacity: Map<string, number>,
+): CookerReservationResult {
+  if (!cooker) return { ok: true, message: '' };
+  const limit = getCookerSlotCapacity(cooker.key, capacity);
+  const used = cycle.used.get(cooker.key) ?? 0;
+  if (used >= limit) {
+    const owners = cycle.labels.get(cooker.key) ?? [];
+    return {
+      ok: false,
+      message: `等待厨具 ${cooker.label}：本轮可用容量 ${limit} 已预约${owners.length > 0 ? `（${owners.join('、')}）` : ''}。`,
+    };
+  }
+
+  cycle.used.set(cooker.key, used + 1);
+  cycle.labels.set(cooker.key, [...(cycle.labels.get(cooker.key) ?? []), label]);
+  return { ok: true, message: '' };
+}
+
+function reserveRareCookerSlot(
+  cycle: AutomationCookerCycle,
+  cooker: CookerRequirement | null,
+  label: string,
+  capacity: Map<string, number>,
+  normalDemand: NormalCookerDemand,
+): CookerReservationResult {
+  if (!cooker) return { ok: true, message: '' };
+  const limit = getCookerSlotCapacity(cooker.key, capacity);
+  const used = cycle.used.get(cooker.key) ?? 0;
+  const normalReserved = normalDemand.counts.get(cooker.key) ?? 0;
+  if (normalReserved > 0 && used + normalReserved >= limit) {
+    const normalLabels = normalDemand.labels.get(cooker.key) ?? [];
+    return {
+      ok: false,
+      message: `等待厨具 ${cooker.label}：本轮优先给普客订单使用${normalLabels.length > 0 ? `（${normalLabels.join('、')}）` : ''}。`,
+    };
+  }
+
+  return reserveAutomationCookerSlot(cycle, cooker, label, capacity);
 }
 
 function buildPlacedCookerNameSet(runtime: RecommendationStateSnapshot): Set<string> {
@@ -3460,9 +6740,10 @@ function resolveCookerTypeId(value: string | null | undefined): number {
 }
 
 function toRuntimeRareCustomer(customer: RuntimeRareCustomer): ICustomerRare {
+  const name = (customer.name || '').trim();
   return {
     id: customer.id,
-    name: customer.name || customer.runtimeStringId || `运行时稀客 ${customer.id}`,
+    name,
     description: `运行时稀客数据: ${customer.runtimeStringId || customer.source || customer.id}`,
     dlc: 0,
     places: normalizeRuntimePlaces(customer.places),
@@ -3486,15 +6767,38 @@ function normalizeRuntimePlaces(places: string[]): TPlace[] {
   const normalized = places
     .map((place) => normalizePlace(place))
     .filter((place): place is TPlace => Boolean(place));
-  return normalized.length > 0 ? [...new Set(normalized)] : [...ALL_PLACES];
+  return [...new Set(normalized)];
 }
 
 function dedupeStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
-function buildRareCustomerMap(runtimeRareCustomers: ICustomerRare[]): Map<number, ICustomerRare> {
-  const map = new Map(getAllRareCustomers().map((customer) => [customer.id, customer]));
+function isUsableRareCustomer(customer: ICustomerRare): boolean {
+  return isUsableRareCustomerName(customer.name)
+    && customer.positiveTags.some(isOrderableRareFoodTag)
+    && customer.beverageTags.length > 0;
+}
+
+function isSelectableRareCustomer(customer: ICustomerRare): boolean {
+  return isUsableRareCustomer(customer) && customer.places.length > 0;
+}
+
+function isUsableRareCustomerName(value: string): boolean {
+  const name = value.trim();
+  return Boolean(name)
+    && name !== 'missing'
+    && name !== 'null'
+    && !name.includes('?')
+    && !name.startsWith('#')
+    && !/^[A-Za-z0-9_]+$/.test(name);
+}
+
+function buildRareCustomerMap(
+  runtimeRareCustomers: ICustomerRare[],
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
+): Map<number, ICustomerRare> {
+  const map = new Map(getAllRareCustomers(data).map((customer) => [customer.id, customer]));
   for (const customer of runtimeRareCustomers) {
     if (!map.has(customer.id)) map.set(customer.id, customer);
   }
@@ -3526,6 +6830,26 @@ function sortNightOrderRows<T extends { order: NightBusinessOrder }>(
 ): T[] {
   const groupFirstSeen = buildOrderGroupFirstSeen(rows.map((row) => row.order));
   return [...rows].sort((left, right) => compareNightOrders(left.order, right.order, mode, groupFirstSeen));
+}
+
+function sortNormalOrders(orders: NormalBusinessOrder[]): NormalBusinessOrder[] {
+  return [...orders].sort(compareNormalOrdersByTime);
+}
+
+function compareNormalOrdersByTime(left: NormalBusinessOrder, right: NormalBusinessOrder): number {
+  const leftSeenAt = getNormalOrderSeenTime(left);
+  const rightSeenAt = getNormalOrderSeenTime(right);
+  if (leftSeenAt !== rightSeenAt) return leftSeenAt - rightSeenAt;
+  if (left.deskCode !== right.deskCode) return left.deskCode - right.deskCode;
+  const foodCompare = left.foodName.localeCompare(right.foodName, 'zh-Hans-CN');
+  if (foodCompare !== 0) return foodCompare;
+  return left.beverageName.localeCompare(right.beverageName, 'zh-Hans-CN');
+}
+
+function getNormalOrderSeenTime(order: NormalBusinessOrder): number {
+  if (!order.firstSeenAtUtc) return Number.MAX_SAFE_INTEGER;
+  const time = Date.parse(order.firstSeenAtUtc);
+  return Number.isFinite(time) ? time : Number.MAX_SAFE_INTEGER;
 }
 
 function compareNightOrders(
@@ -3604,6 +6928,10 @@ function inventoryDraftKey(kind: 'ingredient' | 'beverage', itemId: number) {
   return `${kind}:${itemId}`;
 }
 
+function inventoryBulkKey(kind: 'ingredient' | 'beverage') {
+  return `bulk:${kind}`;
+}
+
 function normalizeEditableQuantity(value: number) {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(9999, Math.trunc(value)));
@@ -3621,6 +6949,8 @@ function buildOrderRecommendations(
   cache: Map<string, CachedRecommendation>,
   favorites: FavoriteData,
   preferences: CompanionPreferences,
+  missionServeTargets: RuntimeMissionServeTarget[] = [],
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
 ): { recommendations: OrderRecommendation[]; recommendationIssues: RecommendationIssue[] } {
   if (orders.length === 0) return { recommendations: [], recommendationIssues: [] };
   const sortedOrders = sortNightOrders(orders, preferences.serviceOrderSortMode);
@@ -3631,10 +6961,12 @@ function buildOrderRecommendations(
     };
   }
 
-  const runtimeSets = buildRuntimeSets(runtime);
+  const runtimeSets = buildRuntimeSets(runtime, data);
   if (!runtimeSets) return { recommendations: [], recommendationIssues: [] };
 
-  const stateSignature = buildRecommendationStateSignature(runtime, preferences);
+  const dataIndexes = buildRecommendationDataIndexes(data);
+  const specialFoodRule = buildSpecialFoodRuleRankOptions(runtime.specialRules);
+  const stateSignature = `${data.source}:${data.status}|${buildRecommendationStateSignature(runtime, preferences)}`;
   const recommendations: OrderRecommendation[] = [];
   const recommendationIssues: RecommendationIssue[] = [];
 
@@ -3667,6 +6999,8 @@ function buildOrderRecommendations(
         4,
         runtimeSets.ownedIngredientQty,
         runtime.famousShopEnabled,
+        { specialFoodRule },
+        data,
       )
         .filter((recipe) => shouldKeepRecipeForCooker(recipe, runtimeSets, preferences.filterMissingCookers))
         .sort((a, b) => compareRareRecipesForService(
@@ -3675,6 +7009,7 @@ function buildOrderRecommendations(
           runtimeSets.ownedIngredientQty,
           preferences.recipeSortRules,
           runtimeSets,
+          dataIndexes,
         ));
 
       const preferenceRecipes = recipes.length >= 3
@@ -3691,6 +7026,8 @@ function buildOrderRecommendations(
           4,
           runtimeSets.ownedIngredientQty,
           runtime.famousShopEnabled,
+          data,
+          { specialFoodRule },
         )
           .filter((recipe) => shouldKeepRecipeForCooker(recipe, runtimeSets, preferences.filterMissingCookers))
           .sort((a, b) => compareRareRecipesForService(
@@ -3699,9 +7036,10 @@ function buildOrderRecommendations(
             runtimeSets.ownedIngredientQty,
             preferences.recipeSortRules,
             runtimeSets,
+            dataIndexes,
           ));
 
-      const beverages = rankBeveragesForRare(customer, beverageTag, runtimeSets.beverageIds)
+      const beverages = rankBeveragesForRare(customer, beverageTag, runtimeSets.beverageIds, data)
         .sort((a, b) => compareRareBeveragesForService(
           a,
           b,
@@ -3711,7 +7049,7 @@ function buildOrderRecommendations(
 
       const preferenceBeverages = beverages.length >= 3
         ? []
-        : rankPreferenceBeveragesForRare(customer, beverageTag, runtimeSets.beverageIds)
+        : rankPreferenceBeveragesForRare(customer, beverageTag, runtimeSets.beverageIds, data)
           .sort((a, b) => compareRareBeveragesForService(
             a,
             b,
@@ -3724,17 +7062,61 @@ function buildOrderRecommendations(
       trimRecommendationCache(cache);
     }
 
+    const missionTarget = preferences.prioritizeMissionRecipes
+      ? findMissionServeTargetForOrder(order, missionServeTargets)
+      : null;
+    let recipeRows = promoteFavoriteRecipes(cached.recipes, favorites, customer.id, foodTag);
+    let preferenceRecipeRows = cached.preferenceRecipes;
+    if (missionTarget) {
+      const missionRecipe = findOrBuildMissionRecipe(
+        missionTarget.recipeId,
+        recipeRows,
+        preferenceRecipeRows,
+        customer,
+        foodTag,
+        beverageTag,
+        runtime,
+        runtimeSets,
+        preferences,
+        data,
+      );
+      if (missionRecipe) {
+        recipeRows = promoteMissionRecipe(
+          addRecipeRowIfMissing(recipeRows, missionRecipe),
+          missionTarget.recipeId,
+        );
+        preferenceRecipeRows = preferenceRecipeRows.filter((row) => row.recipe.id !== missionTarget.recipeId);
+      }
+    }
+
     recommendations.push({
       order,
       customer: cached.customer,
-      recipes: promoteFavoriteRecipes(cached.recipes, favorites, customer.id, foodTag).slice(0, MAX_FOCUS_RECOMMENDATION_ROWS),
+      recipes: recipeRows.slice(0, MAX_FOCUS_RECOMMENDATION_ROWS),
       beverages: promoteFavoriteBeverages(cached.beverages, favorites, customer.id, beverageTag).slice(0, MAX_FOCUS_RECOMMENDATION_ROWS),
-      preferenceRecipes: cached.preferenceRecipes.slice(0, MAX_FOCUS_RECOMMENDATION_ROWS),
+      preferenceRecipes: preferenceRecipeRows.slice(0, MAX_FOCUS_RECOMMENDATION_ROWS),
       preferenceBeverages: cached.preferenceBeverages.slice(0, MAX_FOCUS_RECOMMENDATION_ROWS),
     });
   }
 
   return { recommendations, recommendationIssues };
+}
+
+function buildSpecialFoodRuleRankOptions(
+  rules: RuntimeSpecialRuleContext[] | undefined,
+): SpecialFoodRuleRankOptions | undefined {
+  const activeRules = (rules ?? []).filter((rule) => rule.foodTagTargets.length > 0);
+  if (activeRules.length === 0) return undefined;
+
+  const targetTags = activeRules
+    .flatMap((rule) => rule.foodTagTargets.map((target) => target.name.trim()))
+    .filter(Boolean);
+  if (targetTags.length === 0) return undefined;
+
+  return {
+    targetTags: [...new Set(targetTags)],
+    matchMode: activeRules.some((rule) => rule.matchMode === 'all') ? 'all' : 'any',
+  };
 }
 
 type OrderPreparationSelection =
@@ -3743,6 +7125,8 @@ type OrderPreparationSelection =
       item: OrderRecommendation;
       recipe: IRareRecipeResult | null;
       beverage: IRareBeverageResult | null;
+      recipeTarget: RareAutomationRecipeTarget | null;
+      beverageTarget: RareAutomationBeverageTarget | null;
       recipeFavorite: FavoriteRecipeEntry | null;
       beverageFavorite: FavoriteBeverageEntry | null;
     }
@@ -3751,52 +7135,121 @@ type OrderPreparationSelection =
       message: string;
     };
 
-function selectNextOrderPreparation(
+type ValidOrderPreparationSelection = Extract<OrderPreparationSelection, { ok: true }>;
+
+function selectOrderPreparationCandidates(
   recommendations: OrderRecommendation[],
   favorites: FavoriteData,
   preferences: CompanionPreferences,
-): OrderPreparationSelection {
+  limit: number,
+  states: ReadonlyMap<string, AutoFirstOrderState>,
+): { selections: ValidOrderPreparationSelection[]; messages: string[]; message: string } {
   const rows = sortNightOrderRows(
     recommendations.map((item) => ({ order: item.order, item })),
     preferences.serviceOrderSortMode,
   );
   if (rows.length === 0) {
-    return { ok: false, message: '暂无可准备的稀客订单。' };
+    return { selections: [], messages: [], message: '暂无可准备的稀客订单。' };
   }
 
-  const item = rows[0].item;
-  const recipePick = pickRecipeForPreparation(item, favorites, preferences);
-  const beveragePick = pickBeverageForPreparation(item, favorites, preferences);
-  if (!recipePick.ok && (preferences.autoPrepStartCooking || preferences.autoPrepFavoritesOnly)) {
-    return {
-      ok: false,
-      message: preferences.autoPrepFavoritesOnly
-        ? '当前第一笔稀客订单没有匹配的收藏料理。'
-        : '当前第一笔稀客订单没有可用的推荐料理。',
-    };
-  }
-  if (!beveragePick.ok && (preferences.autoPrepTakeBeverage || preferences.autoPrepFavoritesOnly)) {
-    return {
-      ok: false,
-      message: preferences.autoPrepFavoritesOnly
-        ? '当前第一笔稀客订单没有匹配的收藏酒水。'
-        : '当前第一笔稀客订单没有可用的推荐酒水。',
-    };
+  const selections: ValidOrderPreparationSelection[] = [];
+  const messages: string[] = [];
+  for (const row of rows) {
+    const item = row.item;
+    const label = formatRareAutomationPrefix(item);
+    const state = states.get(buildAutoOrderKey(item));
+    const recipePick = pickRecipeForPreparation(item, favorites, preferences);
+    const beveragePick = pickBeverageForPreparation(item, favorites, preferences);
+    const recipeTarget = state?.recipeTarget ?? (recipePick.ok
+      ? buildRareRecipeTarget(item, recipePick.recipe, recipePick.favorite, recipePick.preferenceFallback)
+      : null);
+    const beverageTarget = state?.beverageTarget ?? (beveragePick.ok ? buildRareBeverageTarget(beveragePick.beverage, beveragePick.favorite) : null);
+
+    if (!recipeTarget && (preferences.autoPrepStartCooking || preferences.autoPrepFavoritesOnly)) {
+      messages.push(`${label}\n${preferences.autoPrepFavoritesOnly ? '没有匹配的收藏料理。' : '没有可用的推荐料理。'}`);
+      continue;
+    }
+    if (!beverageTarget && (preferences.autoPrepTakeBeverage || preferences.autoPrepFavoritesOnly)) {
+      messages.push(`${label}\n${preferences.autoPrepFavoritesOnly ? '没有匹配的收藏酒水。' : '没有可用的推荐酒水。'}`);
+      continue;
+    }
+
+    selections.push({
+      ok: true,
+      item,
+      recipe: recipePick.ok ? recipePick.recipe : null,
+      beverage: beveragePick.ok ? beveragePick.beverage : null,
+      recipeTarget,
+      beverageTarget,
+      recipeFavorite: recipePick.ok ? recipePick.favorite : null,
+      beverageFavorite: beveragePick.ok ? beveragePick.favorite : null,
+    });
+    if (selections.length >= limit) break;
   }
 
   return {
-    ok: true,
-    item,
-    recipe: recipePick.ok ? recipePick.recipe : null,
-    beverage: beveragePick.ok ? beveragePick.beverage : null,
-    recipeFavorite: recipePick.ok ? recipePick.favorite : null,
-    beverageFavorite: beveragePick.ok ? beveragePick.favorite : null,
+    selections,
+    messages,
+    message: selections.length > 0 ? '' : messages[0] ?? '当前稀客订单没有可执行的自动化候选。',
+  };
+}
+
+function buildRareRecipeTarget(
+  item: OrderRecommendation,
+  recipe: IRareRecipeResult,
+  favorite: FavoriteRecipeEntry | null,
+  preferenceFallback = false,
+): RareAutomationRecipeTarget {
+  const acceptableFoodIds = uniqueNumbers([
+    recipe.recipe.id,
+    ...item.recipes.map((candidate) => candidate.recipe.id),
+  ]);
+  return {
+    recipeId: recipe.recipe.recipeId,
+    foodId: recipe.recipe.id,
+    recipeName: recipe.recipe.name,
+    cookerName: recipe.recipe.cooker,
+    extraIngredientIds: recipe.extraIngredients.map((ingredient) => ingredient.id),
+    acceptableFoodIds,
+    favorite: Boolean(favorite),
+    preferenceFallback,
+  };
+}
+
+function buildRareBeverageTarget(
+  beverage: IRareBeverageResult,
+  favorite: FavoriteBeverageEntry | null,
+): RareAutomationBeverageTarget {
+  return {
+    beverageId: beverage.beverage.id,
+    beverageName: beverage.beverage.name,
+    favorite: Boolean(favorite),
+  };
+}
+
+function uniqueNumbers(values: number[]): number[] {
+  return [...new Set(values.filter((value) => Number.isFinite(value) && value >= 0))];
+}
+
+function lockRareAutomationTargets(
+  state: AutoFirstOrderState,
+  selection: ValidOrderPreparationSelection,
+): AutoFirstOrderState {
+  const recipeTarget = state.recipeTarget ?? selection.recipeTarget;
+  const beverageTarget = state.beverageTarget ?? selection.beverageTarget;
+  if (recipeTarget === state.recipeTarget && beverageTarget === state.beverageTarget) return state;
+
+  return {
+    ...state,
+    recipeTarget,
+    beverageTarget,
   };
 }
 
 function buildGameUiPinningTarget(
   recommendations: OrderRecommendation[],
   orderSortMode: ServiceOrderSortMode,
+  indexes: ReturnType<typeof buildRecommendationDataIndexes> = DEFAULT_DATA_INDEXES,
 ): GameUiPinningTarget | null {
   const item = sortNightOrderRows(
     recommendations.map((recommendation) => ({ order: recommendation.order, recommendation })),
@@ -3809,7 +7262,7 @@ function buildGameUiPinningTarget(
 
   const baseIngredientIds = recipe
     ? recipe.recipe.ingredients
-      .map((name) => INGREDIENT_BY_NAME.get(name)?.id ?? -1)
+      .map((name) => indexes.ingredientByName.get(name)?.id ?? -1)
       .filter((id) => id >= 0)
     : [];
   const ingredientIds = normalizeIdList([
@@ -3858,6 +7311,14 @@ function hasAutomationActionEnabled(preferences: CompanionPreferences): boolean 
     || preferences.autoPrepCollectCooking;
 }
 
+function hasNormalOrderActionEnabled(preferences: CompanionPreferences): boolean {
+  return preferences.autoNormalTakeBeverage
+    || preferences.autoNormalStartCooking
+    || preferences.autoNormalCollectCooking
+    || preferences.autoNormalDeliverFood
+    || preferences.autoNormalCompleteOrder;
+}
+
 function buildAutoOrderKey(item: OrderRecommendation): string {
   const order = item.order;
   return [
@@ -3869,25 +7330,502 @@ function buildAutoOrderKey(item: OrderRecommendation): string {
   ].join('|');
 }
 
-function emptyAutoFirstOrderState(): AutoFirstOrderState {
+function buildNightBusinessOrderKey(order: NightBusinessOrder): string {
+  return [
+    order.firstSeenAtUtc ?? order.lastSeenAtUtc ?? '',
+    order.deskCode,
+    order.guestId ?? order.guestName,
+    order.foodTagId,
+    order.foodTag,
+    order.beverageTagId,
+    order.beverageTag,
+    order.source,
+  ].join('|');
+}
+
+function formatRareAutomationPrefix(item: OrderRecommendation): string {
+  const order = item.order;
+  return `${order.guestName || '稀客'} · 桌 ${formatDesk(order.deskCode)}\n料理 ${order.foodTag || '无'} / 酒水 ${order.beverageTag || '无'}`;
+}
+
+function buildRareAutoOrderDiagnostic(
+  selection: ValidOrderPreparationSelection,
+  state: AutoFirstOrderState,
+  now: number,
+  preferences: CompanionPreferences,
+): RareAutoOrderDiagnostic {
+  const order = selection.item.order;
   return {
-    orderKey: '',
+    orderKey: buildAutoOrderKey(selection.item),
+    title: `${order.guestName || '稀客'} · 桌 ${formatDesk(order.deskCode)}`,
+    foodTag: order.foodTag || '',
+    beverageTag: order.beverageTag || '',
+    recipeName: formatRareAutomationRecipeName(state.recipeTarget, selection.recipeTarget, selection.recipe),
+    beverageName: state.beverageTarget?.beverageName ?? selection.beverageTarget?.beverageName ?? selection.beverage?.beverage.name ?? '',
+    stepLabel: getAutomationStepLabel(state.step),
+    stepSeconds: state.stepStartedAtMs > 0 ? Math.max(0, Math.round((now - state.stepStartedAtMs) / 1000)) : 0,
+    nextAction: getRareAutomationNextAction(state, now, preferences),
+    retryCount: state.retryCount,
+    rollbackCount: state.rollbackCount,
+    lastError: state.lastError,
+    prepared: state.prepared || Boolean(order.hasServedFood),
+    beverageHandled: state.beverageHandled || Boolean(order.hasServedBeverage),
+    hasServedFood: Boolean(order.hasServedFood),
+    hasServedBeverage: Boolean(order.hasServedBeverage),
+    paused: state.paused,
+  };
+}
+
+function formatRareAutomationRecipeName(
+  stateTarget: RareAutomationRecipeTarget | null,
+  selectionTarget: RareAutomationRecipeTarget | null,
+  selectedRecipe: IRareRecipeResult | null,
+): string {
+  const target = stateTarget ?? selectionTarget;
+  const name = target?.recipeName ?? selectedRecipe?.recipe.name ?? '';
+  if (!name) return '';
+  return target?.preferenceFallback ? `${name}（喜好备选）` : name;
+}
+
+function buildNormalAutoOrderDiagnostics(
+  orders: NormalBusinessOrder[],
+  states: Map<string, NormalAutoOrderState>,
+  now: number,
+  preferences: CompanionPreferences,
+): NormalAutoOrderDiagnostic[] {
+  return sortNormalOrders(orders)
+    .filter((order) => !order.isFulfilled)
+    .map((order) => {
+      const orderKey = buildNormalAutoOrderKey(order);
+      const state = states.get(orderKey) ?? emptyNormalAutoOrderState(orderKey, now);
+      return buildNormalAutoOrderDiagnostic(order, state, now, preferences);
+    });
+}
+
+function buildNormalAutoOrderDiagnostic(
+  order: NormalBusinessOrder,
+  state: NormalAutoOrderState,
+  now: number,
+  preferences: CompanionPreferences,
+): NormalAutoOrderDiagnostic {
+  return {
+    orderKey: buildNormalAutoOrderKey(order),
+    title: `桌 ${formatDesk(order.deskCode)} · ${order.foodName || `#${order.foodId}`}`,
+    foodName: order.foodName || `#${order.foodId}`,
+    beverageName: order.beverageName || `#${order.beverageId}`,
+    source: order.source || '',
+    stepLabel: getAutomationStepLabel(state.step),
+    stepSeconds: state.stepStartedAtMs > 0 ? Math.max(0, Math.round((now - state.stepStartedAtMs) / 1000)) : 0,
+    nextAction: getNormalAutomationNextAction(state, now, preferences),
+    retryCount: state.retryCount,
+    rollbackCount: state.rollbackCount,
+    lastError: state.lastError,
+    prepared: state.prepared,
+    beverageHandled: state.beverageHandled || order.hasServedBeverage,
+    collected: state.collected,
+    foodDelivered: state.foodDelivered || order.hasServedFood,
+    completed: state.completed || order.isFulfilled,
+    paused: state.paused,
+    hasServedFood: order.hasServedFood,
+    hasServedBeverage: order.hasServedBeverage,
+  };
+}
+
+function getRareAutomationNextAction(
+  state: AutoFirstOrderState,
+  now: number,
+  preferences: CompanionPreferences,
+): string {
+  if (state.paused) return '等待手动重试或订单变化';
+  if (state.prepared && state.step === 'wait-food-tray') {
+    return formatRemainingAction(state.preparedAtMs, now, preferences.autoRareTrayWaitSeconds * 1000, '料理回退检查');
+  }
+  if (state.step === 'complete-order') return '下一轮尝试完成订单';
+  if (state.step === 'ensure-beverage') return '下一轮校验取酒';
+  if (state.step === 'ensure-cooking') return '下一轮校验厨具/开锅';
+  if (state.step === 'match-order') return '下一轮匹配订单';
+  if (state.step === 'done') return '等待订单从列表移除';
+  return '下一轮刷新';
+}
+
+function getNormalAutomationNextAction(
+  state: NormalAutoOrderState,
+  now: number,
+  preferences: CompanionPreferences,
+): string {
+  if (state.paused) {
+    if (isRecoverableNormalPausedState(state, now)) return '下一轮自动恢复';
+    if (state.lastError.includes('目标料理长时间未进入普客暂存容器')) {
+      return formatRemainingAction(state.stepStartedAtMs, now, NORMAL_AUTO_RECOVERABLE_PAUSE_RETRY_MS, '自动恢复');
+    }
+    return '等待订单变化或手动处理';
+  }
+  if (state.completed || state.step === 'done') return '等待订单从列表移除';
+  if (state.step === 'complete-order') return '下一轮尝试完成订单';
+  if (state.step === 'deliver-food') return '下一轮尝试送达料理';
+  if (state.step === 'ensure-beverage') return '下一轮校验酒水';
+  if (state.collected) {
+    if (preferences.autoNormalDeliverFood && !state.foodDelivered) return '下一轮尝试送达料理';
+    return formatRemainingAction(state.stepStartedAtMs, now, preferences.autoNormalStorageWaitSeconds * 1000, '保温箱复查');
+  }
+  if (state.prepared) {
+    return formatRemainingAction(state.preparedAtMs, now, preferences.autoNormalStorageWaitSeconds * 1000, '保温箱复查');
+  }
+  if (state.step === 'ensure-cooking') return '下一轮校验厨具/开锅';
+  if (state.step === 'wait-food-stored') return '下一轮确认保温箱';
+  if (state.step === 'match-order') return '下一轮匹配订单';
+  return '下一轮刷新';
+}
+
+function formatRemainingAction(startedAtMs: number, now: number, timeoutMs: number, label: string): string {
+  if (startedAtMs <= 0) return `${label}等待中`;
+  const remainingMs = timeoutMs - (now - startedAtMs);
+  if (remainingMs <= 0) return `下一轮${label}`;
+  return `${label}约 ${Math.ceil(remainingMs / 1000)} 秒`;
+}
+
+function buildNormalAutoOrderKey(order: NormalBusinessOrder): string {
+  if (order.orderKey) return order.orderKey;
+  return [
+    order.firstSeenAtUtc ?? '',
+    order.deskCode,
+    order.guestName,
+    order.foodId,
+    order.beverageId,
+  ].join('|');
+}
+
+function buildNormalOrderAutomationSignature(orders: NormalBusinessOrder[]): string {
+  return sortNormalOrders(orders)
+    .map((order) => [
+      buildNormalAutoOrderKey(order),
+      order.isFulfilled ? 'fulfilled' : 'open',
+      order.hasServedFood ? 'food-served' : 'food-open',
+      order.hasServedBeverage ? 'bev-served' : 'bev-open',
+      order.foodId,
+      order.beverageId,
+      order.deskCode,
+    ].join(':'))
+    .join('|');
+}
+
+function isNormalOrderPreparedStale(
+  state: NormalAutoOrderState | undefined,
+  now: number,
+  preferences: CompanionPreferences,
+): boolean {
+  if (!state?.prepared || state.collected) return false;
+  if (state.paused && !isRecoverableNormalPausedState(state, now)) return false;
+  return state.preparedAtMs > 0 && now - state.preparedAtMs >= preferences.autoNormalStorageWaitSeconds * 1000;
+}
+
+function isRecoverableNormalPausedState(state: NormalAutoOrderState | undefined, now: number): boolean {
+  if (!state?.paused) return false;
+  if (!state.lastError.includes('目标料理长时间未进入普客暂存容器')) return false;
+  return state.stepStartedAtMs <= 0 || now - state.stepStartedAtMs >= NORMAL_AUTO_RECOVERABLE_PAUSE_RETRY_MS;
+}
+
+function emptyAutoFirstOrderState(orderKey = '', now = 0): AutoFirstOrderState {
+  return {
+    orderKey,
+    recipeTarget: null,
+    beverageTarget: null,
     prepared: false,
+    preparedAtMs: 0,
     beverageHandled: false,
+    beverageHandledAtMs: 0,
+    step: 'idle',
+    stepStartedAtMs: now,
+    lastProgressAtMs: now,
+    retryCount: 0,
+    rollbackCount: 0,
+    lastError: '',
     paused: false,
   };
 }
 
-function getMissingTrayPart(response: OrderPreparationResponse): 'food' | 'beverage' | null {
-  if (response.ok) return null;
-  const failedStep = response.steps.find((step) => !step.ok && !step.skipped);
-  if (failedStep?.name.includes('匹配送餐盘料理')) return 'food';
-  if (failedStep?.name.includes('匹配送餐盘酒水')) return 'beverage';
-  return null;
+function emptyNormalAutoOrderState(orderKey: string, now = 0): NormalAutoOrderState {
+  return {
+    orderKey,
+    prepared: false,
+    preparedAtMs: 0,
+    beverageHandled: false,
+    beverageHandledAtMs: 0,
+    collected: false,
+    foodDelivered: false,
+    foodDeliveredAtMs: 0,
+    completed: false,
+    completedAtMs: 0,
+    step: 'match-order',
+    stepStartedAtMs: now,
+    lastProgressAtMs: now,
+    retryCount: 0,
+    rollbackCount: 0,
+    lastError: '',
+    paused: false,
+  };
+}
+
+function isAutomationTimestampStale(value: number, now: number, timeoutMs: number): boolean {
+  return value > 0 && now - value >= timeoutMs;
+}
+
+function markAutomationWaiting<T extends AutoFirstOrderState | NormalAutoOrderState>(
+  state: T,
+  step: AutomationStep,
+  now: number,
+  message: string,
+): T {
+  return {
+    ...state,
+    step,
+    stepStartedAtMs: state.step === step ? state.stepStartedAtMs : now,
+    lastError: message,
+  };
+}
+
+function pauseAutomationState<T extends AutoFirstOrderState | NormalAutoOrderState>(
+  state: T,
+  now: number,
+  message: string,
+): T {
+  return {
+    ...state,
+    paused: true,
+    step: 'paused',
+    stepStartedAtMs: now,
+    lastError: message,
+  };
+}
+
+function updateAutomationAfterResponse<T extends AutoFirstOrderState | NormalAutoOrderState>(
+  state: T,
+  response: OrderPreparationResponse,
+  now: number,
+  step: AutomationStep,
+  stopOnError: boolean,
+  maxStepRetries = DEFAULT_AUTO_STEP_RETRIES,
+): T {
+  const failed = !response.ok;
+  const transientFailure = failed && isTransientAutoPreparationFailure(response);
+  const hardFailure = failed && isHardAutoPreparationFailure(response);
+  const nextRetryCount = failed ? state.retryCount + 1 : 0;
+  const stalled = failed && state.lastProgressAtMs > 0 && now - state.lastProgressAtMs >= AUTO_JOB_STALL_MS;
+  const shouldPause = failed
+    && stopOnError
+    && (hardFailure || (!transientFailure && (stalled || nextRetryCount >= maxStepRetries)));
+  const progressed = response.ok || response.steps.some(isMeaningfulAutomationProgressStep);
+  const nextStep = response.ok
+    ? step
+    : shouldPause
+      ? 'paused'
+      : step;
+
+  return {
+    ...state,
+    step: nextStep,
+    stepStartedAtMs: state.step === nextStep ? state.stepStartedAtMs : now,
+    lastProgressAtMs: progressed ? now : state.lastProgressAtMs,
+    retryCount: nextRetryCount,
+    lastError: failed
+      ? stalled
+        ? `${summarizeOrderPreparationFailure(response)}；超过 ${Math.round(AUTO_JOB_STALL_MS / 1000)} 秒没有进展`
+        : summarizeOrderPreparationFailure(response)
+      : '',
+    paused: shouldPause,
+  };
+}
+
+function formatAutomationState(
+  state: AutoFirstOrderState | NormalAutoOrderState,
+  preferences?: CompanionPreferences,
+): string {
+  const now = Date.now();
+  const maxStepRetries = preferences?.autoMaxStepRetries ?? DEFAULT_AUTO_STEP_RETRIES;
+  const maxRollbacks = preferences?.autoMaxRollbacks ?? DEFAULT_AUTO_ROLLBACKS;
+  const parts = [
+    `状态 ${getAutomationStepLabel(state.step)}`,
+    state.stepStartedAtMs > 0 ? `${Math.max(0, Math.round((now - state.stepStartedAtMs) / 1000))}秒` : '',
+    state.retryCount > 0 ? `重试 ${state.retryCount}/${maxStepRetries}` : '',
+    state.rollbackCount > 0 ? `回退 ${state.rollbackCount}/${maxRollbacks}` : '',
+    state.lastError ? `最近 ${state.lastError}` : '',
+  ].filter(Boolean);
+  return parts.join(' · ');
+}
+
+function getAutomationStepLabel(step: AutomationStep): string {
+  switch (step) {
+    case 'match-order':
+      return '匹配订单';
+    case 'ensure-beverage':
+      return '确认酒水';
+    case 'ensure-cooking':
+      return '确认料理';
+    case 'wait-food-tray':
+      return '等待送餐盘';
+    case 'wait-food-stored':
+      return '等待保温箱';
+    case 'complete-order':
+      return '完成订单';
+    case 'done':
+      return '完成';
+    case 'paused':
+      return '暂停';
+    default:
+      return '待命';
+  }
+}
+
+function isMeaningfulAutomationProgressStep(step: OrderPreparationStep): boolean {
+  if (!step.ok || step.skipped) return false;
+  if (step.name.includes('选择') || step.name.includes('匹配')) return false;
+  return step.name.includes('自动取酒')
+    || step.name.includes('自动开始料理')
+    || step.name.includes('自动收取料理')
+    || step.name.includes('送达料理')
+    || step.name.includes('送达酒水')
+    || step.name.includes('普客开始料理')
+    || step.name.includes('普客保温箱')
+    || step.name.includes('普客送达酒水')
+    || step.name.includes('普客送达料理')
+    || step.name.includes('触发普客评价')
+    || step.name.includes('写入订单')
+    || step.name.includes('触发上菜评价');
+}
+
+function emptyMissingTrayParts() {
+  return { food: false, beverage: false };
+}
+
+function syncRareStateWithOrderServedState(
+  state: AutoFirstOrderState,
+  order: NightBusinessOrder,
+  now: number,
+): AutoFirstOrderState {
+  if (!order.hasServedFood && !order.hasServedBeverage) return state;
+  return applyRareServedStateFromResponse(
+    state,
+    order,
+    {
+      ok: false,
+      prepared: false,
+      error: null,
+      order: {
+        deskCode: order.deskCode,
+        guestId: order.guestId,
+        guestName: order.guestName,
+        foodTag: order.foodTag,
+        beverageTag: order.beverageTag,
+      },
+      recipeId: -1,
+      recipeName: '',
+      beverageId: -1,
+      beverageName: '',
+      servedFood: order.hasServedFood,
+      servedBeverage: order.hasServedBeverage,
+      completedOrder: false,
+      steps: [],
+    },
+    now,
+  );
+}
+
+function applyRareServedStateFromResponse(
+  state: AutoFirstOrderState,
+  order: NightBusinessOrder,
+  response: OrderPreparationResponse,
+  now: number,
+): AutoFirstOrderState {
+  const servedFood = Boolean(response.servedFood)
+    || Boolean(order.hasServedFood)
+    || didCompleteStep(response, '送达料理');
+  const servedBeverage = Boolean(response.servedBeverage)
+    || Boolean(order.hasServedBeverage)
+    || didCompleteStep(response, '送达酒水');
+  if (!servedFood && !servedBeverage) return state;
+
+  const nextPrepared = state.prepared || servedFood;
+  const nextBeverageHandled = state.beverageHandled || servedBeverage;
+  return {
+    ...state,
+    prepared: nextPrepared,
+    preparedAtMs: nextPrepared && !state.prepared ? now : state.preparedAtMs,
+    beverageHandled: nextBeverageHandled,
+    beverageHandledAtMs: nextBeverageHandled && !state.beverageHandled ? now : state.beverageHandledAtMs,
+    lastProgressAtMs: now,
+    step: servedFood && servedBeverage ? 'complete-order' : servedFood ? 'ensure-beverage' : 'wait-food-tray',
+    stepStartedAtMs: now,
+  };
+}
+
+function getMissingTrayParts(response: OrderPreparationResponse) {
+  const missing = emptyMissingTrayParts();
+  if (response.ok) return missing;
+  for (const step of response.steps) {
+    if (step.ok || step.skipped) continue;
+    if (step.name.includes('匹配送餐盘料理')) missing.food = true;
+    if (step.name.includes('匹配送餐盘酒水')) missing.beverage = true;
+  }
+  return missing;
 }
 
 function didCompleteStep(response: OrderPreparationResponse, name: string): boolean {
   return response.steps.some((step) => step.name === name && step.ok && !step.skipped);
+}
+
+function didAcknowledgeStep(response: OrderPreparationResponse, name: string): boolean {
+  return response.steps.some((step) => step.name === name && step.ok && !isInactiveSkippedStep(step));
+}
+
+function didNormalOrderCollectToWarmer(response: OrderPreparationResponse): boolean {
+  return response.steps.some((step) => step.ok
+    && (step.message.includes('已在普客保温箱')
+      || step.message.includes('已自动收至普客保温箱')
+      || step.message.includes('该订单已经送达料理')
+      || step.message.includes('目标普客订单已有料理')));
+}
+
+function didNormalOrderDeliverBeverage(response: OrderPreparationResponse): boolean {
+  return Boolean(response.servedBeverage)
+    || didCompleteStep(response, '普客送达酒水')
+    || response.steps.some((step) => step.name === '普客送达酒水' && step.ok && !isInactiveSkippedStep(step));
+}
+
+function didNormalOrderDeliverFood(response: OrderPreparationResponse): boolean {
+  return Boolean(response.servedFood)
+    || didCompleteStep(response, '普客送达料理')
+    || response.steps.some((step) => step.name === '普客送达料理' && step.ok && !isInactiveSkippedStep(step));
+}
+
+function didNormalOrderComplete(response: OrderPreparationResponse): boolean {
+  return Boolean(response.completedOrder) || didCompleteStep(response, '触发普客评价');
+}
+
+function didNormalOrderWarmerMissing(response: OrderPreparationResponse): boolean {
+  return response.steps.some((step) => step.name === '普客保温箱复查'
+    && (step.message.includes('未读取到该料理')
+      || step.message.includes('已撤销本地回执')
+      || step.message.includes('目标料理数量 0')));
+}
+
+function didNormalOrderCookingStillPending(response: OrderPreparationResponse): boolean {
+  return didOrderCookingStillPending(response, '普客开始料理');
+}
+
+function didOrderCookingStillPending(response: OrderPreparationResponse, stepName: string): boolean {
+  return response.steps.some((step) => step.name === stepName
+    && step.ok
+    && step.skipped
+    && (step.message.includes('已在制作中')
+      || step.message.includes('等待完成后会自动收至普客保温箱')
+      || step.message.includes('等待完成后会自动收入送餐盘')));
+}
+
+function isInactiveSkippedStep(step: OrderPreparationStep): boolean {
+  if (!step.skipped) return false;
+  return step.message.includes('设置已关闭')
+    || step.message.includes('尚未获得')
+    || step.message.includes('订单尚未同时满足');
 }
 
 function isTransientAutoPreparationFailure(response: OrderPreparationResponse): boolean {
@@ -3900,7 +7838,37 @@ function isTransientAutoPreparationFailure(response: OrderPreparationResponse): 
     || text.includes('厨具被占用')
     || text.includes('送餐盘已满')
     || text.includes('送餐盘对象不可用')
-    || text.includes('厨具管理器不可用');
+    || text.includes('厨具管理器不可用')
+    || text.includes('运行时对象')
+    || text.includes('经营状态刚刷新')
+    || text.includes('未找到当前第一笔')
+    || text.includes('暂存容器不可用')
+    || text.includes('普客保温箱中没有找到目标料理')
+    || text.includes('等待下一轮重试')
+    || text.includes('已有待收取任务')
+    || text.includes('已在制作中')
+    || text.includes('长时间未读取到成品对象');
+}
+
+function isHardAutoPreparationFailure(response: OrderPreparationResponse): boolean {
+  const text = [
+    response.error ?? '',
+    ...response.steps.map((step) => `${step.name} ${step.message}`),
+  ].join('\n');
+  return text.includes('材料不足')
+    || text.includes('当前库存为 0')
+    || text.includes('没有可用的推荐')
+    || text.includes('没有有效的料理 ID')
+    || text.includes('无法从游戏数据库读取料理配方')
+    || text.includes('未找到料理')
+    || text.includes('成品不是目标料理')
+    || text.includes('订单已有其他待送达料理')
+    || text.includes('收藏限定已开启');
+}
+
+function summarizeOrderPreparationFailure(response: OrderPreparationResponse): string {
+  const failed = response.steps.find((step) => !step.ok && !step.skipped);
+  return failed ? `${failed.name}: ${failed.message}` : response.error ?? '未知状态';
 }
 
 function pickRecipeForPreparation(
@@ -3915,7 +7883,15 @@ function pickRecipeForPreparation(
   for (const recipe of item.recipes) {
     const favorite = findRecipeFavorite(favorites, item.customer.id, item.order.foodTag, recipe);
     if (preferences.autoPrepFavoritesOnly && !favorite) continue;
-    return { ok: true as const, recipe, favorite };
+    return { ok: true as const, recipe, favorite, preferenceFallback: false };
+  }
+
+  if (item.recipes.length === 0) {
+    for (const recipe of item.preferenceRecipes) {
+      const favorite = findRecipeFavorite(favorites, item.customer.id, item.order.foodTag, recipe);
+      if (preferences.autoPrepFavoritesOnly && !favorite) continue;
+      return { ok: true as const, recipe, favorite, preferenceFallback: true };
+    }
   }
 
   return { ok: false as const };
@@ -3987,6 +7963,86 @@ function promoteFavoriteRecipes(
 
   if (promoted.length === 0) return rows;
   return [...promoted, ...rows.filter((row) => !used.has(recipeResultKey(row)))];
+}
+
+function findMissionServeTargetForOrder(
+  order: NightBusinessOrder,
+  targets: RuntimeMissionServeTarget[],
+): RuntimeMissionServeTarget | null {
+  if (!targets.length) return null;
+  return targets.find((target) =>
+    target.status !== 'finished'
+    && target.recipeId >= 0
+    && (
+      (order.guestId != null && target.guestId === order.guestId)
+      || (!!target.guestName && target.guestName === order.guestName)
+    )
+  ) ?? null;
+}
+
+function findOrBuildMissionRecipe(
+  recipeId: number,
+  rows: IRareRecipeResult[],
+  preferenceRows: IRareRecipeResult[],
+  customer: ICustomerRare,
+  foodTag: string,
+  beverageTag: string,
+  runtime: RecommendationStateSnapshot,
+  runtimeSets: RuntimeSets,
+  preferences: CompanionPreferences,
+  data: RecommendationDataSet,
+): IRareRecipeResult | null {
+  const existing = [...rows, ...preferenceRows].find((row) => row.recipe.id === recipeId);
+  if (existing) return existing;
+  const dataIndexes = buildRecommendationDataIndexes(data);
+  const specialFoodRule = buildSpecialFoodRuleRankOptions(runtime.specialRules);
+
+  const forced = rankRecipesForRare(
+    customer,
+    foodTag,
+    beverageTag,
+    runtimeSets.recipeIds,
+    runtimeSets.ingredientIds,
+    new Set<number>(),
+    runtime.popularFoodTag,
+    runtime.popularHateFoodTag,
+    4,
+    runtimeSets.ownedIngredientQty,
+    runtime.famousShopEnabled,
+    {
+      allowPreferenceFallback: true,
+      minFoodScore: 1,
+      forcedRecipeIds: new Set([recipeId]),
+      specialFoodRule,
+    },
+    data,
+  )
+    .filter((recipe) => recipe.recipe.id === recipeId)
+    .filter((recipe) => shouldKeepRecipeForCooker(recipe, runtimeSets, preferences.filterMissingCookers))
+    .sort((a, b) => compareRareRecipesForService(
+      a,
+      b,
+      runtimeSets.ownedIngredientQty,
+      preferences.recipeSortRules,
+      runtimeSets,
+      dataIndexes,
+    ));
+
+  return forced[0] ?? null;
+}
+
+function addRecipeRowIfMissing(rows: IRareRecipeResult[], recipe: IRareRecipeResult): IRareRecipeResult[] {
+  return rows.some((row) => recipeResultKey(row) === recipeResultKey(recipe)) ? rows : [...rows, recipe];
+}
+
+function promoteMissionRecipe(rows: IRareRecipeResult[], recipeId: number): IRareRecipeResult[] {
+  const target = rows.find((row) => row.recipe.id === recipeId);
+  if (!target) return rows;
+  return [markMissionPriorityRecipe(target), ...rows.filter((row) => row !== target)];
+}
+
+function markMissionPriorityRecipe(recipe: IRareRecipeResult): IRareRecipeResult {
+  return recipe.missionPriority ? recipe : { ...recipe, missionPriority: true };
 }
 
 function promoteFavoriteBeverages(
@@ -4118,6 +8174,8 @@ function normalizeIdList(ids: number[]): number[] {
 }
 
 function compareNormalRecipesForMod(a: INormalRecipeResult, b: INormalRecipeResult) {
+  if (a.satisfiesSpecialRule !== b.satisfiesSpecialRule) return a.satisfiesSpecialRule ? -1 : 1;
+  if (a.specialRuleTags.length !== b.specialRuleTags.length) return b.specialRuleTags.length - a.specialRuleTags.length;
   if (a.totalCoverage !== b.totalCoverage) return b.totalCoverage - a.totalCoverage;
   if (a.ingredientCost !== b.ingredientCost) return b.ingredientCost - a.ingredientCost;
   return a.recipe.id - b.recipe.id;
@@ -4135,12 +8193,17 @@ function compareRareRecipesForService(
   ownedIngredientQty: Record<number, number> = {},
   rules: SortRule<RecipeSortKey>[] = DEFAULT_RECIPE_SORT_RULES,
   runtimeSets: RuntimeSets | null = null,
+  indexes: ReturnType<typeof buildRecommendationDataIndexes> = DEFAULT_DATA_INDEXES,
 ) {
+  if (a.satisfiesSpecialRule !== b.satisfiesSpecialRule) {
+    return a.satisfiesSpecialRule ? -1 : 1;
+  }
+
   const sortRules = rules.length > 0 ? rules : DEFAULT_RECIPE_SORT_RULES;
   for (const rule of sortRules) {
     if (!rule.enabled) continue;
-    const diff = getRecipeSortValue(a, rule.key, ownedIngredientQty, runtimeSets)
-      - getRecipeSortValue(b, rule.key, ownedIngredientQty, runtimeSets);
+    const diff = getRecipeSortValue(a, rule.key, ownedIngredientQty, runtimeSets, indexes)
+      - getRecipeSortValue(b, rule.key, ownedIngredientQty, runtimeSets, indexes);
     if (diff !== 0) return rule.direction === 'asc' ? diff : -diff;
   }
   return a.recipe.id - b.recipe.id;
@@ -4151,6 +8214,7 @@ function getRecipeSortValue(
   key: RecipeSortKey,
   ownedIngredientQty: Record<number, number>,
   runtimeSets: RuntimeSets | null,
+  indexes: ReturnType<typeof buildRecommendationDataIndexes>,
 ): number {
   switch (key) {
     case 'requiredTag':
@@ -4162,7 +8226,7 @@ function getRecipeSortValue(
     case 'extraCount':
       return result.extraIngredients.length;
     case 'resourcePressure':
-      return getRareRecipeResourcePressure(result, ownedIngredientQty);
+      return getRareRecipeResourcePressure(result, ownedIngredientQty, indexes);
     case 'recipePrice':
       return result.recipe.price;
     case 'extraCost':
@@ -4208,9 +8272,10 @@ function isRecipeCookerAvailableForSort(
 function getRareRecipeResourcePressure(
   result: IRareRecipeResult,
   ownedIngredientQty: Record<number, number>,
+  indexes: ReturnType<typeof buildRecommendationDataIndexes> = DEFAULT_DATA_INDEXES,
 ): number {
   const basePressure = result.recipe.ingredients.reduce((sum, ingredientName) => {
-    const ingredient = INGREDIENT_BY_NAME.get(ingredientName);
+    const ingredient = indexes.ingredientByName.get(ingredientName);
     return sum + (ingredient ? getIngredientResourcePressure(ingredient, ownedIngredientQty) : 0);
   }, 0);
 
@@ -4320,16 +8385,34 @@ function buildRecommendationStateSignature(runtime: RecommendationStateSnapshot,
     runtime.availableRecipeIds.join(','),
     runtime.availableBeverageIds.join(','),
     runtime.availableIngredientIds.join(','),
+    (runtime.availableRareCustomerIds ?? []).join(','),
     ownedQty,
     ownedBeverageQty,
     runtime.popularFoodTag ?? '',
     runtime.popularHateFoodTag ?? '',
     runtime.famousShopEnabled ? '1' : '0',
     preferences.filterMissingCookers ? 'filterCooker:1' : 'filterCooker:0',
+    preferences.prioritizeMissionRecipes ? 'missionRecipe:1' : 'missionRecipe:0',
     `recipeSort:${serializeSortRules(preferences.recipeSortRules)}`,
     `beverageSort:${serializeSortRules(preferences.beverageSortRules)}`,
+    `specialRules:${serializeSpecialRules(runtime.specialRules)}`,
     placedCookers,
   ].join('|');
+}
+
+function serializeSpecialRules(rules: RuntimeSpecialRuleContext[] | undefined): string {
+  return (rules ?? [])
+    .map((rule) => [
+      rule.ruleId,
+      rule.challengeMode,
+      rule.matchMode,
+      rule.foodTagTargets
+        .map((target) => `${target.id ?? ''}:${target.name}`)
+        .sort()
+        .join(','),
+    ].join(':'))
+    .sort()
+    .join(';');
 }
 
 function trimRecommendationCache(cache: Map<string, CachedRecommendation>) {
@@ -4358,23 +8441,88 @@ function isOrderableRareFoodTag(tag: string): boolean {
   return !NON_ORDERABLE_RARE_FOOD_TAGS.has(tag);
 }
 
+function matchesMissionStatusFilter(mission: RuntimeMissionInfo, filters: MissionStatusFilter[]): boolean {
+  if (filters.length === 0) return false;
+  if (mission.finished || mission.status === 'finished') return false;
+  return filters.includes(normalizeMissionStatus(mission));
+}
+
+function countMissionStatuses(rows: RuntimeMissionInfo[]): Record<MissionStatusFilter, number> {
+  return rows.reduce<Record<MissionStatusFilter, number>>((counts, mission) => {
+    if (mission.finished || mission.status === 'finished') return counts;
+    counts[normalizeMissionStatus(mission)] += 1;
+    return counts;
+  }, { available: 0, tracking: 0, fulfilled: 0 });
+}
+
+function getMissionStatusFilterLabel(filter: MissionStatusFilter): string {
+  switch (filter) {
+    case 'available':
+      return '可接取';
+    case 'tracking':
+      return '进行中';
+    case 'fulfilled':
+      return '可完成';
+  }
+}
+
+function getMissionDisplayTitle(mission: RuntimeMissionInfo, showExtraInfo: boolean): string {
+  const title = mission.title?.trim() || '';
+  if (showExtraInfo || !isTechnicalMissionText(title)) {
+    return title || mission.label || '未解析任务';
+  }
+
+  if (mission.targetRecipeName) return `料理任务：${mission.targetRecipeName}`;
+  return '未解析任务';
+}
+
+function isTechnicalMissionText(value: string | null | undefined): boolean {
+  const text = value?.trim();
+  if (!text) return false;
+  if (text.includes('ScheduledEventMission:')) return true;
+  if (text.includes('_Mission') || text.includes('_Event')) return /^[A-Za-z0-9_:.+-]+$/.test(text);
+  if (text.startsWith('DLC') && /^[A-Za-z0-9_:.+-]+$/.test(text)) return true;
+  return false;
+}
+
+function normalizeMissionStatus(mission: RuntimeMissionInfo): MissionStatusFilter {
+  if (mission.status === 'available' || mission.status === 'tracking' || mission.status === 'fulfilled') {
+    return mission.status;
+  }
+  if (mission.finished || mission.status === 'finished') return 'fulfilled';
+  return mission.started ? 'tracking' : 'available';
+}
+
 function readStoredTab(): ModTab {
   const value = readMigratedStorage(TAB_STORAGE_KEY, LEGACY_TAB_STORAGE_KEY, '');
   return value === 'overview'
     || value === 'normal'
     || value === 'rare'
     || value === 'service'
+    || value === 'tasks'
     || value === 'inventory'
+    || value === 'help'
     || value === 'logs'
     || value === 'settings'
     ? value
     : 'service';
 }
 
+function readStoredRareGuestInvitationScope(): RareGuestInvitationScope {
+  return localStorage.getItem(RARE_GUEST_INVITATION_SCOPE_STORAGE_KEY) === 'all' ? 'all' : 'current';
+}
+
 function readStoredBoolean(key: string, fallback: boolean) {
   const value = localStorage.getItem(key);
   if (value === null) return fallback;
   return value === '1' || value === 'true';
+}
+
+function readStoredNumber(key: string, fallback: number) {
+  const raw = localStorage.getItem(key);
+  if (raw === null) return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : fallback;
 }
 
 function readStoredFocusLimit(key: string) {
@@ -4389,18 +8537,33 @@ function readStoredCompanionPreferences(): CompanionPreferences {
       localStorage.getItem(FOCUS_SWITCH_COOLDOWN_STORAGE_KEY) ?? DEFAULT_FOCUS_SWITCH_COOLDOWN_MS,
     ),
     alwaysOnTop: readStoredBoolean(ALWAYS_ON_TOP_STORAGE_KEY, true),
+    mousePassthroughEnabled: readStoredBoolean(MOUSE_PASSTHROUGH_STORAGE_KEY, false),
     gamepadNavigationEnabled: readStoredBoolean(GAMEPAD_NAVIGATION_STORAGE_KEY, true),
     automationEnabled: readStoredBoolean(AUTOMATION_ENABLED_STORAGE_KEY, false),
+    autoNormalOrderEnabled: readStoredBoolean(AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY, false),
+    autoNormalTakeBeverage: readStoredBoolean(AUTO_NORMAL_TAKE_BEVERAGE_STORAGE_KEY, false),
+    autoNormalStartCooking: readStoredBoolean(AUTO_NORMAL_START_COOKING_STORAGE_KEY, false),
+    autoNormalCollectCooking: readStoredBoolean(AUTO_NORMAL_COLLECT_COOKING_STORAGE_KEY, false),
+    autoNormalDeliverFood: readStoredBoolean(AUTO_NORMAL_DELIVER_FOOD_STORAGE_KEY, false),
+    autoNormalCompleteOrder: readStoredBoolean(AUTO_NORMAL_COMPLETE_ORDER_STORAGE_KEY, false),
+    autoNormalStopOnError: readStoredBoolean(AUTO_NORMAL_STOP_ON_ERROR_STORAGE_KEY, false),
     autoPrepCompleteOrder: readStoredBoolean(AUTO_PREP_COMPLETE_ORDER_STORAGE_KEY, false),
     autoPrepTakeBeverage: readStoredBoolean(AUTO_PREP_TAKE_BEVERAGE_STORAGE_KEY, false),
     autoPrepStartCooking: readStoredBoolean(AUTO_PREP_START_COOKING_STORAGE_KEY, false),
     autoPrepCollectCooking: readStoredBoolean(AUTO_PREP_COLLECT_COOKING_STORAGE_KEY, false),
     autoPrepFavoritesOnly: readStoredBoolean(AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY, false),
     autoPrepStopOnError: readStoredBoolean(AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY, false),
-    autoPrepCompleteQte: readStoredBoolean(AUTO_PREP_COMPLETE_QTE_STORAGE_KEY, false),
+    autoRareConcurrency: readStoredNumber(AUTO_RARE_CONCURRENCY_STORAGE_KEY, DEFAULT_RARE_AUTO_ORDERS_PER_TICK),
+    autoNormalConcurrency: readStoredNumber(AUTO_NORMAL_CONCURRENCY_STORAGE_KEY, DEFAULT_NORMAL_AUTO_ORDERS_PER_TICK),
+    autoRareTrayWaitSeconds: readStoredNumber(AUTO_RARE_TRAY_WAIT_SECONDS_STORAGE_KEY, DEFAULT_RARE_AUTO_TRAY_WAIT_SECONDS),
+    autoNormalStorageWaitSeconds: readStoredNumber(AUTO_NORMAL_STORAGE_WAIT_SECONDS_STORAGE_KEY, DEFAULT_NORMAL_AUTO_STORAGE_WAIT_SECONDS),
+    autoMaxStepRetries: readStoredNumber(AUTO_MAX_STEP_RETRIES_STORAGE_KEY, DEFAULT_AUTO_STEP_RETRIES),
+    autoMaxRollbacks: readStoredNumber(AUTO_MAX_ROLLBACKS_STORAGE_KEY, DEFAULT_AUTO_ROLLBACKS),
     filterMissingCookers: readStoredBoolean(FILTER_MISSING_COOKERS_STORAGE_KEY, true),
+    prioritizeMissionRecipes: readStoredBoolean(PRIORITIZE_MISSION_RECIPES_STORAGE_KEY, false),
     gameUiPinningEnabled: readStoredBoolean(GAME_UI_PINNING_STORAGE_KEY, false),
     cookerHighlightEnabled: readStoredBoolean(COOKER_HIGHLIGHT_STORAGE_KEY, false),
+    showDebugDetails: readStoredBoolean(SHOW_DEBUG_DETAILS_STORAGE_KEY, false),
     recipeSortRules: readStoredSortRules(RECIPE_SORT_RULES_STORAGE_KEY, RECIPE_SORT_OPTIONS),
     beverageSortRules: readStoredSortRules(BEVERAGE_SORT_RULES_STORAGE_KEY, BEVERAGE_SORT_OPTIONS),
     serviceOrderSortMode: readStoredServiceOrderSortMode(),
@@ -4490,18 +8653,33 @@ function normalizeCompanionPreferences(value: Partial<CompanionPreferences>): Co
     focusSwitchBehavior: value.focusSwitchBehavior === 'keep-visible' ? 'keep-visible' : 'hide',
     focusSwitchCooldownMs: normalizeFocusSwitchCooldownMs(value.focusSwitchCooldownMs ?? DEFAULT_FOCUS_SWITCH_COOLDOWN_MS),
     alwaysOnTop: Boolean(value.alwaysOnTop),
+    mousePassthroughEnabled: Boolean(value.mousePassthroughEnabled),
     gamepadNavigationEnabled: Boolean(value.gamepadNavigationEnabled),
     automationEnabled: Boolean(value.automationEnabled),
+    autoNormalOrderEnabled: Boolean(value.autoNormalOrderEnabled),
+    autoNormalTakeBeverage: Boolean(value.autoNormalTakeBeverage),
+    autoNormalStartCooking: Boolean(value.autoNormalStartCooking),
+    autoNormalCollectCooking: Boolean(value.autoNormalCollectCooking),
+    autoNormalDeliverFood: Boolean(value.autoNormalDeliverFood),
+    autoNormalCompleteOrder: Boolean(value.autoNormalCompleteOrder),
+    autoNormalStopOnError: Boolean(value.autoNormalStopOnError),
     autoPrepCompleteOrder: Boolean(value.autoPrepCompleteOrder),
     autoPrepTakeBeverage: Boolean(value.autoPrepTakeBeverage),
     autoPrepStartCooking: Boolean(value.autoPrepStartCooking),
     autoPrepCollectCooking: Boolean(value.autoPrepCollectCooking),
     autoPrepFavoritesOnly: Boolean(value.autoPrepFavoritesOnly),
     autoPrepStopOnError: Boolean(value.autoPrepStopOnError),
-    autoPrepCompleteQte: Boolean(value.autoPrepCompleteQte),
+    autoRareConcurrency: normalizeRareAutoConcurrency(value.autoRareConcurrency ?? DEFAULT_RARE_AUTO_ORDERS_PER_TICK),
+    autoNormalConcurrency: normalizeNormalAutoConcurrency(value.autoNormalConcurrency ?? DEFAULT_NORMAL_AUTO_ORDERS_PER_TICK),
+    autoRareTrayWaitSeconds: normalizeAutomationWaitSeconds(value.autoRareTrayWaitSeconds ?? DEFAULT_RARE_AUTO_TRAY_WAIT_SECONDS, DEFAULT_RARE_AUTO_TRAY_WAIT_SECONDS),
+    autoNormalStorageWaitSeconds: normalizeAutomationWaitSeconds(value.autoNormalStorageWaitSeconds ?? DEFAULT_NORMAL_AUTO_STORAGE_WAIT_SECONDS, DEFAULT_NORMAL_AUTO_STORAGE_WAIT_SECONDS),
+    autoMaxStepRetries: normalizeAutoStepRetries(value.autoMaxStepRetries ?? DEFAULT_AUTO_STEP_RETRIES),
+    autoMaxRollbacks: normalizeAutoRollbacks(value.autoMaxRollbacks ?? DEFAULT_AUTO_ROLLBACKS),
     filterMissingCookers: value.filterMissingCookers !== false,
+    prioritizeMissionRecipes: Boolean(value.prioritizeMissionRecipes),
     gameUiPinningEnabled: Boolean(value.gameUiPinningEnabled),
     cookerHighlightEnabled: Boolean(value.cookerHighlightEnabled),
+    showDebugDetails: Boolean(value.showDebugDetails),
     recipeSortRules: normalizeSortRules(value.recipeSortRules, RECIPE_SORT_OPTIONS),
     beverageSortRules: normalizeSortRules(value.beverageSortRules, BEVERAGE_SORT_OPTIONS),
     serviceOrderSortMode: value.serviceOrderSortMode === 'guest' ? 'guest' : 'ordered',
@@ -4521,24 +8699,64 @@ function normalizeFocusSwitchCooldownMs(value: number) {
   );
 }
 
+function normalizeRareAutoConcurrency(value: number) {
+  return clampInteger(value, MIN_AUTO_ORDER_CONCURRENCY, MAX_RARE_AUTO_ORDER_CONCURRENCY, DEFAULT_RARE_AUTO_ORDERS_PER_TICK);
+}
+
+function normalizeNormalAutoConcurrency(value: number) {
+  return clampInteger(value, MIN_AUTO_ORDER_CONCURRENCY, MAX_NORMAL_AUTO_ORDER_CONCURRENCY, DEFAULT_NORMAL_AUTO_ORDERS_PER_TICK);
+}
+
+function normalizeAutomationWaitSeconds(value: number, fallback: number) {
+  return clampInteger(value, MIN_AUTO_WAIT_SECONDS, MAX_AUTO_WAIT_SECONDS, fallback);
+}
+
+function normalizeAutoStepRetries(value: number) {
+  return clampInteger(value, MIN_AUTO_STEP_RETRIES, MAX_AUTO_STEP_RETRIES_LIMIT, DEFAULT_AUTO_STEP_RETRIES);
+}
+
+function normalizeAutoRollbacks(value: number) {
+  return clampInteger(value, MIN_AUTO_ROLLBACKS, MAX_AUTO_ROLLBACKS_LIMIT, DEFAULT_AUTO_ROLLBACKS);
+}
+
+function clampInteger(value: number, min: number, max: number, fallback: number) {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, Math.trunc(value)));
+}
+
 function persistCompanionPreferences(preferences: CompanionPreferences) {
   const normalized = normalizeCompanionPreferences(preferences);
   localStorage.setItem(WINDOW_OPACITY_STORAGE_KEY, String(normalized.windowOpacity));
   localStorage.setItem(FOCUS_SWITCH_BEHAVIOR_STORAGE_KEY, normalized.focusSwitchBehavior);
   localStorage.setItem(FOCUS_SWITCH_COOLDOWN_STORAGE_KEY, String(normalized.focusSwitchCooldownMs));
   localStorage.setItem(ALWAYS_ON_TOP_STORAGE_KEY, normalized.alwaysOnTop ? '1' : '0');
+  localStorage.setItem(MOUSE_PASSTHROUGH_STORAGE_KEY, normalized.mousePassthroughEnabled ? '1' : '0');
   localStorage.setItem(GAMEPAD_NAVIGATION_STORAGE_KEY, normalized.gamepadNavigationEnabled ? '1' : '0');
   localStorage.setItem(AUTOMATION_ENABLED_STORAGE_KEY, normalized.automationEnabled ? '1' : '0');
+  localStorage.setItem(AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY, normalized.autoNormalOrderEnabled ? '1' : '0');
+  localStorage.setItem(AUTO_NORMAL_TAKE_BEVERAGE_STORAGE_KEY, normalized.autoNormalTakeBeverage ? '1' : '0');
+  localStorage.setItem(AUTO_NORMAL_START_COOKING_STORAGE_KEY, normalized.autoNormalStartCooking ? '1' : '0');
+  localStorage.setItem(AUTO_NORMAL_COLLECT_COOKING_STORAGE_KEY, normalized.autoNormalCollectCooking ? '1' : '0');
+  localStorage.setItem(AUTO_NORMAL_DELIVER_FOOD_STORAGE_KEY, normalized.autoNormalDeliverFood ? '1' : '0');
+  localStorage.setItem(AUTO_NORMAL_COMPLETE_ORDER_STORAGE_KEY, normalized.autoNormalCompleteOrder ? '1' : '0');
+  localStorage.setItem(AUTO_NORMAL_STOP_ON_ERROR_STORAGE_KEY, normalized.autoNormalStopOnError ? '1' : '0');
   localStorage.setItem(AUTO_PREP_COMPLETE_ORDER_STORAGE_KEY, normalized.autoPrepCompleteOrder ? '1' : '0');
   localStorage.setItem(AUTO_PREP_TAKE_BEVERAGE_STORAGE_KEY, normalized.autoPrepTakeBeverage ? '1' : '0');
   localStorage.setItem(AUTO_PREP_START_COOKING_STORAGE_KEY, normalized.autoPrepStartCooking ? '1' : '0');
   localStorage.setItem(AUTO_PREP_COLLECT_COOKING_STORAGE_KEY, normalized.autoPrepCollectCooking ? '1' : '0');
   localStorage.setItem(AUTO_PREP_FAVORITES_ONLY_STORAGE_KEY, normalized.autoPrepFavoritesOnly ? '1' : '0');
   localStorage.setItem(AUTO_PREP_STOP_ON_ERROR_STORAGE_KEY, normalized.autoPrepStopOnError ? '1' : '0');
-  localStorage.setItem(AUTO_PREP_COMPLETE_QTE_STORAGE_KEY, normalized.autoPrepCompleteQte ? '1' : '0');
+  localStorage.setItem(AUTO_RARE_CONCURRENCY_STORAGE_KEY, String(normalized.autoRareConcurrency));
+  localStorage.setItem(AUTO_NORMAL_CONCURRENCY_STORAGE_KEY, String(normalized.autoNormalConcurrency));
+  localStorage.setItem(AUTO_RARE_TRAY_WAIT_SECONDS_STORAGE_KEY, String(normalized.autoRareTrayWaitSeconds));
+  localStorage.setItem(AUTO_NORMAL_STORAGE_WAIT_SECONDS_STORAGE_KEY, String(normalized.autoNormalStorageWaitSeconds));
+  localStorage.setItem(AUTO_MAX_STEP_RETRIES_STORAGE_KEY, String(normalized.autoMaxStepRetries));
+  localStorage.setItem(AUTO_MAX_ROLLBACKS_STORAGE_KEY, String(normalized.autoMaxRollbacks));
   localStorage.setItem(FILTER_MISSING_COOKERS_STORAGE_KEY, normalized.filterMissingCookers ? '1' : '0');
+  localStorage.setItem(PRIORITIZE_MISSION_RECIPES_STORAGE_KEY, normalized.prioritizeMissionRecipes ? '1' : '0');
   localStorage.setItem(GAME_UI_PINNING_STORAGE_KEY, normalized.gameUiPinningEnabled ? '1' : '0');
   localStorage.setItem(COOKER_HIGHLIGHT_STORAGE_KEY, normalized.cookerHighlightEnabled ? '1' : '0');
+  localStorage.setItem(SHOW_DEBUG_DETAILS_STORAGE_KEY, normalized.showDebugDetails ? '1' : '0');
   localStorage.setItem(RECIPE_SORT_RULES_STORAGE_KEY, JSON.stringify(normalized.recipeSortRules));
   localStorage.setItem(BEVERAGE_SORT_RULES_STORAGE_KEY, JSON.stringify(normalized.beverageSortRules));
   localStorage.setItem(SERVICE_ORDER_SORT_MODE_STORAGE_KEY, normalized.serviceOrderSortMode);
@@ -4555,6 +8773,7 @@ async function applyCompanionPreferencesToTauri(
   focusSwitchBehavior: FocusSwitchBehavior,
   alwaysOnTop: boolean,
   focusSwitchCooldownMs: number,
+  mousePassthroughEnabled: boolean,
 ) {
   if (!isTauriRuntime()) return;
 
@@ -4565,6 +8784,7 @@ async function applyCompanionPreferencesToTauri(
       alwaysOnTop,
       windowSwitchCooldownMs: normalizeFocusSwitchCooldownMs(focusSwitchCooldownMs),
     });
+    await invoke('set_mouse_passthrough', { enabled: mousePassthroughEnabled });
   } catch {
     // Browser mode and older companion builds do not expose this command.
   }
@@ -4603,22 +8823,91 @@ function formatTime(date: Date) {
   return date.toLocaleTimeString('zh-CN', { hour12: false });
 }
 
+function formatPerformanceMs(metrics?: Record<string, number>) {
+  const entries = Object.entries(metrics ?? {})
+    .filter(([, value]) => Number.isFinite(value))
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 4);
+  if (entries.length === 0) return '暂无';
+
+  return entries
+    .map(([key, value]) => `${key} ${value >= 10 ? value.toFixed(0) : value.toFixed(1)}ms`)
+    .join(' · ');
+}
+
+function formatRetryDelay(failureCount: number) {
+  if (failureCount <= 0) return '稍后';
+  const index = Math.max(0, Math.min(failureCount - 1, CONNECTION_RETRY_DELAYS_MS.length - 1));
+  return `${Math.round(CONNECTION_RETRY_DELAYS_MS[index] / 1000)} 秒`;
+}
+
 function formatBytes(value: number) {
   if (!Number.isFinite(value) || value <= 0) return '未知';
   if (value >= 1024 * 1024) return `${Math.round(value / 1024 / 1024)} MiB`;
   return `${Math.round(value / 1024)} KiB`;
 }
 
+function parseAutomationLogLine(line: string): AutomationLogEntry {
+  const match = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\s+(\S+)\s*(.*)$/.exec(line);
+  if (!match) {
+    return {
+      raw: line,
+      timestamp: '',
+      action: '',
+      target: '',
+      desk: '',
+      orderKey: '',
+      food: '',
+      guest: '',
+      message: line,
+    };
+  }
+
+  const [, timestamp, action, rest] = match;
+  const tokens = rest.trim().split(/\s+/).filter(Boolean);
+  const attrs = new Map<string, string>();
+  let messageStart = 0;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const separator = tokens[index].indexOf('=');
+    if (separator <= 0) {
+      messageStart = index;
+      break;
+    }
+    attrs.set(tokens[index].slice(0, separator), tokens[index].slice(separator + 1));
+    messageStart = index + 1;
+  }
+
+  return {
+    raw: line,
+    timestamp,
+    action,
+    target: attrs.get('target') ?? '',
+    desk: attrs.get('desk') ?? '',
+    orderKey: attrs.get('orderKey') ?? '',
+    food: attrs.get('food') ?? '',
+    guest: attrs.get('guest') ?? '',
+    message: tokens.slice(messageStart).join(' '),
+  };
+}
+
 function formatDesk(deskCode: number) {
   return deskCode >= 0 ? String(deskCode + 1) : String(deskCode);
 }
 
-function formatIngredientNamesWithQty(names: string[], ownedIngredientQty: Record<number, number>) {
-  return names.map((name) => formatIngredientWithQty(name, ownedIngredientQty)).join(', ');
+function formatIngredientNamesWithQty(
+  names: string[],
+  ownedIngredientQty: Record<number, number>,
+  ingredientIdByName: Map<string, number>,
+) {
+  return names.map((name) => formatIngredientWithQty(name, ownedIngredientQty, ingredientIdByName)).join(', ');
 }
 
-function formatIngredientWithQty(name: string, ownedIngredientQty: Record<number, number>) {
-  const id = INGREDIENT_ID_BY_NAME.get(name);
+function formatIngredientWithQty(
+  name: string,
+  ownedIngredientQty: Record<number, number>,
+  ingredientIdByName: Map<string, number>,
+) {
+  const id = ingredientIdByName.get(name);
   return `${name}${formatQtySuffix(id == null ? undefined : ownedIngredientQty[id])}`;
 }
 

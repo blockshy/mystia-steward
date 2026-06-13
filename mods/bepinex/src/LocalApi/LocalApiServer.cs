@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.IO.Compression;
 using BepInEx;
 using BepInEx.Logging;
 using MystiaStewardCompanion.Save;
@@ -10,7 +11,7 @@ namespace MystiaStewardCompanion.LocalApi;
 
 internal sealed class LocalApiServer : IDisposable
 {
-    private const int MaxRequestBytes = 8192;
+    private const int MaxRequestBytes = 32768;
 
     private readonly ManualLogSource _log;
     private readonly object _snapshotLock = new();
@@ -18,11 +19,16 @@ internal sealed class LocalApiServer : IDisposable
     private readonly string _healthJson;
     private readonly string _logOutputPath;
     private readonly Func<LocalApiLogSettings> _getLogSettings;
-    private readonly Action<bool?, bool?> _updateLogSettings;
+    private readonly Action<bool?, bool?, bool?> _updateLogSettings;
     private readonly Func<string, string> _openLogFolder;
     private readonly Func<string, int, int, RuntimeInventoryEditResult> _editInventory;
+    private readonly Func<string, IReadOnlyList<int>, int, RuntimeInventoryBulkEditResult> _editInventoryBulk;
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _prepareOrder;
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _completeOrder;
+    private readonly Func<OrderPreparationRequest, OrderPreparationResult> _completeNormalOrder;
+    private readonly Func<string, RareGuestInvitationResult> _listRareGuestInvitations;
+    private readonly Func<string, RareGuestInvitationResult> _inviteAllRareGuests;
+    private readonly Func<int, string, RareGuestInvitationResult> _inviteRareGuest;
     private readonly FavoriteStore _favoriteStore;
     private TcpListener? _listener;
     private Thread? _thread;
@@ -35,11 +41,16 @@ internal sealed class LocalApiServer : IDisposable
         string pluginVersion,
         string token,
         Func<LocalApiLogSettings> getLogSettings,
-        Action<bool?, bool?> updateLogSettings,
+        Action<bool?, bool?, bool?> updateLogSettings,
         Func<string, string> openLogFolder,
         Func<string, int, int, RuntimeInventoryEditResult> editInventory,
+        Func<string, IReadOnlyList<int>, int, RuntimeInventoryBulkEditResult> editInventoryBulk,
         Func<OrderPreparationRequest, OrderPreparationResult> prepareOrder,
         Func<OrderPreparationRequest, OrderPreparationResult> completeOrder,
+        Func<OrderPreparationRequest, OrderPreparationResult> completeNormalOrder,
+        Func<string, RareGuestInvitationResult> listRareGuestInvitations,
+        Func<string, RareGuestInvitationResult> inviteAllRareGuests,
+        Func<int, string, RareGuestInvitationResult> inviteRareGuest,
         FavoriteStore favoriteStore,
         ManualLogSource log)
     {
@@ -51,8 +62,13 @@ internal sealed class LocalApiServer : IDisposable
         _updateLogSettings = updateLogSettings;
         _openLogFolder = openLogFolder;
         _editInventory = editInventory;
+        _editInventoryBulk = editInventoryBulk;
         _prepareOrder = prepareOrder;
         _completeOrder = completeOrder;
+        _completeNormalOrder = completeNormalOrder;
+        _listRareGuestInvitations = listRareGuestInvitations;
+        _inviteAllRareGuests = inviteAllRareGuests;
+        _inviteRareGuest = inviteRareGuest;
         _favoriteStore = favoriteStore;
         _logOutputPath = ResolveLogOutputPath();
         _healthJson = $"{{\"ok\":true,\"pluginVersion\":\"{EscapeJson(pluginVersion)}\",\"bindAddress\":\"{BindAddress}\",\"port\":{Port},\"authRequired\":true}}";
@@ -178,11 +194,20 @@ internal sealed class LocalApiServer : IDisposable
                     case "/logs":
                         WriteResponse(stream, 200, "OK", BuildLogsJson());
                         break;
+                    case "/logs/automation":
+                        WriteResponse(stream, 200, "OK", BuildAutomationLogsJson());
+                        break;
+                    case "/logs/export-diagnostics":
+                        WriteResponse(stream, 200, "OK", BuildDiagnosticPackageJson(ReadBoolQuery(query, "open") ?? false));
+                        break;
                     case "/logs/settings":
                         WriteResponse(stream, 200, "OK", BuildLogSettingsJson());
                         break;
                     case "/logs/config":
-                        _updateLogSettings(ReadBoolQuery(query, "logAccess"), ReadBoolQuery(query, "diagnostics"));
+                        _updateLogSettings(
+                            ReadBoolQuery(query, "logAccess"),
+                            ReadBoolQuery(query, "diagnostics"),
+                            ReadBoolQuery(query, "nativeConsole"));
                         WriteResponse(stream, 200, "OK", BuildLogSettingsJson());
                         break;
                     case "/logs/open-folder":
@@ -191,11 +216,29 @@ internal sealed class LocalApiServer : IDisposable
                     case "/inventory/set":
                         WriteResponse(stream, 200, "OK", BuildInventoryEditJson(query));
                         break;
+                    case "/inventory/bulk-set":
+                        WriteResponse(stream, 200, "OK", BuildInventoryBulkEditJson(query));
+                        break;
                     case "/orders/prepare-next":
                         WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _prepareOrder));
                         break;
                     case "/orders/complete-first":
                         WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _completeOrder));
+                        break;
+                    case "/orders/normal/complete-first":
+                        WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _completeNormalOrder));
+                        break;
+                    case "/orders/rare/dismiss":
+                        WriteResponse(stream, 200, "OK", BuildRareOrderDismissJson(query));
+                        break;
+                    case "/rare-guests/invitations":
+                        WriteResponse(stream, 200, "OK", BuildRareGuestInvitationJson(() => _listRareGuestInvitations(ReadStringQuery(query, "scope"))));
+                        break;
+                    case "/rare-guests/invite-all":
+                        WriteResponse(stream, 200, "OK", BuildRareGuestInvitationJson(() => _inviteAllRareGuests(ReadStringQuery(query, "scope"))));
+                        break;
+                    case "/rare-guests/invite":
+                        WriteResponse(stream, 200, "OK", BuildRareGuestInvitationJson(() => _inviteRareGuest(ReadIntQuery(query, "guestId", -1), ReadStringQuery(query, "scope"))));
                         break;
                     case "/ui-pinning/target":
                         WriteResponse(stream, 200, "OK", UpdateUiPinningTargetJson(query));
@@ -239,10 +282,21 @@ internal sealed class LocalApiServer : IDisposable
     {
         var settings = _getLogSettings();
         var logPath = string.IsNullOrWhiteSpace(settings.LogOutputPath) ? _logOutputPath : settings.LogOutputPath;
+        return BuildLogFileJson(logPath, settings);
+    }
+
+    private string BuildAutomationLogsJson()
+    {
+        var settings = _getLogSettings();
+        return BuildLogFileJson(RuntimeOrderPreparationService.ResolveAutomationLogPath(), settings);
+    }
+
+    private static string BuildLogFileJson(string logPath, LocalApiLogSettings settings)
+    {
+        var maxLogBytes = Math.Clamp(settings.MaxLogBytes, 16 * 1024, 2 * 1024 * 1024);
+        var maxLogLines = Math.Clamp(settings.MaxLogLines, 50, 2000);
         if (!settings.LogAccessEnabled)
         {
-            var maxLogBytes = Math.Clamp(settings.MaxLogBytes, 16 * 1024, 2 * 1024 * 1024);
-            var maxLogLines = Math.Clamp(settings.MaxLogLines, 50, 2000);
             return "{\"capturedAtUtc\":\""
                 + DateTime.UtcNow.ToString("O")
                 + "\",\"path\":\""
@@ -256,8 +310,6 @@ internal sealed class LocalApiServer : IDisposable
 
         try
         {
-            var maxLogBytes = Math.Clamp(settings.MaxLogBytes, 16 * 1024, 2 * 1024 * 1024);
-            var maxLogLines = Math.Clamp(settings.MaxLogLines, 50, 2000);
             var exists = File.Exists(logPath);
             var lines = exists ? ReadLogTail(logPath, maxLogBytes, maxLogLines) : new List<string>();
             var builder = new StringBuilder();
@@ -301,7 +353,9 @@ internal sealed class LocalApiServer : IDisposable
             .Append("\"maxLogBytes\":").Append(Math.Clamp(settings.MaxLogBytes, 16 * 1024, 2 * 1024 * 1024)).Append(',')
             .Append("\"nightBusinessDiagnosticsEnabled\":").Append(settings.NightBusinessDiagnosticsEnabled ? "true" : "false").Append(',')
             .Append("\"nightBusinessDiagnosticsPath\":\"").Append(EscapeJson(settings.NightBusinessDiagnosticsPath)).Append("\",")
-            .Append("\"nightBusinessDiagnosticsDirectory\":\"").Append(EscapeJson(GetDirectory(settings.NightBusinessDiagnosticsPath))).Append("\"")
+            .Append("\"nightBusinessDiagnosticsDirectory\":\"").Append(EscapeJson(GetDirectory(settings.NightBusinessDiagnosticsPath))).Append("\",")
+            .Append("\"nativeBepInExConsoleEnabled\":").Append(settings.NativeBepInExConsoleEnabled ? "true" : "false").Append(',')
+            .Append("\"nativeBepInExConsoleVisible\":").Append(settings.NativeBepInExConsoleVisible ? "true" : "false")
             .Append('}')
             .ToString();
     }
@@ -316,6 +370,76 @@ internal sealed class LocalApiServer : IDisposable
         catch (Exception ex)
         {
             return "{\"ok\":false,\"directory\":\"\",\"error\":\"" + EscapeJson(ex.Message) + "\"}";
+        }
+    }
+
+    private string BuildDiagnosticPackageJson(bool openFolder)
+    {
+        try
+        {
+            var settings = _getLogSettings();
+            var packageDirectory = ResolveDiagnosticPackageDirectory();
+            Directory.CreateDirectory(packageDirectory);
+            var packagePath = Path.Combine(
+                packageDirectory,
+                "mystia-steward-companion-diagnostics-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".zip");
+            var added = new List<string>();
+            var maxLogBytes = Math.Clamp(settings.MaxLogBytes, 16 * 1024, 2 * 1024 * 1024);
+            var maxLogLines = Math.Clamp(settings.MaxLogLines, 50, 2000);
+
+            using (var archive = ZipFile.Open(packagePath, ZipArchiveMode.Create))
+            {
+                AddTextEntry(archive, "manifest.json", BuildDiagnosticManifestJson(settings), added);
+                AddTextEntry(archive, "snapshot/current-snapshot.json", GetSnapshotJson(), added);
+                AddLogTailEntry(
+                    archive,
+                    string.IsNullOrWhiteSpace(settings.LogOutputPath) ? _logOutputPath : settings.LogOutputPath,
+                    "logs/LogOutput.tail.log",
+                    maxLogBytes,
+                    maxLogLines,
+                    added);
+                AddLogTailEntry(
+                    archive,
+                    RuntimeOrderPreparationService.ResolveAutomationLogPath(),
+                    "logs/automation-jobs.tail.log",
+                    maxLogBytes,
+                    maxLogLines,
+                    added);
+                AddLogTailEntry(
+                    archive,
+                    RuntimeOrderPreparationService.ResolveAutomationLogPath() + ".1",
+                    "logs/automation-jobs.1.tail.log",
+                    maxLogBytes,
+                    maxLogLines,
+                    added);
+                AddDiagnosticLogEntries(archive, settings.NightBusinessDiagnosticsPath, maxLogBytes, maxLogLines, added);
+            }
+
+            if (openFolder)
+            {
+                try
+                {
+                    _openLogFolder("packages");
+                }
+                catch (Exception ex)
+                {
+                    _log.LogWarning($"Open diagnostic package folder failed: {ex.Message}");
+                }
+            }
+
+            return new StringBuilder()
+                .Append('{')
+                .Append("\"ok\":true,")
+                .Append("\"path\":\"").Append(EscapeJson(packagePath)).Append("\",")
+                .Append("\"directory\":\"").Append(EscapeJson(packageDirectory)).Append("\",")
+                .Append("\"files\":").Append(BuildJsonStringArray(added)).Append(',')
+                .Append("\"error\":null")
+                .Append('}')
+                .ToString();
+        }
+        catch (Exception ex)
+        {
+            return "{\"ok\":false,\"path\":\"\",\"directory\":\"\",\"files\":[],\"error\":\"" + EscapeJson(ex.Message) + "\"}";
         }
     }
 
@@ -351,26 +475,73 @@ internal sealed class LocalApiServer : IDisposable
         }
     }
 
+    private string BuildInventoryBulkEditJson(string query)
+    {
+        var itemType = ReadStringQuery(query, "type");
+        var itemIds = ReadIntListQuery(query, "ids");
+        if (!int.TryParse(ReadStringQuery(query, "qty"), out var quantity) || itemIds.Count == 0)
+        {
+            return "{\"ok\":false,\"error\":\"invalid inventory bulk edit parameters\"}";
+        }
+
+        RuntimeInventoryBulkEditResult result;
+        try
+        {
+            result = _editInventoryBulk(itemType, itemIds, quantity);
+        }
+        catch (Exception ex)
+        {
+            return "{\"ok\":false,\"error\":\"" + EscapeJson(ex.Message) + "\"}";
+        }
+
+        var builder = new StringBuilder()
+            .Append('{')
+            .Append("\"ok\":").Append(result.Failed == 0 ? "true" : "false").Append(',')
+            .Append("\"type\":\"").Append(EscapeJson(result.ItemType)).Append("\",")
+            .Append("\"requestedQuantity\":").Append(result.RequestedQuantity).Append(',')
+            .Append("\"total\":").Append(result.Total).Append(',')
+            .Append("\"changed\":").Append(result.Changed).Append(',')
+            .Append("\"unchanged\":").Append(result.Unchanged).Append(',')
+            .Append("\"failed\":").Append(result.Failed).Append(',')
+            .Append("\"errors\":[");
+
+        for (var i = 0; i < result.Errors.Count; i++)
+        {
+            if (i > 0) builder.Append(',');
+            builder.Append('"').Append(EscapeJson(result.Errors[i])).Append('"');
+        }
+
+        builder.Append("],\"error\":");
+        builder.Append(result.Failed == 0 ? "null" : $"\"{EscapeJson(string.Join("; ", result.Errors))}\"");
+        builder.Append('}');
+        return builder.ToString();
+    }
+
     private string BuildOrderActionJson(string query, Func<OrderPreparationRequest, OrderPreparationResult> action)
     {
         try
         {
             var request = new OrderPreparationRequest
             {
+                OrderKey = ReadStringQuery(query, "orderKey"),
                 DeskCode = ReadIntQuery(query, "deskCode", -1),
                 GuestId = ReadNullableIntQuery(query, "guestId"),
                 GuestName = ReadStringQuery(query, "guestName"),
                 FoodTag = ReadStringQuery(query, "foodTag"),
                 BeverageTag = ReadStringQuery(query, "beverageTag"),
+                FoodId = ReadIntQuery(query, "foodId", -1),
                 RecipeId = ReadIntQuery(query, "recipeId", -1),
                 RecipeName = ReadStringQuery(query, "recipeName"),
                 ExtraIngredientIds = ReadIntListQuery(query, "extraIngredientIds"),
+                AcceptableFoodIds = ReadIntListQuery(query, "acceptableFoodIds"),
+                TrayBacklogMinSeconds = Math.Max(0, ReadIntQuery(query, "trayBacklogMinSeconds", 0)),
                 BeverageId = ReadIntQuery(query, "beverageId", -1),
                 BeverageName = ReadStringQuery(query, "beverageName"),
                 AutoTakeBeverage = ReadBoolQuery(query, "autoTakeBeverage") ?? false,
                 AutoStartCooking = ReadBoolQuery(query, "autoStartCooking") ?? false,
                 AutoCollectCooking = ReadBoolQuery(query, "autoCollectCooking") ?? false,
-                CompleteQte = ReadBoolQuery(query, "completeQte") ?? false,
+                AutoDeliverFood = ReadBoolQuery(query, "autoDeliverFood") ?? false,
+                AutoCompleteOrder = ReadBoolQuery(query, "autoCompleteOrder") ?? false,
                 FavoritesOnly = ReadBoolQuery(query, "favoritesOnly") ?? false,
                 StopOnError = ReadBoolQuery(query, "stopOnError") ?? true,
                 RecipeFavorite = ReadBoolQuery(query, "recipeFavorite") ?? false,
@@ -386,6 +557,45 @@ internal sealed class LocalApiServer : IDisposable
         catch (Exception ex)
         {
             return "{\"ok\":false,\"prepared\":false,\"error\":\"" + EscapeJson(ex.Message) + "\",\"order\":{\"deskCode\":-1,\"guestId\":null,\"guestName\":\"\",\"foodTag\":\"\",\"beverageTag\":\"\"},\"recipeId\":-1,\"recipeName\":\"\",\"beverageId\":-1,\"beverageName\":\"\",\"steps\":[]}";
+        }
+    }
+
+    private static string BuildRareGuestInvitationJson(Func<RareGuestInvitationResult> action)
+    {
+        try
+        {
+            var result = action();
+            return JsonSerializer.Serialize(result, new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            });
+        }
+        catch (Exception ex)
+        {
+            return "{\"ok\":false,\"runtimeAvailable\":false,\"status\":\"稀客邀请失败。\",\"error\":\""
+                + EscapeJson(ex.Message)
+                + "\",\"candidateCount\":0,\"usableCount\":0,\"existingSlotCount\":0,\"existingControlledCount\":0,\"scheduledSlotCount\":0,\"invitedCount\":0,\"skippedCount\":0,\"scope\":\"current\",\"currentMapLabel\":\"\",\"currentMapName\":\"\",\"candidates\":[],\"available\":[],\"invited\":[],\"skipped\":[]}";
+        }
+    }
+
+    private static string BuildRareOrderDismissJson(string query)
+    {
+        try
+        {
+            var removed = SpecialOrderRuntimeCapture.DismissOrder(
+                ReadIntQuery(query, "deskCode", -1),
+                ReadNullableIntQuery(query, "guestId"),
+                ReadStringQuery(query, "guestName"),
+                ReadIntQuery(query, "foodTagId", int.MinValue),
+                ReadIntQuery(query, "beverageTagId", int.MinValue));
+            var status = removed > 0
+                ? $"已删除 {removed} 条稀客订单缓存。"
+                : "未找到匹配的稀客订单缓存。";
+            return "{\"ok\":true,\"removed\":" + removed + ",\"status\":\"" + EscapeJson(status) + "\",\"error\":null}";
+        }
+        catch (Exception ex)
+        {
+            return "{\"ok\":false,\"removed\":0,\"status\":\"\",\"error\":\"" + EscapeJson(ex.Message) + "\"}";
         }
     }
 
@@ -475,6 +685,76 @@ internal sealed class LocalApiServer : IDisposable
         }
 
         return lines;
+    }
+
+    public static string ResolveDiagnosticPackageDirectory()
+    {
+        return Path.Combine(Paths.ConfigPath, "MystiaStewardCompanion", "diagnostic-packages");
+    }
+
+    private static void AddDiagnosticLogEntries(ZipArchive archive, string primaryPath, int maxBytes, int maxLines, List<string> added)
+    {
+        var directory = Path.GetDirectoryName(primaryPath);
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory)) return;
+
+        foreach (var path in Directory.EnumerateFiles(directory, "*.log", SearchOption.TopDirectoryOnly).OrderBy(Path.GetFileName))
+        {
+            var name = Path.GetFileName(path);
+            if (string.IsNullOrWhiteSpace(name)) continue;
+            AddLogTailEntry(archive, path, "diagnostics/" + name.Replace(".log", ".tail.log", StringComparison.Ordinal), maxBytes, maxLines, added);
+        }
+    }
+
+    private static void AddLogTailEntry(
+        ZipArchive archive,
+        string path,
+        string entryName,
+        int maxBytes,
+        int maxLines,
+        List<string> added)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
+        var content = string.Join(Environment.NewLine, ReadLogTail(path, maxBytes, maxLines));
+        AddTextEntry(archive, entryName, content, added);
+    }
+
+    private static void AddTextEntry(ZipArchive archive, string entryName, string content, List<string> added)
+    {
+        var entry = archive.CreateEntry(entryName, CompressionLevel.Fastest);
+        using var stream = entry.Open();
+        using var writer = new StreamWriter(stream, new UTF8Encoding(false));
+        writer.Write(content);
+        added.Add(entryName);
+    }
+
+    private string BuildDiagnosticManifestJson(LocalApiLogSettings settings)
+    {
+        return new StringBuilder()
+            .Append('{')
+            .Append("\"generatedAtUtc\":\"").Append(DateTime.UtcNow.ToString("O")).Append("\",")
+            .Append("\"baseUrl\":\"").Append(EscapeJson(BaseUrl)).Append("\",")
+            .Append("\"logOutputPath\":\"").Append(EscapeJson(string.IsNullOrWhiteSpace(settings.LogOutputPath) ? _logOutputPath : settings.LogOutputPath)).Append("\",")
+            .Append("\"automationLogPath\":\"").Append(EscapeJson(RuntimeOrderPreparationService.ResolveAutomationLogPath())).Append("\",")
+            .Append("\"nightBusinessDiagnosticsPath\":\"").Append(EscapeJson(settings.NightBusinessDiagnosticsPath)).Append("\",")
+            .Append("\"maxLogLines\":").Append(Math.Clamp(settings.MaxLogLines, 50, 2000)).Append(',')
+            .Append("\"maxLogBytes\":").Append(Math.Clamp(settings.MaxLogBytes, 16 * 1024, 2 * 1024 * 1024))
+            .Append('}')
+            .ToString();
+    }
+
+    private static string BuildJsonStringArray(IEnumerable<string> values)
+    {
+        var builder = new StringBuilder();
+        builder.Append('[');
+        var first = true;
+        foreach (var value in values)
+        {
+            if (!first) builder.Append(',');
+            builder.Append('"').Append(EscapeJson(value)).Append('"');
+            first = false;
+        }
+        builder.Append(']');
+        return builder.ToString();
     }
 
     private static string ReadRequest(NetworkStream stream)
@@ -675,4 +955,6 @@ internal sealed class LocalApiLogSettings
     public int MaxLogBytes { get; init; } = 256 * 1024;
     public bool NightBusinessDiagnosticsEnabled { get; init; }
     public string NightBusinessDiagnosticsPath { get; init; } = "";
+    public bool NativeBepInExConsoleEnabled { get; init; }
+    public bool NativeBepInExConsoleVisible { get; init; }
 }

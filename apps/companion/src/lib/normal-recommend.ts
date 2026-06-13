@@ -4,32 +4,30 @@
 import type {
   IRecipe,
   IIngredient,
-  IBeverage,
   ICustomerNormal,
   INormalRecipeResult,
   INormalBeverageResult,
   ICustomerScore,
   TPlace,
 } from '@/lib/types';
-
-import allRecipes from '@/data/recipes.json';
-import allIngredients from '@/data/ingredients.json';
-import allNormalCustomers from '@/data/customer_normal.json';
-import allBeverages from '@/data/beverages.json';
-
-const ingredientsByName = new Map(
-  (allIngredients as IIngredient[]).map((i) => [i.name, i]),
-);
+import {
+  DEFAULT_RECOMMENDATION_DATA,
+  type RecommendationDataSet,
+} from '@/lib/recommendation-data';
+import type { SpecialFoodRuleRankOptions } from '@/lib/rare-recommend';
 
 /** 获取指定地区的普客 */
-export function getNormalCustomersByPlace(place: TPlace): ICustomerNormal[] {
-  return (allNormalCustomers as ICustomerNormal[]).filter((c) =>
+export function getNormalCustomersByPlace(
+  place: TPlace,
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
+): ICustomerNormal[] {
+  return data.normalCustomers.filter((c) =>
     c.places.includes(place),
   );
 }
 
 /** 计算料理的食材总成本 */
-function getIngredientCost(recipe: IRecipe): number {
+function getIngredientCost(recipe: IRecipe, ingredientsByName: Map<string, IIngredient>): number {
   return recipe.ingredients.reduce((sum, name) => {
     const ing = ingredientsByName.get(name);
     return sum + (ing ? ing.price : 0);
@@ -66,13 +64,18 @@ export function computeNormalRecipeResults(
   popularFoodTag: string | null,
   popularHateFoodTag: string | null,
   isFamousShop = false,
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
+  options: { specialFoodRule?: SpecialFoodRuleRankOptions } = {},
 ): INormalRecipeResult[] {
-  const customers = getNormalCustomersByPlace(place);
+  const customers = getNormalCustomersByPlace(place, data);
   if (customers.length === 0) return [];
 
   const results: INormalRecipeResult[] = [];
+  const ingredientsByName = new Map(data.ingredients.map((i) => [i.name, i]));
+  const specialRuleTargetTags = new Set(options.specialFoodRule?.targetTags ?? []);
+  const specialRuleMatchAll = options.specialFoodRule?.matchMode === 'all';
 
-  for (const recipe of allRecipes as IRecipe[]) {
+  for (const recipe of data.recipes) {
     if (!availableRecipeIds.has(recipe.id)) continue;
 
     const hasDisabledIngredient = recipe.ingredients.some((name) => {
@@ -87,7 +90,12 @@ export function computeNormalRecipeResults(
       popularHateFoodTag,
       isFamousShop,
     );
-    const ingredientCost = getIngredientCost(recipe);
+    const specialRuleTags = effectiveTags.filter((tag) => specialRuleTargetTags.has(tag));
+    const satisfiesSpecialRule = specialRuleTargetTags.size > 0
+      && (specialRuleMatchAll
+        ? [...specialRuleTargetTags].every((tag) => specialRuleTags.includes(tag))
+        : specialRuleTags.length > 0);
+    const ingredientCost = getIngredientCost(recipe, ingredientsByName);
     const profit = recipe.price - ingredientCost;
 
     // 计算每位普客的匹配分数
@@ -110,6 +118,8 @@ export function computeNormalRecipeResults(
       totalCoverage,
       profit,
       matchedTags,
+      specialRuleTags,
+      satisfiesSpecialRule,
       ingredientCost,
     });
   }
@@ -121,13 +131,14 @@ export function computeNormalRecipeResults(
 export function computeNormalBeverageResults(
   place: TPlace,
   availableBeverageIds: Set<number>,
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
 ): INormalBeverageResult[] {
-  const customers = getNormalCustomersByPlace(place);
+  const customers = getNormalCustomersByPlace(place, data);
   if (customers.length === 0) return [];
 
   const results: INormalBeverageResult[] = [];
 
-  for (const bev of allBeverages as IBeverage[]) {
+  for (const bev of data.beverages) {
     if (!availableBeverageIds.has(bev.id)) continue;
 
     const customerScores: ICustomerScore[] = [];

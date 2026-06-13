@@ -4,7 +4,6 @@
 import type {
   IRecipe,
   IIngredient,
-  IBeverage,
   ICustomerRare,
   IRareRecipeResult,
   IRareBeverageResult,
@@ -20,18 +19,10 @@ import {
   canCancelNegativeByConflict,
   countConflictCancellations,
 } from '@/lib/tags';
-
-import allRecipes from '@/data/recipes.json';
-import allIngredients from '@/data/ingredients.json';
-import allBeverages from '@/data/beverages.json';
-import allRareCustomers from '@/data/customer_rare.json';
-
-const ingredientsByName = new Map(
-  (allIngredients as IIngredient[]).map((i) => [i.name, i]),
-);
-const ingredientsById = new Map(
-  (allIngredients as IIngredient[]).map((i) => [i.id, i]),
-);
+import {
+  DEFAULT_RECOMMENDATION_DATA,
+  type RecommendationDataSet,
+} from '@/lib/recommendation-data';
 
 type RareEasterEffect = 'priority-exgood' | 'ban';
 
@@ -116,15 +107,20 @@ const RARE_EASTER_RULES: RareEasterRule[] = [
 ];
 
 /** 获取指定地区的稀客 */
-export function getRareCustomersByPlace(place: TPlace): ICustomerRare[] {
-  return (allRareCustomers as unknown as ICustomerRare[]).filter((c) =>
+export function getRareCustomersByPlace(
+  place: TPlace,
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
+): ICustomerRare[] {
+  return data.rareCustomers.filter((c) =>
     c.places.includes(place),
   );
 }
 
 /** 获取全部稀客 */
-export function getAllRareCustomers(): ICustomerRare[] {
-  return allRareCustomers as unknown as ICustomerRare[];
+export function getAllRareCustomers(
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
+): ICustomerRare[] {
+  return data.rareCustomers;
 }
 
 interface IngredientTagReasonResult {
@@ -132,6 +128,17 @@ interface IngredientTagReasonResult {
   assignedBaseReuseScore: number;
   assignedQtyScore: number;
   assignedPriceScore: number;
+}
+
+export interface SpecialFoodRuleRankOptions {
+  targetTags: string[];
+  matchMode?: 'any' | 'all';
+}
+
+interface NormalizedSpecialFoodRule {
+  targetTags: Set<string>;
+  matchAll: boolean;
+  hasTargets: boolean;
 }
 
 function getIngredientOwnedQty(
@@ -159,6 +166,7 @@ function buildExtraIngredientTagReasons(
   finalActiveTags: string[],
   customerPreferredTags: string[],
   requiredFoodTag: string,
+  specialRuleTargetTags: Set<string>,
   baseIngredientNames: Set<string>,
   ownedIngredientQty: Record<number, number>,
 ): IngredientTagReasonResult {
@@ -170,6 +178,13 @@ function buildExtraIngredientTagReasons(
   }
 
   for (const tag of customerPreferredTags) {
+    if (tag === requiredFoodTag) continue;
+    if (!baseActiveTags.includes(tag) && finalActiveTags.includes(tag)) {
+      neededTags.push(tag);
+    }
+  }
+
+  for (const tag of specialRuleTargetTags) {
     if (tag === requiredFoodTag) continue;
     if (!baseActiveTags.includes(tag) && finalActiveTags.includes(tag)) {
       neededTags.push(tag);
@@ -224,6 +239,37 @@ function isReasonDataPreferred(
     return nextReason.assignedPriceScore < prevReason.assignedPriceScore;
   }
   return nextCost < prevCost;
+}
+
+function isComboPreferred(
+  specialRule: NormalizedSpecialFoodRule,
+  nextEval: ReturnType<typeof evaluateCombo>,
+  prevEval: ReturnType<typeof evaluateCombo> | null,
+  nextReason: IngredientTagReasonResult,
+  prevReason: IngredientTagReasonResult | null,
+  nextCost: number,
+  prevCost: number,
+): boolean {
+  if (!prevEval) return true;
+  if (specialRule.hasTargets && nextEval.satisfiesSpecialRule !== prevEval.satisfiesSpecialRule) {
+    return nextEval.satisfiesSpecialRule;
+  }
+  return isReasonDataPreferred(nextReason, prevReason, nextCost, prevCost);
+}
+
+function normalizeSpecialFoodRule(
+  rule: SpecialFoodRuleRankOptions | undefined,
+): NormalizedSpecialFoodRule {
+  const targetTags = new Set(
+    (rule?.targetTags ?? [])
+      .map((tag) => tag.trim())
+      .filter(Boolean),
+  );
+  return {
+    targetTags,
+    matchAll: rule?.matchMode === 'all',
+    hasTargets: targetTags.size > 0,
+  };
 }
 
 function resolveRareEasterEffect(
@@ -342,7 +388,15 @@ function evaluateCombo(
   popularFoodTag: string | null,
   popularHateFoodTag: string | null,
   isFamousShop: boolean,
-): { foodScore: number; meetsRequiredFood: boolean; activeTags: string[]; cancelledTags: string[] } {
+  specialRule: NormalizedSpecialFoodRule,
+): {
+  foodScore: number;
+  meetsRequiredFood: boolean;
+  satisfiesSpecialRule: boolean;
+  matchedSpecialRuleTags: string[];
+  activeTags: string[];
+  cancelledTags: string[];
+} {
   const { activeTags, cancelledTags } = resolveFinalFoodTags(
     recipe,
     extraIngredients,
@@ -352,12 +406,26 @@ function evaluateCombo(
   );
   const foodScore = scoreFoodForRare(activeTags, customer.positiveTags, customer.negativeTags);
   const meetsRequiredFood = activeTags.includes(requiredFoodTag);
-  return { foodScore, meetsRequiredFood, activeTags, cancelledTags };
+  const matchedSpecialRuleTags = activeTags.filter((tag) => specialRule.targetTags.has(tag));
+  const satisfiesSpecialRule = specialRule.hasTargets
+    && (specialRule.matchAll
+      ? [...specialRule.targetTags].every((tag) => matchedSpecialRuleTags.includes(tag))
+      : matchedSpecialRuleTags.length > 0);
+  return {
+    foodScore,
+    meetsRequiredFood,
+    satisfiesSpecialRule,
+    matchedSpecialRuleTags,
+    activeTags,
+    cancelledTags,
+  };
 }
 
 interface RareRecipeRankOptions {
   allowPreferenceFallback?: boolean;
   minFoodScore?: number;
+  forcedRecipeIds?: Set<number>;
+  specialFoodRule?: SpecialFoodRuleRankOptions;
 }
 
 /** 稀客料理推荐 */
@@ -374,6 +442,7 @@ export function rankRecipesForRare(
   ownedIngredientQty: Record<number, number> = {},
   isFamousShop = false,
   options: RareRecipeRankOptions = {},
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
 ): IRareRecipeResult[] {
   const results: IRareRecipeResult[] = [];
 
@@ -384,6 +453,10 @@ export function rankRecipesForRare(
   const TARGET_FOOD_SCORE = 3;
   const allowPreferenceFallback = options.allowPreferenceFallback ?? false;
   const minFoodScore = Math.max(1, options.minFoodScore ?? TARGET_FOOD_SCORE);
+  const forcedRecipeIds = options.forcedRecipeIds ?? new Set<number>();
+  const specialRule = normalizeSpecialFoodRule(options.specialFoodRule);
+  const ingredientsByName = new Map(data.ingredients.map((i) => [i.name, i]));
+  const ingredientsById = new Map(data.ingredients.map((i) => [i.id, i]));
 
   // 构建可用食材列表
   const usableIngredients: IIngredient[] = [];
@@ -400,7 +473,7 @@ export function rankRecipesForRare(
   const customerPriorityIngredientIds = getEasterIngredientIdsByEffect(customer.id, 'priority-exgood');
   const MAX_CANDIDATES = 18;
 
-  for (const recipe of allRecipes as IRecipe[]) {
+  for (const recipe of data.recipes) {
     if (!availableRecipeIds.has(recipe.id)) continue;
 
     // 基础食材可用性检查：必须在可用食材列表中，且未被禁用
@@ -443,7 +516,9 @@ export function rankRecipesForRare(
     // 2) 可通过互斥规则抵消当前已激活的顾客厌恶Tag
     const relevant: IIngredient[] = [];
     for (const c of allCandidates) {
-      const matchesPreferredOrRequired = c.tags.some((t) => customerPreferredTagSet.has(t) || t === requiredFoodTag);
+      const matchesPreferredOrRequired = c.tags.some((t) =>
+        customerPreferredTagSet.has(t) || t === requiredFoodTag || specialRule.targetTags.has(t),
+      );
       const canCancelNegative = canCancelNegativeByConflict(
         baseActiveTags,
         c.tags,
@@ -462,6 +537,10 @@ export function rankRecipesForRare(
       const aRequiredHit = a.tags.includes(requiredFoodTag) ? 1 : 0;
       const bRequiredHit = b.tags.includes(requiredFoodTag) ? 1 : 0;
       if (aRequiredHit !== bRequiredHit) return bRequiredHit - aRequiredHit;
+
+      const aSpecialHits = a.tags.filter((t) => specialRule.targetTags.has(t)).length;
+      const bSpecialHits = b.tags.filter((t) => specialRule.targetTags.has(t)).length;
+      if (aSpecialHits !== bSpecialHits) return bSpecialHits - aSpecialHits;
 
       const aPreferredHits = a.tags.filter((t) => customerPreferredTagSet.has(t)).length;
       const bPreferredHits = b.tags.filter((t) => customerPreferredTagSet.has(t)).length;
@@ -492,6 +571,7 @@ export function rankRecipesForRare(
       popularFoodTag,
       popularHateFoodTag,
       isFamousShop,
+      specialRule,
     );
     let bestReasonData: IngredientTagReasonResult = {
       reasonTagsByIngredient: {},
@@ -505,7 +585,11 @@ export function rankRecipesForRare(
     // 先评估不加料的情况
     const baseEval = bestEval;
 
-    if (baseEval.foodScore >= minFoodScore && (baseEval.meetsRequiredFood || allowPreferenceFallback)) {
+    if (
+      baseEval.foodScore >= minFoodScore
+      && (baseEval.meetsRequiredFood || allowPreferenceFallback)
+      && (!specialRule.hasTargets || baseEval.satisfiesSpecialRule)
+    ) {
       bestCombo = [];
     } else if (extraSlots > 0) {
       const n = candidates.length;
@@ -535,8 +619,12 @@ export function rankRecipesForRare(
         nextCombo: IIngredient[],
         nextReason: IngredientTagReasonResult,
         nextCost: number,
+        currentSpecialRule: NormalizedSpecialFoodRule,
       ) => {
         if (nextEval.foodScore !== prevEval.foodScore) return nextEval.foodScore > prevEval.foodScore;
+        if (currentSpecialRule.hasTargets && nextEval.satisfiesSpecialRule !== prevEval.satisfiesSpecialRule) {
+          return nextEval.satisfiesSpecialRule;
+        }
         if (nextCombo.length !== prevCombo.length) return nextCombo.length < prevCombo.length;
         if (nextReason.assignedBaseReuseScore !== prevReason.assignedBaseReuseScore) {
           return nextReason.assignedBaseReuseScore > prevReason.assignedBaseReuseScore;
@@ -580,6 +668,7 @@ export function rankRecipesForRare(
             popularFoodTag,
             popularHateFoodTag,
             isFamousShop,
+            specialRule,
           );
           const cost = combo.reduce((sum, ingredient) => sum + ingredient.price, 0);
           const reasonData = buildExtraIngredientTagReasons(
@@ -588,6 +677,7 @@ export function rankRecipesForRare(
             ev.activeTags,
             customer.positiveTags,
             requiredFoodTag,
+            specialRule.targetTags,
             baseIngNames,
             ownedIngredientQty,
           );
@@ -603,16 +693,17 @@ export function rankRecipesForRare(
                 bestRequiredFallbackCombo === null ||
                 bestRequiredFallbackEval === null ||
                 bestRequiredFallbackReasonData === null ||
-                shouldReplaceRequiredFallback(
-                  bestRequiredFallbackEval,
-                  bestRequiredFallbackCombo,
-                  bestRequiredFallbackReasonData,
-                  bestRequiredFallbackCost,
-                  ev,
-                  combo,
-                  reasonData,
-                  cost,
-                )
+                  shouldReplaceRequiredFallback(
+                    bestRequiredFallbackEval,
+                    bestRequiredFallbackCombo,
+                    bestRequiredFallbackReasonData,
+                    bestRequiredFallbackCost,
+                    ev,
+                    combo,
+                    reasonData,
+                    cost,
+                    specialRule,
+                  )
               )
             ) {
               bestRequiredFallbackCombo = combo;
@@ -630,7 +721,15 @@ export function rankRecipesForRare(
             if (comboEasterEffect.effect === 'priority-exgood' && (ev.meetsRequiredFood || allowPreferenceFallback)) {
               const shouldReplacePriority =
                 bestPriorityComboForK === null ||
-                isReasonDataPreferred(reasonData, bestPriorityReasonForK, cost, bestPriorityCostForK);
+                isComboPreferred(
+                  specialRule,
+                  ev,
+                  bestPriorityEvalForK,
+                  reasonData,
+                  bestPriorityReasonForK,
+                  cost,
+                  bestPriorityCostForK,
+                );
               if (shouldReplacePriority) {
                 bestPriorityComboForK = combo;
                 bestPriorityEvalForK = ev;
@@ -645,7 +744,15 @@ export function rankRecipesForRare(
             if (ev.foodScore >= minFoodScore && (ev.meetsRequiredFood || allowPreferenceFallback)) {
               const shouldReplace =
                 bestComboForK === null ||
-                isReasonDataPreferred(reasonData, bestReasonForK, cost, bestCostForK);
+                isComboPreferred(
+                  specialRule,
+                  ev,
+                  bestEvalForK,
+                  reasonData,
+                  bestReasonForK,
+                  cost,
+                  bestCostForK,
+                );
 
               if (shouldReplace) {
                 bestComboForK = combo;
@@ -721,8 +828,9 @@ export function rankRecipesForRare(
       rating = getRating(finalFoodScore, ASSUMED_BEV_SCORE, finalMeetsRequiredFood, ASSUMED_BEV_MEETS);
     }
 
-    if (!finalMeetsRequiredFood && !allowPreferenceFallback) continue;
-    if (!finalMeetsRequiredFood && finalFoodScore <= 0) continue;
+    const forceInclude = forcedRecipeIds.has(recipe.id);
+    if (!forceInclude && !finalMeetsRequiredFood && !allowPreferenceFallback) continue;
+    if (!forceInclude && !finalMeetsRequiredFood && finalFoodScore <= 0) continue;
 
     const easterHighlightExtraIngredientIds = selectedIngredients
       .filter((ingredient) => bestEasterEffect.ingredientHighlightIds.includes(ingredient.id))
@@ -747,6 +855,8 @@ export function rankRecipesForRare(
       easterScoreFloor: bestEasterEffect.scoreFloor,
       allTags: finalEval.activeTags,
       cancelledTags: finalEval.cancelledTags,
+      specialRuleTags: finalEval.matchedSpecialRuleTags,
+      satisfiesSpecialRule: finalEval.satisfiesSpecialRule,
       foodScore: finalFoodScore,
       meetsRequiredFood: finalMeetsRequiredFood,
       rating,
@@ -760,6 +870,9 @@ export function rankRecipesForRare(
     const aPerfect = a.rating === 'ExGood' ? 0 : 1;
     const bPerfect = b.rating === 'ExGood' ? 0 : 1;
     if (aPerfect !== bPerfect) return aPerfect - bPerfect;
+    if (specialRule.hasTargets && a.satisfiesSpecialRule !== b.satisfiesSpecialRule) {
+      return a.satisfiesSpecialRule ? -1 : 1;
+    }
     return b.recipe.price - a.recipe.price;
   });
 
@@ -778,6 +891,8 @@ export function rankPreferenceRecipesForRare(
   maxExtraIngredients = 4,
   ownedIngredientQty: Record<number, number> = {},
   isFamousShop = false,
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
+  options: { specialFoodRule?: SpecialFoodRuleRankOptions } = {},
 ): IRareRecipeResult[] {
   return rankRecipesForRare(
     customer,
@@ -791,7 +906,12 @@ export function rankPreferenceRecipesForRare(
     maxExtraIngredients,
     ownedIngredientQty,
     isFamousShop,
-    { allowPreferenceFallback: true, minFoodScore: 1 },
+    {
+      allowPreferenceFallback: true,
+      minFoodScore: 1,
+      specialFoodRule: options.specialFoodRule,
+    },
+    data,
   ).filter((row) => !row.meetsRequiredFood);
 }
 
@@ -800,10 +920,11 @@ export function rankBeveragesForRare(
   customer: ICustomerRare,
   requiredBevTag: string,
   availableBeverageIds: Set<number>,
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
 ): IRareBeverageResult[] {
   const results: IRareBeverageResult[] = [];
 
-  for (const bev of allBeverages as IBeverage[]) {
+  for (const bev of data.beverages) {
     if (!availableBeverageIds.has(bev.id)) continue;
 
     const matchedTags = bev.tags.filter((t) =>
@@ -830,10 +951,11 @@ export function rankPreferenceBeveragesForRare(
   customer: ICustomerRare,
   requiredBevTag: string,
   availableBeverageIds: Set<number>,
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
 ): IRareBeverageResult[] {
   const results: IRareBeverageResult[] = [];
 
-  for (const bev of allBeverages as IBeverage[]) {
+  for (const bev of data.beverages) {
     if (!availableBeverageIds.has(bev.id)) continue;
     if (bev.tags.includes(requiredBevTag)) continue;
 

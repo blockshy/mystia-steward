@@ -4,7 +4,6 @@ param(
     [string]$Configuration = "Release",
     [switch]$SkipInstall,
     [switch]$SkipPreflight,
-    [switch]$SkipDataSync,
     [Alias("SkipWebBuild")]
     [switch]$SkipFrontendBuild,
     [switch]$SkipTauriBuild,
@@ -34,7 +33,6 @@ $RequiredReferenceFiles = @(
     "Il2CppInterop.Runtime.dll",
     "Il2Cppmscorlib.dll",
     "UnityEngine.CoreModule.dll",
-    "UnityEngine.IMGUIModule.dll",
     "UnityEngine.InputLegacyModule.dll"
 )
 
@@ -122,33 +120,6 @@ function Assert-BuildReferences {
     }
 }
 
-function Sync-ModData {
-    Write-Step "Sync Mod data"
-
-    $SourceDir = Join-Path $RepoRoot "apps/companion/src/data"
-    $TargetDir = Join-Path $RootDir "Data"
-    $Files = @(
-        "recipes.json",
-        "beverages.json",
-        "ingredients.json",
-        "customer_normal.json",
-        "customer_rare.json",
-        "food-tag-id-map.json"
-    )
-
-    New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
-    foreach ($File in $Files) {
-        $Source = Join-Path $SourceDir $File
-        $Target = Join-Path $TargetDir $File
-        if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
-            throw "Missing data file: $Source"
-        }
-
-        Copy-Item -LiteralPath $Source -Destination $Target -Force
-        Write-Host "    $File"
-    }
-}
-
 Push-Location $RepoRoot
 try {
     Assert-BuildReferences
@@ -165,10 +136,6 @@ try {
     if (-not $SkipPreflight) {
         Write-Step "Run Mod preflight"
         & $PreflightScript -ReferenceDir $EffectiveReferenceDir
-    }
-
-    if (-not $SkipDataSync) {
-        Sync-ModData
     }
 
     if (-not $SkipFrontendBuild) {

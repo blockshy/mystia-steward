@@ -16,6 +16,7 @@ public sealed class NormalRecommendationService
     {
         var customers = _repository.GetNormalCustomersByPlace(place);
         var disabledIngredients = disabledIngredientIds ?? Array.Empty<int>();
+        var specialRuleTargets = GetSpecialRuleTargets(state);
         var results = new List<NormalRecipeResult>();
 
         foreach (var recipe in _repository.Recipes)
@@ -31,6 +32,14 @@ public sealed class NormalRecommendationService
             if (hasDisabledIngredient) continue;
 
             var effectiveTags = GetRecipeEffectiveTags(recipe, state);
+            var specialRuleTags = effectiveTags
+                .Where(specialRuleTargets.TargetTags.Contains)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            var satisfiesSpecialRule = specialRuleTargets.HasTargets
+                && (specialRuleTargets.MatchAll
+                    ? specialRuleTargets.TargetTags.All(specialRuleTags.Contains)
+                    : specialRuleTags.Count > 0);
             var ingredientCost = GetIngredientCost(recipe);
             var customerScores = new List<CustomerScore>();
             var matchedTags = new HashSet<string>();
@@ -50,6 +59,8 @@ public sealed class NormalRecommendationService
                 Profit = recipe.Price - ingredientCost,
                 IngredientCost = ingredientCost,
                 MatchedTags = matchedTags.ToList(),
+                SpecialRuleTags = specialRuleTags,
+                SatisfiesSpecialRule = satisfiesSpecialRule,
             });
         }
 
@@ -98,6 +109,18 @@ public sealed class NormalRecommendationService
         return tags.ToList();
     }
 
+    private static NormalSpecialRuleTargets GetSpecialRuleTargets(RecommendationState state)
+    {
+        var targetTags = state.SpecialRules
+            .SelectMany(rule => rule.FoodTagTargets)
+            .Select(target => target.Name)
+            .Where(tag => !string.IsNullOrWhiteSpace(tag))
+            .Distinct(StringComparer.Ordinal)
+            .ToHashSet(StringComparer.Ordinal);
+        var matchAll = state.SpecialRules.Any(rule => string.Equals(rule.MatchMode, "all", StringComparison.OrdinalIgnoreCase));
+        return new NormalSpecialRuleTargets(targetTags, matchAll);
+    }
+
     private int GetIngredientCost(Recipe recipe)
     {
         var cost = 0;
@@ -111,4 +134,9 @@ public sealed class NormalRecommendationService
 
         return cost;
     }
+}
+
+internal sealed record NormalSpecialRuleTargets(HashSet<string> TargetTags, bool MatchAll)
+{
+    public bool HasTargets => TargetTags.Count > 0;
 }

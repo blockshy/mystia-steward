@@ -40,6 +40,48 @@ public sealed class Beverage
     public int Price { get; set; }
 }
 
+public sealed class RuntimeDataCatalog
+{
+    public bool IsComplete { get; init; }
+    public string Source { get; init; } = "";
+    public string Status { get; init; } = "";
+    public List<Recipe> Recipes { get; init; } = new();
+    public List<Ingredient> Ingredients { get; init; } = new();
+    public List<Beverage> Beverages { get; init; } = new();
+    public List<NormalCustomer> NormalCustomers { get; init; } = new();
+    public List<RareCustomer> RareCustomers { get; init; } = new();
+    public Dictionary<string, string> FoodTagIdMap { get; init; } = new(StringComparer.Ordinal);
+
+    public static RuntimeDataCatalog Empty(string status)
+    {
+        return new RuntimeDataCatalog
+        {
+            IsComplete = false,
+            Status = status,
+        };
+    }
+}
+
+public sealed class RuntimeSpecialFoodTagTarget
+{
+    public int? Id { get; init; }
+    public string Name { get; init; } = "";
+    public string RawName { get; init; } = "";
+    public string Source { get; init; } = "";
+}
+
+public sealed class RuntimeSpecialRuleContext
+{
+    public string RuleId { get; init; } = "";
+    public string ChallengeMode { get; init; } = "";
+    public string DisplayName { get; init; } = "";
+    public string Description { get; init; } = "";
+    public string MatchMode { get; init; } = "any";
+    public List<RuntimeSpecialFoodTagTarget> FoodTagTargets { get; init; } = new();
+    public string Source { get; init; } = "";
+    public string Status { get; init; } = "";
+}
+
 public sealed class PlacedCookerInfo
 {
     public int ControllerIndex { get; init; }
@@ -117,6 +159,8 @@ public sealed class NormalRecipeResult
     public int Profit { get; init; }
     public int IngredientCost { get; init; }
     public List<string> MatchedTags { get; init; } = new();
+    public List<string> SpecialRuleTags { get; init; } = new();
+    public bool SatisfiesSpecialRule { get; init; }
 }
 
 public sealed class NormalBeverageResult
@@ -140,6 +184,8 @@ public sealed class RareRecipeResult
     public int? EasterScoreFloor { get; init; }
     public List<string> AllTags { get; init; } = new();
     public List<string> CancelledTags { get; init; } = new();
+    public List<string> SpecialRuleTags { get; init; } = new();
+    public bool SatisfiesSpecialRule { get; init; }
     public int FoodScore { get; init; }
     public bool MeetsRequiredFood { get; init; }
     public Rating Rating { get; init; }
@@ -167,6 +213,8 @@ public sealed class NightBusinessOrder
     public string Source { get; init; } = "";
     public DateTime? FirstSeenAtUtc { get; init; }
     public DateTime? LastSeenAtUtc { get; init; }
+    public bool HasServedFood { get; init; }
+    public bool HasServedBeverage { get; init; }
 }
 
 public sealed class NightBusinessGuest
@@ -192,6 +240,65 @@ public sealed class NightBusinessContext
     public string? Error { get; init; }
 }
 
+public sealed class RuntimeMissionInfo
+{
+    public string Label { get; init; } = "";
+    public string Title { get; init; } = "";
+    public string CharacterLabel { get; init; } = "";
+    public string CharacterName { get; init; } = "";
+    public List<string> Places { get; init; } = new();
+    public string Source { get; init; } = "";
+    public string Status { get; init; } = "available";
+    public bool Started { get; init; }
+    public bool Finished { get; init; }
+    public int? TargetRecipeId { get; init; }
+    public string? TargetRecipeName { get; init; }
+}
+
+public sealed class RuntimeMissionServeTarget
+{
+    public int GuestId { get; init; }
+    public string GuestName { get; init; } = "";
+    public string GuestLabel { get; init; } = "";
+    public string MissionLabel { get; init; } = "";
+    public string MissionTitle { get; init; } = "";
+    public int RecipeId { get; init; }
+    public string RecipeName { get; init; } = "";
+    public string Status { get; init; } = "tracking";
+    public string Source { get; init; } = "";
+}
+
+public sealed class RuntimeMissionContext
+{
+    public List<RuntimeMissionInfo> AvailableMissions { get; init; } = new();
+    public List<RuntimeMissionServeTarget> ServeTargets { get; init; } = new();
+    public string Source { get; init; } = "";
+    public string? Error { get; init; }
+}
+
+public sealed class NormalBusinessOrder
+{
+    public string OrderKey { get; init; } = "";
+    public int DeskCode { get; init; }
+    public string GuestName { get; init; } = "";
+    public int FoodId { get; init; }
+    public string FoodName { get; init; } = "";
+    public int BeverageId { get; init; }
+    public string BeverageName { get; init; } = "";
+    public bool HasServedFood { get; init; }
+    public bool HasServedBeverage { get; init; }
+    public bool IsFulfilled { get; init; }
+    public DateTime? FirstSeenAtUtc { get; init; }
+    public string Source { get; init; } = "";
+}
+
+public sealed class NormalBusinessContext
+{
+    public List<NormalBusinessOrder> Orders { get; init; } = new();
+    public string Source { get; init; } = "";
+    public string? Error { get; init; }
+}
+
 public sealed class ParsedSaveData
 {
     public List<int> RecipeGameIds { get; init; } = new();
@@ -210,6 +317,7 @@ public sealed class RecommendationState
     public HashSet<int> AvailableRecipeIds { get; } = new();
     public HashSet<int> AvailableBeverageIds { get; } = new();
     public HashSet<int> AvailableIngredientIds { get; } = new();
+    public HashSet<int> AvailableRareCustomerIds { get; } = new();
     public Dictionary<int, int> OwnedIngredientQty { get; } = new();
     public Dictionary<int, int> OwnedBeverageQty { get; } = new();
     public HashSet<int> PlacedCookerTypeIds { get; } = new();
@@ -218,6 +326,8 @@ public sealed class RecommendationState
     public string? PopularFoodTag { get; set; }
     public string? PopularHateFoodTag { get; set; }
     public bool FamousShopEnabled { get; set; }
+    public List<RuntimeSpecialRuleContext> SpecialRules { get; } = new();
+    public string SpecialRuleStatus { get; set; } = "";
 
     public static RecommendationState AllAvailable(DataRepository repository)
     {

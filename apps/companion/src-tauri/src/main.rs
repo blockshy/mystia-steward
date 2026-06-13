@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    Manager, Monitor, PhysicalPosition, PhysicalSize, Position, Size, WebviewWindow, Window,
-    WindowEvent,
+    Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize, Position, Size, WebviewWindow,
+    Window, WindowEvent,
 };
 
 const DEFAULT_API_ENDPOINT: &str = "http://127.0.0.1:32145";
@@ -29,6 +29,8 @@ const MAX_WINDOW_SWITCH_COOLDOWN_MS: u64 = 2000;
 struct GamePidState(Arc<Mutex<Option<u32>>>);
 struct WindowSwitchState(Arc<Mutex<Option<Instant>>>);
 struct CompanionPreferenceState(Arc<Mutex<CompanionPreferences>>);
+struct MousePassthroughState(Arc<Mutex<bool>>);
+struct TrayPassthroughMenuState(Arc<Mutex<Option<MenuItem<tauri::Wry>>>>);
 
 #[derive(Clone, Copy)]
 struct CompanionPreferences {
@@ -134,6 +136,7 @@ fn toggle_companion_focus(
     game_pid_state: tauri::State<'_, GamePidState>,
     switch_state: tauri::State<'_, WindowSwitchState>,
     preference_state: tauri::State<'_, CompanionPreferenceState>,
+    mouse_passthrough_state: tauri::State<'_, MousePassthroughState>,
     keep_visible_when_focused: Option<bool>,
     window_switch_cooldown_ms: Option<u64>,
 ) {
@@ -148,6 +151,7 @@ fn toggle_companion_focus(
         &app,
         current_game_pid(&game_pid_state.0),
         keep_visible_when_focused.unwrap_or(preferences.keep_visible_when_focused),
+        &mouse_passthrough_state.0,
     );
 }
 
@@ -171,6 +175,20 @@ fn apply_companion_preferences(
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_always_on_top(always_on_top);
     }
+}
+
+#[tauri::command]
+fn set_mouse_passthrough(
+    app: tauri::AppHandle,
+    mouse_passthrough_state: tauri::State<'_, MousePassthroughState>,
+    enabled: bool,
+) -> Result<bool, String> {
+    set_mouse_passthrough_internal(&app, &mouse_passthrough_state.0, enabled)
+}
+
+#[tauri::command]
+fn get_mouse_passthrough(mouse_passthrough_state: tauri::State<'_, MousePassthroughState>) -> bool {
+    current_mouse_passthrough(&mouse_passthrough_state.0)
 }
 
 fn launch_game_pid() -> Option<u32> {
@@ -210,18 +228,86 @@ fn current_companion_preferences(
         .unwrap_or_default()
 }
 
-fn try_begin_window_switch(
-    switch_state: &Arc<Mutex<Option<Instant>>>,
-    cooldown_ms: u64,
-) -> bool {
+fn current_mouse_passthrough(mouse_passthrough: &Arc<Mutex<bool>>) -> bool {
+    mouse_passthrough
+        .lock()
+        .map(|current| *current)
+        .unwrap_or(false)
+}
+
+fn set_mouse_passthrough_internal(
+    app: &tauri::AppHandle,
+    mouse_passthrough: &Arc<Mutex<bool>>,
+    enabled: bool,
+) -> Result<bool, String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window
+            .set_ignore_cursor_events(enabled)
+            .map_err(|error| format!("set mouse passthrough failed: {error}"))?;
+    }
+
+    if let Ok(mut current) = mouse_passthrough.lock() {
+        *current = enabled;
+    }
+    update_mouse_passthrough_tray_label(app, enabled);
+    let _ = app.emit("mouse-passthrough-changed", enabled);
+    Ok(enabled)
+}
+
+fn mouse_passthrough_tray_label(enabled: bool) -> &'static str {
+    if enabled {
+        "关闭鼠标穿透"
+    } else {
+        "开启鼠标穿透"
+    }
+}
+
+fn update_mouse_passthrough_tray_label(app: &tauri::AppHandle, enabled: bool) {
+    let Some(state) = app.try_state::<TrayPassthroughMenuState>() else {
+        return;
+    };
+    let item = state
+        .0
+        .lock()
+        .ok()
+        .and_then(|current| current.as_ref().cloned());
+    if let Some(item) = item {
+        let _ = item.set_text(mouse_passthrough_tray_label(enabled));
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn toggle_mouse_passthrough(app: &tauri::AppHandle, mouse_passthrough: &Arc<Mutex<bool>>) {
+    let enabled = !current_mouse_passthrough(mouse_passthrough);
+    let _ = set_mouse_passthrough_internal(app, mouse_passthrough, enabled);
+}
+
+#[cfg(target_os = "windows")]
+fn start_mouse_passthrough_hotkey_monitor(
+    app: tauri::AppHandle,
+    mouse_passthrough: Arc<Mutex<bool>>,
+) {
+    thread::spawn(move || {
+        windows_hotkey::run_f10_hotkey_loop(move || {
+            toggle_mouse_passthrough(&app, &mouse_passthrough);
+        });
+    });
+}
+
+#[cfg(not(target_os = "windows"))]
+fn start_mouse_passthrough_hotkey_monitor(
+    _app: tauri::AppHandle,
+    _mouse_passthrough: Arc<Mutex<bool>>,
+) {
+}
+
+fn try_begin_window_switch(switch_state: &Arc<Mutex<Option<Instant>>>, cooldown_ms: u64) -> bool {
     let Ok(mut last_switch) = switch_state.lock() else {
         return true;
     };
     let cooldown = Duration::from_millis(normalize_window_switch_cooldown_ms(cooldown_ms));
     let now = Instant::now();
-    if last_switch
-        .is_some_and(|previous| now.duration_since(previous) < cooldown)
-    {
+    if last_switch.is_some_and(|previous| now.duration_since(previous) < cooldown) {
         return false;
     }
     *last_switch = Some(now);
@@ -315,6 +401,7 @@ fn start_instance_control_server(
     game_pid: Arc<Mutex<Option<u32>>>,
     switch_state: Arc<Mutex<Option<Instant>>>,
     preferences: Arc<Mutex<CompanionPreferences>>,
+    mouse_passthrough: Arc<Mutex<bool>>,
 ) {
     thread::spawn(move || {
         let address = SocketAddr::from((Ipv4Addr::LOCALHOST, CONTROL_PORT));
@@ -333,7 +420,7 @@ fn start_instance_control_server(
             let message = &buffer[..size];
             update_game_pid(&game_pid, parse_control_game_pid(message));
             if message.starts_with(CONTROL_SHOW) {
-                show_main_window(&app);
+                show_main_window(&app, &mouse_passthrough);
             } else if message.starts_with(CONTROL_TOGGLE) {
                 let preferences = current_companion_preferences(&preferences);
                 if !try_begin_window_switch(&switch_state, preferences.window_switch_cooldown_ms) {
@@ -343,6 +430,7 @@ fn start_instance_control_server(
                     &app,
                     current_game_pid(&game_pid),
                     preferences.keep_visible_when_focused,
+                    &mouse_passthrough,
                 );
             } else if message.starts_with(CONTROL_EXIT) {
                 app.exit(0);
@@ -531,15 +619,37 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         None::<&str>,
     )?;
     let reconnect = MenuItem::with_id(app, "reconnect", "重连游戏", true, None::<&str>)?;
+    let toggle_passthrough = MenuItem::with_id(
+        app,
+        "toggle_passthrough",
+        mouse_passthrough_tray_label(false),
+        true,
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &reconnect, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &reconnect, &toggle_passthrough, &quit])?;
+    if let Ok(mut item) = app.state::<TrayPassthroughMenuState>().0.lock() {
+        *item = Some(toggle_passthrough.clone());
+    }
 
     let mut tray = TrayIconBuilder::new()
         .tooltip("mystia-steward-companion")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
-            "show" | "reconnect" => show_main_window(app),
+            "show" | "reconnect" => {
+                if let Some(state) = app.try_state::<MousePassthroughState>() {
+                    show_main_window(app, &state.0);
+                } else {
+                    show_main_window_without_passthrough_state(app);
+                }
+            }
+            "toggle_passthrough" => {
+                if let Some(state) = app.try_state::<MousePassthroughState>() {
+                    let enabled = !current_mouse_passthrough(&state.0);
+                    let _ = set_mouse_passthrough_internal(app, &state.0, enabled);
+                }
+            }
             "quit" => app.exit(0),
             _ => {}
         })
@@ -550,7 +660,11 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 ..
             } = event
             {
-                show_main_window(tray.app_handle());
+                if let Some(state) = tray.app_handle().try_state::<MousePassthroughState>() {
+                    show_main_window(tray.app_handle(), &state.0);
+                } else {
+                    show_main_window_without_passthrough_state(tray.app_handle());
+                }
             }
         });
 
@@ -562,7 +676,12 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-fn show_main_window(app: &tauri::AppHandle) {
+fn show_main_window(app: &tauri::AppHandle, mouse_passthrough: &Arc<Mutex<bool>>) {
+    let _ = set_mouse_passthrough_internal(app, mouse_passthrough, false);
+    show_main_window_without_passthrough_state(app);
+}
+
+fn show_main_window_without_passthrough_state(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -574,6 +693,7 @@ fn toggle_main_window(
     app: &tauri::AppHandle,
     game_pid: Option<u32>,
     keep_visible_when_focused: bool,
+    mouse_passthrough: &Arc<Mutex<bool>>,
 ) {
     if let Some(window) = app.get_webview_window("main") {
         if window.is_focused().unwrap_or(false) {
@@ -586,7 +706,7 @@ fn toggle_main_window(
         }
     }
 
-    show_main_window(app);
+    show_main_window(app, mouse_passthrough);
 }
 
 fn main() {
@@ -600,6 +720,8 @@ fn main() {
         .manage(CompanionPreferenceState(Arc::new(Mutex::new(
             CompanionPreferences::default(),
         ))))
+        .manage(MousePassthroughState(Arc::new(Mutex::new(false))))
+        .manage(TrayPassthroughMenuState(Arc::new(Mutex::new(None))))
         .setup(|app| {
             setup_tray(app)?;
             if let Some(window) = app.get_webview_window("main") {
@@ -609,7 +731,15 @@ fn main() {
             let game_pid = app.state::<GamePidState>().0.clone();
             let switch_state = app.state::<WindowSwitchState>().0.clone();
             let preferences = app.state::<CompanionPreferenceState>().0.clone();
-            start_instance_control_server(app_handle.clone(), game_pid, switch_state, preferences);
+            let mouse_passthrough = app.state::<MousePassthroughState>().0.clone();
+            start_instance_control_server(
+                app_handle.clone(),
+                game_pid,
+                switch_state,
+                preferences,
+                mouse_passthrough.clone(),
+            );
+            start_mouse_passthrough_hotkey_monitor(app_handle.clone(), mouse_passthrough);
             start_game_shutdown_monitor(
                 app_handle,
                 launch_api_endpoint().unwrap_or_else(|| DEFAULT_API_ENDPOINT.to_string()),
@@ -617,23 +747,23 @@ fn main() {
             );
             Ok(())
         })
-        .on_window_event(|window, event| {
-            match event {
-                WindowEvent::Moved(_) | WindowEvent::Resized(_) => save_window_state(window),
-                WindowEvent::CloseRequested { api, .. } => {
-                    api.prevent_close();
-                    save_window_state(window);
-                    let _ = window.hide();
-                }
-                _ => {}
+        .on_window_event(|window, event| match event {
+            WindowEvent::Moved(_) | WindowEvent::Resized(_) => save_window_state(window),
+            WindowEvent::CloseRequested { api, .. } => {
+                api.prevent_close();
+                save_window_state(window);
+                let _ = window.hide();
             }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             fetch_snapshot,
             launch_api_endpoint,
             launch_api_token,
             toggle_companion_focus,
-            apply_companion_preferences
+            apply_companion_preferences,
+            set_mouse_passthrough,
+            get_mouse_passthrough
         ])
         .run(tauri::generate_context!())
         .expect("failed to run mystia-steward-companion");
@@ -754,5 +884,76 @@ mod windows_focus {
         fn IsWindowVisible(hWnd: Hwnd) -> Bool;
         fn SetForegroundWindow(hWnd: Hwnd) -> Bool;
         fn ShowWindow(hWnd: Hwnd, nCmdShow: i32) -> Bool;
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod windows_hotkey {
+    use std::ffi::c_void;
+
+    type Bool = i32;
+    type Hwnd = *mut c_void;
+    type Uint = u32;
+    type Wparam = usize;
+    type Lparam = isize;
+
+    const HOTKEY_ID: i32 = 0x4D53;
+    const VK_F10: Uint = 0x79;
+    const WM_HOTKEY: Uint = 0x0312;
+
+    #[repr(C)]
+    struct Point {
+        x: i32,
+        y: i32,
+    }
+
+    #[repr(C)]
+    struct Msg {
+        hwnd: Hwnd,
+        message: Uint,
+        w_param: Wparam,
+        l_param: Lparam,
+        time: u32,
+        pt: Point,
+    }
+
+    pub fn run_f10_hotkey_loop<F>(mut on_hotkey: F)
+    where
+        F: FnMut() + Send + 'static,
+    {
+        unsafe {
+            if RegisterHotKey(std::ptr::null_mut(), HOTKEY_ID, 0, VK_F10) == 0 {
+                return;
+            }
+
+            let mut message = Msg {
+                hwnd: std::ptr::null_mut(),
+                message: 0,
+                w_param: 0,
+                l_param: 0,
+                time: 0,
+                pt: Point { x: 0, y: 0 },
+            };
+
+            while GetMessageW(&mut message as *mut Msg, std::ptr::null_mut(), 0, 0) > 0 {
+                if message.message == WM_HOTKEY && message.w_param == HOTKEY_ID as usize {
+                    on_hotkey();
+                }
+            }
+
+            UnregisterHotKey(std::ptr::null_mut(), HOTKEY_ID);
+        }
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn RegisterHotKey(hWnd: Hwnd, id: i32, fsModifiers: Uint, vk: Uint) -> Bool;
+        fn UnregisterHotKey(hWnd: Hwnd, id: i32) -> Bool;
+        fn GetMessageW(
+            lpMsg: *mut Msg,
+            hWnd: Hwnd,
+            wMsgFilterMin: Uint,
+            wMsgFilterMax: Uint,
+        ) -> Bool;
     }
 }

@@ -1,6 +1,8 @@
 using System.Collections;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Text;
+using BepInEx;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
 using MystiaStewardCompanion.LocalApi;
 
@@ -9,15 +11,40 @@ namespace MystiaStewardCompanion.Save;
 internal static class RuntimeOrderPreparationService
 {
     private const string DataBaseCoreTypeName = "GameData.Core.Collections.DataBaseCore";
+    private const string IzakayaConfigureTypeName = "GameData.RunTime.NightSceneUtility.IzakayaConfigure";
     private const string IzakayaTrayTypeName = "GameData.RunTime.NightSceneUtility.IzakayaTray";
     private const string RuntimeStorageTypeName = "GameData.RunTime.Common.RunTimeStorage";
     private const string PartnerManagerTypeName = "NightScene.PartnerUtility.PartnerManager";
     private const string CookSystemManagerTypeName = "NightScene.CookingUtility.CookSystemManager";
     private const string QteRewardManagerTypeName = "NightScene.CookingUtility.QTERewardManager";
     private const string GuestsManagerTypeName = "NightScene.GuestManagementUtility.GuestsManager";
+    private const string OrderControllerTypeName = "Night.UI.HUD.Ordering.OrderController";
     private const string MatchedCookComboTypeName = "NightScene.UI.CookingUtility.WorkSceneCookingSelectionPannel+MatchedCookCombo";
     private static readonly object PendingCookingLock = new();
+    private static readonly object AutomationLogLock = new();
+    private static readonly object TrayObservationLock = new();
     private static readonly List<PendingCookingCollection> PendingCookingCollections = new();
+    private static readonly List<CompletedNormalCookingCollection> CompletedNormalCookingCollections = new();
+    private static readonly Dictionary<string, DateTime> TrayObservationFirstSeen = new();
+    private static readonly TimeSpan PendingCookingCollectGrace = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan PendingCookingIdleTimeout = TimeSpan.FromSeconds(90);
+    private static readonly TimeSpan CompletedNormalCookingRememberTimeout = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan TrayObservationRetention = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan AutomationLogRepeatSummaryInterval = TimeSpan.FromSeconds(30);
+    private const long AutomationLogMaxBytes = 1024 * 1024;
+    private const int AutomationLogRepeatSummaryCount = 25;
+    private static string _lastAutomationLogKey = "";
+    private static string _lastAutomationLogTarget = "";
+    private static string _lastAutomationLogMessage = "";
+    private static int _lastAutomationLogRepeatCount;
+    private static int _lastAutomationLogReportedCount;
+    private static DateTime _lastAutomationLogFirstAt = DateTime.MinValue;
+    private static DateTime _lastAutomationLogLastAt = DateTime.MinValue;
+    private enum CookingCollectionTargetKind
+    {
+        Tray,
+        NormalOrder,
+    }
 
     public static OrderPreparationResult Prepare(OrderPreparationRequest request)
     {
@@ -97,7 +124,7 @@ internal static class RuntimeOrderPreparationService
             }
             else
             {
-                var cookingResult = TryStartCooking(request.RecipeId, request.RecipeName, request.ExtraIngredientIds, request.AutoCollectCooking, request.CompleteQte);
+                var cookingResult = TryStartCooking(request.RecipeId, request.RecipeName, request.ExtraIngredientIds, request.AutoCollectCooking);
                 if (cookingResult.Ok)
                 {
                     result.Steps.Add(new OrderPreparationStep
@@ -216,17 +243,94 @@ internal static class RuntimeOrderPreparationService
             Message = $"已匹配桌 {request.DeskCode + 1} · {request.GuestName} 的订单对象。",
         });
 
+        var currentFood = ReadMember(runtimeOrder.Order, "ServFood") ?? TryInvokeInstanceValue(runtimeOrder.Order, "get_ServFood");
+        var currentBeverage = ReadMember(runtimeOrder.Order, "ServBeverage") ?? TryInvokeInstanceValue(runtimeOrder.Order, "get_ServBeverage");
+        result.ServedFood = currentFood != null;
+        result.ServedBeverage = currentBeverage != null;
+
         var trayItems = ReadTrayItems(tray).ToList();
-        var serveItems = SelectTrayServeItems(runtimeOrder.Order, trayItems, expectedFoodId, request.BeverageId);
-        if (serveItems.Food == null)
+        RefreshTrayObservations(trayItems);
+        var missingTrayItem = false;
+        var food = currentFood;
+        var beverage = currentBeverage;
+        var matchedFoodId = expectedFoodId;
+        var matchedBacklogFood = false;
+        var matchedBacklogAgeSeconds = 0;
+        var matchedFoodFromTray = false;
+        var matchedBeverageFromTray = false;
+
+        if (food == null)
         {
-            AddFailure(result, "匹配送餐盘料理", $"送餐盘中没有找到目标料理 {request.RecipeName}（料理 #{expectedFoodId}）。{FormatTraySummary(trayItems)}");
-            return Finish(result);
+            food = FindRareOrderFoodInTray(
+                trayItems,
+                expectedFoodId,
+                request.AcceptableFoodIds,
+                TimeSpan.FromSeconds(Math.Max(0, request.TrayBacklogMinSeconds)),
+                out matchedFoodId,
+                out matchedBacklogFood,
+                out matchedBacklogAgeSeconds);
+            if (food == null)
+            {
+                AddFailure(result, "匹配送餐盘料理", $"送餐盘中没有找到目标料理 {request.RecipeName}（料理 #{expectedFoodId}）。{FormatTraySummary(trayItems)}");
+                missingTrayItem = true;
+            }
+            else
+            {
+                WriteMember(runtimeOrder.Order, "ServFood", food);
+                result.ServedFood = true;
+                matchedFoodFromTray = true;
+                if (matchedBacklogFood)
+                {
+                    result.Steps.Add(new OrderPreparationStep
+                    {
+                        Name = "复用堆积料理",
+                        Ok = true,
+                        Message = $"送餐盘中料理 #{matchedFoodId} 已堆积 {matchedBacklogAgeSeconds} 秒，且满足当前料理 Tag，本次优先用于该稀客订单。",
+                    });
+                }
+            }
+        }
+        else
+        {
+            result.Steps.Add(new OrderPreparationStep
+            {
+                Name = "送达料理",
+                Ok = true,
+                Skipped = true,
+                Message = "订单已有料理，本次不重复送达。",
+            });
         }
 
-        if (serveItems.Beverage == null)
+        if (beverage == null)
         {
-            AddFailure(result, "匹配送餐盘酒水", $"送餐盘中没有找到目标酒水 {request.BeverageName}（酒水 #{request.BeverageId}）。{FormatTraySummary(trayItems)}");
+            beverage = trayItems.FirstOrDefault(item => IsSellable(item, sellableType: 1, id: request.BeverageId));
+            if (beverage == null)
+            {
+                AddFailure(result, "匹配送餐盘酒水", $"送餐盘中没有找到目标酒水 {request.BeverageName}（酒水 #{request.BeverageId}）。{FormatTraySummary(trayItems)}");
+                missingTrayItem = true;
+            }
+            else
+            {
+                WriteMember(runtimeOrder.Order, "ServBeverage", beverage);
+                result.ServedBeverage = true;
+                matchedBeverageFromTray = true;
+            }
+        }
+        else
+        {
+            result.Steps.Add(new OrderPreparationStep
+            {
+                Name = "送达酒水",
+                Ok = true,
+                Skipped = true,
+                Message = "订单已有酒水，本次不重复送达。",
+            });
+        }
+
+        if (missingTrayItem)
+        {
+            DeliverMatchedRareOrderPart(result, tray, food, matchedFoodFromTray, "送达料理", FormatRareFoodDeliveryMessage(request.RecipeName, expectedFoodId, matchedFoodId, matchedBacklogFood, "已先送达，等待补齐酒水后完成订单。"));
+            DeliverMatchedRareOrderPart(result, tray, beverage, matchedBeverageFromTray, "送达酒水", $"{request.BeverageName} 已先送达，等待补齐料理后完成订单。");
             return Finish(result);
         }
 
@@ -234,37 +338,453 @@ internal static class RuntimeOrderPreparationService
         {
             Name = "匹配送餐盘",
             Ok = true,
-            Message = $"已找到目标料理 {request.RecipeName} 和目标酒水 {request.BeverageName}。",
+            Message = $"已找到{(matchedBacklogFood ? $"堆积料理 #{matchedFoodId}" : $"目标料理 {request.RecipeName}")}和目标酒水 {request.BeverageName}。",
         });
 
-        var food = serveItems.Food;
-        var beverage = serveItems.Beverage;
-        WriteMember(runtimeOrder.Order, "ServFood", food);
-        WriteMember(runtimeOrder.Order, "ServBeverage", beverage);
         if (!ReadBool(InvokeInstance(runtimeOrder.Order, "get_IsFullfilled", Array.Empty<object?>())))
         {
-            WriteMember(runtimeOrder.Order, "ServFood", null);
-            WriteMember(runtimeOrder.Order, "ServBeverage", null);
+            if (matchedFoodFromTray)
+            {
+                WriteMember(runtimeOrder.Order, "ServFood", null);
+                result.ServedFood = currentFood != null;
+            }
+
+            if (matchedBeverageFromTray)
+            {
+                WriteMember(runtimeOrder.Order, "ServBeverage", null);
+                result.ServedBeverage = currentBeverage != null;
+            }
+
             AddFailure(result, "写入订单", "料理和酒水已匹配，但游戏判定订单未满足；本次未从送餐盘移除物品。");
             return Finish(result);
         }
 
-        InvokeInstance(tray, "Deliver", new object?[] { food });
-        InvokeInstance(tray, "Deliver", new object?[] { beverage });
+        DeliverMatchedRareOrderPart(result, tray, food, matchedFoodFromTray, "送达料理", FormatRareFoodDeliveryMessage(request.RecipeName, expectedFoodId, matchedFoodId, matchedBacklogFood, "已送达。"));
+        DeliverMatchedRareOrderPart(result, tray, beverage, matchedBeverageFromTray, "送达酒水", $"{request.BeverageName} 已送达。");
         result.Steps.Add(new OrderPreparationStep
         {
             Name = "写入订单",
             Ok = true,
-            Message = "已将送餐盘中的料理和酒水写入订单。",
+            Message = "订单料理和酒水已满足，准备触发评价。",
         });
 
         InvokeInstance(runtimeOrder.Manager, "EvaluateOrder", new object?[] { runtimeOrder.Controller, false, null });
+        result.CompletedOrder = true;
         result.Steps.Add(new OrderPreparationStep
         {
             Name = "触发上菜评价",
             Ok = true,
             Message = "已调用游戏评价流程完成当前订单。",
         });
+
+        return Finish(result);
+    }
+
+    private static void DeliverMatchedRareOrderPart(
+        OrderPreparationResult result,
+        object tray,
+        object? sellable,
+        bool shouldDeliver,
+        string stepName,
+        string message)
+    {
+        if (!shouldDeliver || sellable == null) return;
+        InvokeInstance(tray, "Deliver", new object?[] { sellable });
+        result.Steps.Add(new OrderPreparationStep
+        {
+            Name = stepName,
+            Ok = true,
+            Message = message,
+        });
+    }
+
+    private static object? FindRareOrderFoodInTray(
+        IReadOnlyList<object> trayItems,
+        int expectedFoodId,
+        IReadOnlyList<int> acceptableFoodIds,
+        TimeSpan backlogThreshold,
+        out int matchedFoodId,
+        out bool matchedBacklogFood,
+        out int matchedBacklogAgeSeconds)
+    {
+        matchedFoodId = expectedFoodId;
+        matchedBacklogFood = false;
+        matchedBacklogAgeSeconds = 0;
+
+        var exact = trayItems.FirstOrDefault(item => IsSellable(item, sellableType: 0, id: expectedFoodId));
+        if (exact != null)
+        {
+            return exact;
+        }
+
+        var acceptable = acceptableFoodIds
+            .Where(id => id >= 0 && id != expectedFoodId)
+            .Distinct()
+            .ToHashSet();
+        if (acceptable.Count == 0) return null;
+
+        foreach (var item in trayItems)
+        {
+            if (ReadSellableType(item) != 0) continue;
+
+            var foodId = ReadSellableId(item);
+            if (!acceptable.Contains(foodId)) continue;
+            if (!TryGetTrayObservationAge(item, out var age) || age < backlogThreshold) continue;
+
+            matchedFoodId = foodId;
+            matchedBacklogFood = true;
+            matchedBacklogAgeSeconds = Math.Max(0, (int)Math.Floor(age.TotalSeconds));
+            return item;
+        }
+
+        return null;
+    }
+
+    private static string FormatRareFoodDeliveryMessage(
+        string recipeName,
+        int expectedFoodId,
+        int matchedFoodId,
+        bool matchedBacklogFood,
+        string suffix)
+    {
+        if (!matchedBacklogFood)
+        {
+            return $"{recipeName} {suffix}";
+        }
+
+        return $"已复用送餐盘中堆积料理 #{matchedFoodId}（原目标料理 #{expectedFoodId}：{recipeName}），{suffix}";
+    }
+
+    private static void RefreshTrayObservations(IReadOnlyList<object> trayItems)
+    {
+        var now = DateTime.UtcNow;
+        var currentKeys = new HashSet<string>();
+
+        lock (TrayObservationLock)
+        {
+            foreach (var item in trayItems)
+            {
+                var key = BuildTrayObservationKey(item);
+                currentKeys.Add(key);
+                if (!TrayObservationFirstSeen.ContainsKey(key))
+                {
+                    TrayObservationFirstSeen[key] = now;
+                }
+            }
+
+            foreach (var key in TrayObservationFirstSeen.Keys.ToArray())
+            {
+                if (currentKeys.Contains(key)) continue;
+                if (now - TrayObservationFirstSeen[key] <= TrayObservationRetention) continue;
+                TrayObservationFirstSeen.Remove(key);
+            }
+        }
+    }
+
+    private static bool TryGetTrayObservationAge(object item, out TimeSpan age)
+    {
+        var key = BuildTrayObservationKey(item);
+        lock (TrayObservationLock)
+        {
+            if (TrayObservationFirstSeen.TryGetValue(key, out var firstSeen))
+            {
+                age = DateTime.UtcNow - firstSeen;
+                return true;
+            }
+        }
+
+        age = TimeSpan.Zero;
+        return false;
+    }
+
+    private static string BuildTrayObservationKey(object item)
+    {
+        var type = ReadSellableType(item);
+        var id = ReadSellableId(item);
+        try
+        {
+            return $"{type}:{id}:ptr:{ReadObjectPointer(item):x}";
+        }
+        catch
+        {
+            return $"{type}:{id}:hash:{RuntimeHelpers.GetHashCode(item)}";
+        }
+    }
+
+    public static OrderPreparationResult CompleteNormalFirst(OrderPreparationRequest request)
+    {
+        var result = new OrderPreparationResult
+        {
+            Order = new OrderPreparationOrder
+            {
+                DeskCode = request.DeskCode,
+                GuestName = string.IsNullOrWhiteSpace(request.GuestName) ? "普客" : request.GuestName,
+                FoodTag = "普客",
+                BeverageTag = "普客",
+            },
+            RecipeId = request.RecipeId,
+            RecipeName = request.RecipeName,
+            BeverageId = request.BeverageId,
+            BeverageName = request.BeverageName,
+        };
+
+        result.Steps.Add(new OrderPreparationStep
+        {
+            Name = "选择普客订单",
+            Ok = true,
+            Message = $"桌 {request.DeskCode + 1} · {result.Order.GuestName} · 料理 {request.RecipeName}",
+        });
+
+        var runtimeOrder = FindRuntimeNormalOrder(request);
+        if (runtimeOrder.Order == null || runtimeOrder.Manager == null)
+        {
+            var diagnostic = string.IsNullOrWhiteSpace(runtimeOrder.Diagnostic) ? "" : $"（{runtimeOrder.Diagnostic}）";
+            AddFailure(result, "匹配普客订单", $"未找到当前第一笔普客订单对象，可能订单已完成、客人已离场或经营状态刚刷新。{diagnostic}");
+            return Finish(result);
+        }
+
+        result.Steps.Add(new OrderPreparationStep
+        {
+            Name = "匹配普客订单",
+            Ok = true,
+            Message = $"已匹配桌 {request.DeskCode + 1} 的普客订单对象。",
+        });
+
+        var expectedFoodId = request.FoodId >= 0 ? request.FoodId : ResolveFoodIdFromRecipeId(request.RecipeId);
+        var foodAlreadyServed = ReadOrderServedFood(runtimeOrder.Order) != null;
+        result.ServedFood = foodAlreadyServed;
+        result.ServedBeverage = ReadOrderServedBeverage(runtimeOrder.Order) != null;
+
+        if (request.AutoTakeBeverage)
+        {
+            if (result.ServedBeverage)
+            {
+                AddSkipped(result, "普客送达酒水", "该订单已经送达酒水，本次不重复处理。");
+            }
+            else if (request.BeverageId < 0)
+            {
+                AddFailure(result, "普客送达酒水", "订单没有有效的酒水 ID。");
+                if (request.StopOnError) return Finish(result);
+            }
+            else
+            {
+                var pendingBeverage = ReadMember(runtimeOrder.Order, "ServedBeverageInAir");
+                if (pendingBeverage != null && IsSellable(pendingBeverage, sellableType: 1, id: request.BeverageId))
+                {
+                    if (TrySetNormalOrderServedBeverage(runtimeOrder.Order, pendingBeverage))
+                    {
+                        result.ServedBeverage = true;
+                        result.Steps.Add(new OrderPreparationStep
+                        {
+                            Name = "普客送达酒水",
+                            Ok = true,
+                            Message = $"{request.BeverageName} 已处于订单待送达状态，已同步为订单酒水。",
+                        });
+                    }
+                    else
+                    {
+                        AddFailure(result, "普客送达酒水", $"{request.BeverageName} 已处于订单待送达状态，但无法写入订单酒水字段。");
+                        if (request.StopOnError) return Finish(result);
+                    }
+                }
+                else if (pendingBeverage != null)
+                {
+                    AddFailure(result, "普客送达酒水", "订单已有其他待送达酒水，暂不自动送达当前酒水。");
+                    if (request.StopOnError) return Finish(result);
+                }
+                else
+                {
+                    var beverageResult = TryDeliverNormalOrderBeverage(runtimeOrder.Order, request.BeverageId, request.BeverageName);
+                    if (beverageResult.Ok)
+                    {
+                        result.ServedBeverage = true;
+                        result.Steps.Add(new OrderPreparationStep
+                        {
+                            Name = "普客送达酒水",
+                            Ok = true,
+                            Message = beverageResult.Message,
+                        });
+                    }
+                    else
+                    {
+                        AddFailure(result, "普客送达酒水", beverageResult.Message);
+                        if (request.StopOnError) return Finish(result);
+                    }
+                }
+            }
+        }
+        else
+        {
+            AddSkipped(result, "普客送达酒水", "设置已关闭。");
+        }
+
+        if (foodAlreadyServed)
+        {
+            AddSkipped(result, "普客料理", "该订单已经送达料理，不再自动处理。");
+        }
+        else if (expectedFoodId < 0)
+        {
+            AddFailure(result, "普客料理", "订单没有有效的料理 ID。");
+            if (request.StopOnError) return Finish(result);
+        }
+        else
+        {
+            var pendingFood = ReadMember(runtimeOrder.Order, "ServedFoodInAir");
+            if (pendingFood != null && IsSellable(pendingFood, sellableType: 0, id: expectedFoodId))
+            {
+                if (request.AutoDeliverFood)
+                {
+                    if (TrySetNormalOrderServedFood(runtimeOrder.Order, pendingFood))
+                    {
+                        result.ServedFood = true;
+                        result.Steps.Add(new OrderPreparationStep
+                        {
+                            Name = "普客送达料理",
+                            Ok = true,
+                            Message = $"目标料理 {request.RecipeName} 已处于订单待送达状态，已同步为订单料理。",
+                        });
+                    }
+                    else
+                    {
+                        AddFailure(result, "普客送达料理", $"目标料理 {request.RecipeName} 已处于订单待送达状态，但无法写入订单料理字段。");
+                        if (request.StopOnError) return Finish(result);
+                    }
+                }
+                else
+                {
+                    AddSkipped(result, "普客料理", $"目标料理 {request.RecipeName} 已处于订单待送达状态，等待玩家在游戏内确认。");
+                }
+            }
+            else if (pendingFood != null)
+            {
+                AddFailure(result, "普客料理", $"订单已有其他待送达料理，暂不自动制作 {request.RecipeName}。");
+                if (request.StopOnError) return Finish(result);
+            }
+            else if (TryConfirmCompletedNormalOrderCooking(request.OrderKey, request.DeskCode, expectedFoodId, out var completedMessage))
+            {
+                if (request.AutoDeliverFood)
+                {
+                    var deliveryResult = TryDeliverNormalOrderFoodFromStorage(
+                        runtimeOrder.Order,
+                        request.OrderKey,
+                        request.DeskCode,
+                        expectedFoodId,
+                        request.RecipeName);
+                    if (deliveryResult.Ok)
+                    {
+                        result.ServedFood = true;
+                        result.Steps.Add(new OrderPreparationStep
+                        {
+                            Name = "普客送达料理",
+                            Ok = true,
+                            Message = deliveryResult.Message,
+                        });
+                    }
+                    else
+                    {
+                        AddFailure(result, "普客送达料理", deliveryResult.Message);
+                        if (request.StopOnError) return Finish(result);
+                    }
+                }
+                else
+                {
+                    AddSkipped(result, "普客保温箱", completedMessage);
+                }
+            }
+            else if (!string.IsNullOrWhiteSpace(completedMessage))
+            {
+                AddSkipped(result, "普客保温箱复查", completedMessage);
+            }
+            else if (HasPendingNormalOrderCooking(request.OrderKey, runtimeOrder.Order, request.DeskCode, expectedFoodId, out var pendingMessage))
+            {
+                AddSkipped(result, "普客开始料理", pendingMessage);
+            }
+            else if (request.AutoStartCooking)
+            {
+                var recipeId = request.RecipeId >= 0 ? request.RecipeId : ResolveRecipeIdFromFoodId(expectedFoodId);
+                if (recipeId < 0)
+                {
+                    AddFailure(result, "普客开始料理", $"未找到料理 {request.RecipeName}（成品 #{expectedFoodId}）对应的配方 ID。");
+                    if (request.StopOnError) return Finish(result);
+                }
+                else
+                {
+                    var target = CookingCollectionTarget.ForNormalOrder(
+                        runtimeOrder.Manager,
+                        runtimeOrder.Controller,
+                        runtimeOrder.Order,
+                        request.OrderKey,
+                        expectedFoodId,
+                        request.RecipeName,
+                        request.DeskCode,
+                        result.Order.GuestName);
+                    var cookingResult = TryStartCooking(recipeId, request.RecipeName, request.ExtraIngredientIds, request.AutoCollectCooking, target);
+                    if (cookingResult.Ok)
+                    {
+                        result.Steps.Add(new OrderPreparationStep
+                        {
+                            Name = "普客开始料理",
+                            Ok = true,
+                            Message = cookingResult.Message,
+                        });
+                        if (!string.IsNullOrWhiteSpace(cookingResult.QteMessage))
+                        {
+                            result.Steps.Add(new OrderPreparationStep
+                            {
+                                Name = "料理 QTE",
+                                Ok = true,
+                                Skipped = cookingResult.QteSkipped,
+                                Message = cookingResult.QteMessage,
+                            });
+                        }
+                        AddSkipped(result, "普客保温箱", request.AutoCollectCooking
+                            ? "料理已开始制作，完成后会自动收至普客保温箱。"
+                            : "料理已开始制作，自动收至保温箱已关闭。");
+                    }
+                    else
+                    {
+                        AddFailure(result, "普客开始料理", cookingResult.Message);
+                        if (request.StopOnError) return Finish(result);
+                    }
+                }
+            }
+            else
+            {
+                AddSkipped(result, "普客料理", $"普客订单尚未获得目标料理 {request.RecipeName}（料理 #{expectedFoodId}），自动制作料理已关闭。");
+            }
+        }
+
+        result.ServedFood = ReadOrderServedFood(runtimeOrder.Order) != null;
+        result.ServedBeverage = ReadOrderServedBeverage(runtimeOrder.Order) != null;
+
+        if (request.AutoCompleteOrder)
+        {
+            if (runtimeOrder.Controller == null)
+            {
+                AddFailure(result, "触发普客评价", "已匹配普客订单，但未找到对应客人控制器，无法调用游戏评价流程。");
+                return Finish(result);
+            }
+
+            if (!ReadBool(InvokeInstance(runtimeOrder.Order, "get_IsFullfilled", Array.Empty<object?>())))
+            {
+                AddSkipped(result, "触发普客评价", "订单尚未同时满足料理和酒水，等待下一轮补齐。");
+            }
+            else
+            {
+                InvokeInstance(runtimeOrder.Manager, "EvaluateOrder", new object?[] { runtimeOrder.Controller, false, null });
+                result.CompletedOrder = true;
+                result.Steps.Add(new OrderPreparationStep
+                {
+                    Name = "触发普客评价",
+                    Ok = true,
+                    Message = "已调用游戏评价流程完成当前普客订单。",
+                });
+            }
+        }
+        else
+        {
+            AddSkipped(result, "触发普客评价", "设置已关闭。");
+        }
 
         return Finish(result);
     }
@@ -284,22 +804,37 @@ internal static class RuntimeOrderPreparationService
                 }
                 catch (Exception ex)
                 {
-                    result = (true, $"{pending.RecipeName} 自动收取已停止：{ex.Message}");
+                    result = DateTime.UtcNow - pending.CreatedAtUtc >= PendingCookingIdleTimeout
+                        ? (true, $"{pending.RecipeName} 自动收取已停止：{ex.GetBaseException().Message}")
+                        : (false, "");
                 }
 
                 if (!string.IsNullOrWhiteSpace(result.Message))
                 {
                     messages.Add(result.Message);
+                    AppendAutomationLog("pending", pending.Target, result.Message);
                 }
 
                 if (result.Remove)
                 {
+                    AppendAutomationLog("pending-remove", pending.Target, $"{pending.RecipeName}; age={(DateTime.UtcNow - pending.CreatedAtUtc).TotalSeconds:F1}s");
                     PendingCookingCollections.RemoveAt(i);
                 }
             }
         }
 
         return messages;
+    }
+
+    public static int ClearPendingCookingCollections()
+    {
+        lock (PendingCookingLock)
+        {
+            var count = PendingCookingCollections.Count + CompletedNormalCookingCollections.Count;
+            PendingCookingCollections.Clear();
+            CompletedNormalCookingCollections.Clear();
+            return count;
+        }
     }
 
     private static (bool Ok, string Message) TryTakeBeverageToTray(int beverageId, string beverageName)
@@ -343,12 +878,148 @@ internal static class RuntimeOrderPreparationService
         return (true, $"{beverageName} 已放入送餐盘（{quantityText}）。");
     }
 
+    private static (bool Ok, string Message) TryDeliverNormalOrderBeverage(object order, int beverageId, string beverageName)
+    {
+        var currentQuantity = GetBeverageQuantity(beverageId);
+        if (currentQuantity == 0)
+        {
+            return (false, $"{beverageName} 当前库存为 0，无法送达普客订单。");
+        }
+
+        var sellable = InvokeStatic(DataBaseCoreTypeName, "AsNewBeverage", new object?[] { beverageId });
+        if (sellable == null)
+        {
+            return (false, $"无法从游戏数据库创建酒水对象：{beverageName} #{beverageId}。");
+        }
+
+        if (!TrySetNormalOrderServedBeverage(order, sellable))
+        {
+            return (false, $"无法把酒水 {beverageName} 写入普客订单。");
+        }
+
+        if (currentQuantity > 0)
+        {
+            InvokeRuntimeStorageOut("BeverageOut", beverageId);
+        }
+
+        var quantityText = currentQuantity < 0 ? "无限库存" : $"剩余 {Math.Max(0, currentQuantity - 1)}";
+        return (true, $"{beverageName} 已送达普客订单（{quantityText}）。");
+    }
+
+    private static (bool Ok, string Message) TryDeliverNormalOrderFoodFromStorage(
+        object order,
+        string orderKey,
+        int deskCode,
+        int expectedFoodId,
+        string foodName)
+    {
+        var configure = GetSingletonInstance(IzakayaConfigureTypeName);
+        if (configure == null)
+        {
+            return (false, "当前料理暂存容器不可用。");
+        }
+
+        var storedFoods = ReadStoredFoodList(configure);
+        if (storedFoods == null)
+        {
+            return (false, "未读取到普客保温箱料理列表。");
+        }
+
+        var preferredStoredFoodKey = FindCompletedNormalStoredFoodKey(orderKey, deskCode, expectedFoodId);
+        var food = FindStoredNormalFood(storedFoods, expectedFoodId, preferredStoredFoodKey, out var matchedByKey);
+        if (food == null)
+        {
+            return (false, $"普客保温箱中没有找到目标料理 {foodName}（料理 #{expectedFoodId}）。");
+        }
+
+        if (!TryRemoveStoredNormalFood(storedFoods, food, out var removeMessage))
+        {
+            return (false, $"已找到 {foodName}，但无法从普客保温箱取出：{removeMessage}");
+        }
+
+        if (!TrySetNormalOrderServedFood(order, food))
+        {
+            TryInvokeStoreFood(configure, food);
+            return (false, $"已从保温箱取出 {foodName}，但无法写入普客订单；已尝试放回保温箱。");
+        }
+
+        ForgetCompletedNormalOrderCooking(orderKey, deskCode, expectedFoodId);
+        var matchText = matchedByKey ? "目标订单回执" : "同名料理";
+        return (true, $"{foodName} 已从普客保温箱送达订单（来源：{matchText}）。");
+    }
+
+    private static object? ReadOrderServedFood(object order)
+    {
+        return ReadMember(order, "ServFood")
+            ?? TryInvokeInstanceValue(order, "get_ServFood");
+    }
+
+    private static object? ReadOrderServedBeverage(object order)
+    {
+        return ReadMember(order, "ServBeverage")
+            ?? TryInvokeInstanceValue(order, "get_ServBeverage");
+    }
+
+    private static bool TrySetNormalOrderServedFood(object order, object food)
+    {
+        var visualUpdated = TryInvokeInstance(order, "set_ServedFoodInAir", new object?[] { food })
+            || WriteMember(order, "ServedFoodInAir", food);
+        var committed = TryInvokeInstance(order, "set_ServFood", new object?[] { food })
+            || WriteMember(order, "ServFood", food);
+        return committed || (visualUpdated && ReadMember(order, "ServFood") != null);
+    }
+
+    private static bool TrySetNormalOrderServedBeverage(object order, object beverage)
+    {
+        var visualUpdated = TryInvokeInstance(order, "set_ServedBeverageInAir", new object?[] { beverage })
+            || WriteMember(order, "ServedBeverageInAir", beverage);
+        var committed = TryInvokeInstance(order, "set_ServBeverage", new object?[] { beverage })
+            || WriteMember(order, "ServBeverage", beverage);
+        return committed || (visualUpdated && ReadMember(order, "ServBeverage") != null);
+    }
+
+    private static int ResolveFoodIdFromRecipeId(int recipeId)
+    {
+        if (recipeId < 0) return -1;
+        var recipe = InvokeStatic(DataBaseCoreTypeName, "RefRecipe", new object?[] { recipeId });
+        return recipe == null ? -1 : ToInt(ReadMember(recipe, "foodID"));
+    }
+
+    private static int ResolveRecipeIdFromFoodId(int foodId)
+    {
+        if (foodId < 0) return -1;
+
+        try
+        {
+            foreach (var recipeId in ReadIntEnumerable(InvokeStatic(DataBaseCoreTypeName, "GetAllRecipes", Array.Empty<object?>())))
+            {
+                var recipe = InvokeStatic(DataBaseCoreTypeName, "RefRecipe", new object?[] { recipeId });
+                if (recipe == null) continue;
+                if (ToInt(ReadMember(recipe, "foodID")) == foodId) return recipeId;
+            }
+        }
+        catch
+        {
+            // Fall back to the common case where food id and recipe id are identical.
+        }
+
+        try
+        {
+            var fallbackRecipe = InvokeStatic(DataBaseCoreTypeName, "RefRecipe", new object?[] { foodId });
+            return fallbackRecipe == null ? -1 : foodId;
+        }
+        catch
+        {
+            return -1;
+        }
+    }
+
     private static CookingStartResult TryStartCooking(
         int recipeId,
         string recipeName,
         IReadOnlyList<int> extraIngredientIds,
         bool autoCollect,
-        bool completeQte)
+        CookingCollectionTarget? collectionTarget = null)
     {
         var recipe = InvokeStatic(DataBaseCoreTypeName, "RefRecipe", new object?[] { recipeId });
         if (recipe == null)
@@ -362,9 +1033,17 @@ internal static class RuntimeOrderPreparationService
             return CookingStartResult.Failed($"无法从配方创建料理对象：{recipeName} #{recipeId}。");
         }
 
+        var targetFoodId = ToInt(ReadMember(recipe, "foodID"));
+        var target = collectionTarget ?? CookingCollectionTarget.ForTrayFood(targetFoodId, recipeName);
+        if (autoCollect && target.Kind == CookingCollectionTargetKind.Tray && target.FoodId >= 0 && HasPendingTrayCooking(target.FoodId, out var pendingTrayMessage))
+        {
+            return CookingStartResult.Succeeded(pendingTrayMessage, "", true);
+        }
+
         var cookerSelection = TryGetCookerForOrder(baseFood, recipe);
         if (!cookerSelection.Ok || cookerSelection.CookController == null)
         {
+            AppendAutomationLog("start-failed", collectionTarget, $"{recipeName}: {cookerSelection.Message}");
             return CookingStartResult.Failed(cookerSelection.Message);
         }
 
@@ -372,6 +1051,7 @@ internal static class RuntimeOrderPreparationService
         var cooker = InvokeInstance(cookController, "get_Cooker", Array.Empty<object?>());
         if (cooker == null)
         {
+            AppendAutomationLog("start-failed", collectionTarget, $"{recipeName}: controller has no cooker");
             return CookingStartResult.Failed("已找到可用厨具控制器，但无法读取厨具数据。");
         }
 
@@ -379,6 +1059,7 @@ internal static class RuntimeOrderPreparationService
         var ingredientIds = ReadRecipeIngredientIds(recipe).Concat(extraIngredientIds).ToArray();
         if (!HasEnoughIngredients(ingredientIds, out var missingIngredientId))
         {
+            AppendAutomationLog("start-failed", collectionTarget, $"{recipeName}: missing ingredient #{missingIngredientId}");
             return CookingStartResult.Failed($"材料不足，缺少材料 #{missingIngredientId}。");
         }
 
@@ -391,7 +1072,7 @@ internal static class RuntimeOrderPreparationService
         }
 
         InvokeInstance(cookController, "SetCook", new object?[] { finalFood, recipe, true });
-        var qteResult = TryHandleCookingQte(completeQte);
+        var qteResult = TryHandleCookingQte();
         InvokeInstance(cookController, "StartCookCountDown", new object?[] { 1f, false });
 
         var cookSystem = GetSingletonInstance(CookSystemManagerTypeName);
@@ -402,24 +1083,20 @@ internal static class RuntimeOrderPreparationService
 
         if (autoCollect)
         {
-            RegisterPendingCookingCollection(cookController, recipeName);
+            RegisterPendingCookingCollection(cookController, recipeName, target);
         }
 
         var extraText = extraIngredientIds.Count == 0 ? "不加料" : string.Join(",", extraIngredientIds);
+        AppendAutomationLog("start-ok", collectionTarget, $"{recipeName}; cooker={DescribeCookController(cookController)}; autoCollect={autoCollect}; extra={extraText}");
         return CookingStartResult.Succeeded($"{recipeName} 已开始制作（配方 #{recipeId}，加料：{extraText}）。", qteResult.Message, qteResult.Skipped);
     }
 
-    private static CookingQteResult TryHandleCookingQte(bool completeQte)
+    private static CookingQteResult TryHandleCookingQte()
     {
-        if (!completeQte)
-        {
-            return CookingQteResult.Skip("已跳过料理 QTE；不会累计音游数值或触发对应 Buff。");
-        }
-
         var completed = TryCompleteCookingQte(out var completeMessage);
         return completed
             ? CookingQteResult.Completed($"{completeMessage}；不会打开原生音游面板。")
-            : CookingQteResult.Skip($"{completeMessage}；已回退为跳过料理 QTE。");
+            : CookingQteResult.Skip($"{completeMessage}；料理流程已继续。");
     }
 
     private sealed class CookingQteResult
@@ -467,31 +1144,380 @@ internal static class RuntimeOrderPreparationService
         }
     }
 
-    private static void RegisterPendingCookingCollection(object cookController, string recipeName)
+    private static void RegisterPendingCookingCollection(object cookController, string recipeName, CookingCollectionTarget target)
     {
         lock (PendingCookingLock)
         {
-            PendingCookingCollections.RemoveAll(pending => ReferenceEquals(pending.CookController, cookController));
+            var removed = PendingCookingCollections.RemoveAll(pending => ReferenceEquals(pending.CookController, cookController) || IsSameCookingCollectionTarget(pending.Target, target));
             PendingCookingCollections.Add(new PendingCookingCollection
             {
                 CookController = cookController,
                 RecipeName = recipeName,
                 CreatedAtUtc = DateTime.UtcNow,
+                Target = target,
+            });
+            AppendAutomationLog("pending-add", target, $"{recipeName}; cooker={DescribeCookController(cookController)}; replaced={removed}");
+        }
+    }
+
+    private static bool HasPendingNormalOrderCooking(string orderKey, object order, int deskCode, int foodId, out string message)
+    {
+        lock (PendingCookingLock)
+        {
+            foreach (var pending in PendingCookingCollections)
+            {
+                if (pending.Target.Kind != CookingCollectionTargetKind.NormalOrder) continue;
+                if (pending.Target.FoodId != foodId) continue;
+                if (!string.IsNullOrWhiteSpace(orderKey) && !string.IsNullOrWhiteSpace(pending.Target.OrderKey))
+                {
+                    if (!string.Equals(orderKey, pending.Target.OrderKey, StringComparison.Ordinal)) continue;
+                    message = $"目标料理 {pending.Target.FoodName} 已在制作中，等待完成后会自动收至普客保温箱。";
+                    return true;
+                }
+
+                if (pending.Target.Order != null && IsSameObject(pending.Target.Order, order))
+                {
+                    message = $"目标料理 {pending.Target.FoodName} 已在制作中，等待完成后会自动收至普客保温箱。";
+                    return true;
+                }
+
+                if (pending.Target.DeskCode == deskCode)
+                {
+                    message = $"桌 {deskCode + 1} 的目标料理 {pending.Target.FoodName} 已在制作中，等待完成后会自动收至普客保温箱。";
+                    return true;
+                }
+            }
+        }
+
+        message = "";
+        return false;
+    }
+
+    private static void RememberCompletedNormalOrderCooking(CookingCollectionTarget target, object storedFood)
+    {
+        if (target.Kind != CookingCollectionTargetKind.NormalOrder || target.FoodId < 0) return;
+
+        lock (PendingCookingLock)
+        {
+            var now = DateTime.UtcNow;
+            PruneCompletedNormalOrderCooking(now);
+            CompletedNormalCookingCollections.RemoveAll(item => IsSameCompletedNormalOrderCooking(item, target.OrderKey, target.DeskCode, target.FoodId));
+            CompletedNormalCookingCollections.Add(new CompletedNormalCookingCollection
+            {
+                OrderKey = target.OrderKey,
+                DeskCode = target.DeskCode,
+                FoodId = target.FoodId,
+                FoodName = target.FoodName,
+                StoredFoodKey = GetStoredFoodKey(storedFood),
+                StoredAtUtc = now,
+                LastConfirmedAtUtc = now,
             });
         }
     }
 
-    private static (bool Remove, string Message) TryCollectCookedFood(PendingCookingCollection pending)
+    private static bool TryConfirmCompletedNormalOrderCooking(string orderKey, int deskCode, int foodId, out string message)
     {
-        var phase = ToInt(InvokeInstance(pending.CookController, "get_Phase", Array.Empty<object?>()));
-        if (phase == 0)
+        lock (PendingCookingLock)
         {
-            return (true, "");
+            PruneCompletedNormalOrderCooking(DateTime.UtcNow);
+            var completed = CompletedNormalCookingCollections.FirstOrDefault(item => IsSameCompletedNormalOrderCooking(item, orderKey, deskCode, foodId));
+            if (completed != null)
+            {
+                var storageStatus = ReadNormalStorageStatus(foodId, completed.StoredFoodKey);
+                if (storageStatus.HasTarget)
+                {
+                    completed.LastConfirmedAtUtc = DateTime.UtcNow;
+                    message = $"目标料理 {completed.FoodName} 已在普客保温箱中，等待玩家手动送达。{storageStatus.Message}";
+                    return true;
+                }
+
+                if (storageStatus.CanVerify)
+                {
+                    CompletedNormalCookingCollections.Remove(completed);
+                    message = $"此前记录 {completed.FoodName} 已收至普客保温箱，但当前暂存容器未读取到该料理，已撤销本地回执并重新处理。{storageStatus.Message}";
+                    AppendAutomationLog("completed-missing", CookingCollectionTarget.ForNormalOrder(null, null, null, orderKey, foodId, completed.FoodName, deskCode, ""), message);
+                    return false;
+                }
+
+                message = $"目标料理 {completed.FoodName} 已有收取回执，但当前暂存容器暂时不可验证，下一轮继续复查。{storageStatus.Message}";
+                return true;
+            }
         }
 
-        if (phase != 3)
+        message = "";
+        return false;
+    }
+
+    private static bool IsSameCompletedNormalOrderCooking(CompletedNormalCookingCollection item, string orderKey, int deskCode, int foodId)
+    {
+        if (item.FoodId != foodId) return false;
+        if (!string.IsNullOrWhiteSpace(orderKey) && !string.IsNullOrWhiteSpace(item.OrderKey))
+        {
+            return string.Equals(orderKey, item.OrderKey, StringComparison.Ordinal);
+        }
+
+        return item.DeskCode >= 0 && deskCode >= 0 && item.DeskCode == deskCode;
+    }
+
+    private static string FindCompletedNormalStoredFoodKey(string orderKey, int deskCode, int foodId)
+    {
+        lock (PendingCookingLock)
+        {
+            PruneCompletedNormalOrderCooking(DateTime.UtcNow);
+            return CompletedNormalCookingCollections
+                .FirstOrDefault(item => IsSameCompletedNormalOrderCooking(item, orderKey, deskCode, foodId))
+                ?.StoredFoodKey ?? "";
+        }
+    }
+
+    private static void ForgetCompletedNormalOrderCooking(string orderKey, int deskCode, int foodId)
+    {
+        lock (PendingCookingLock)
+        {
+            CompletedNormalCookingCollections.RemoveAll(item => IsSameCompletedNormalOrderCooking(item, orderKey, deskCode, foodId));
+        }
+    }
+
+    private static void PruneCompletedNormalOrderCooking(DateTime now)
+    {
+        CompletedNormalCookingCollections.RemoveAll(item => now - item.StoredAtUtc >= CompletedNormalCookingRememberTimeout);
+    }
+
+    private static NormalStorageStatus ReadNormalStorageStatus(int foodId, string storedFoodKey)
+    {
+        var configure = GetSingletonInstance(IzakayaConfigureTypeName);
+        if (configure == null)
+        {
+            return NormalStorageStatus.Unknown("当前料理暂存容器不可用。");
+        }
+
+        var storedFoods = ReadStoredFoodList(configure);
+        if (storedFoods == null)
+        {
+            return NormalStorageStatus.Unknown("未读取到 StoredFoods 列表。");
+        }
+
+        var rawCount = ToInt(TryInvokeInstanceValue(storedFoods, "get_Count")
+            ?? ReadMember(storedFoods, "Count")
+            ?? ReadMember(storedFoods, "_size"), -1);
+        var scanned = 0;
+        var matchedById = 0;
+        var matchedByObject = false;
+        foreach (var food in ReadObjectEnumerable(storedFoods))
+        {
+            scanned++;
+            if (!string.IsNullOrWhiteSpace(storedFoodKey) && string.Equals(GetStoredFoodKey(food), storedFoodKey, StringComparison.Ordinal))
+            {
+                matchedByObject = true;
+            }
+
+            if (IsSellable(food, sellableType: 0, id: foodId))
+            {
+                matchedById++;
+            }
+        }
+
+        if (matchedByObject || matchedById > 0)
+        {
+            var detail = matchedByObject
+                ? $"已确认目标对象仍在暂存容器中（同料理数量 {matchedById}）。"
+                : $"已确认暂存容器中存在同名料理 {matchedById} 份。";
+            return NormalStorageStatus.Verified(true, detail);
+        }
+
+        if (rawCount > 0 && scanned == 0)
+        {
+            return NormalStorageStatus.Unknown($"暂存容器显示有 {rawCount} 个对象，但当前无法枚举。");
+        }
+
+        return NormalStorageStatus.Verified(false, rawCount >= 0
+            ? $"暂存容器当前总数 {rawCount}，目标料理数量 0。"
+            : "暂存容器可读取，但目标料理数量为 0。");
+    }
+
+    private static object? ReadStoredFoodList(object configure)
+    {
+        return ReadMember(configure, "StoredFoods")
+            ?? TryInvokeInstanceValue(configure, "get_StoredFoods")
+            ?? TryInvokeInstanceValue(configure, "GetStoredFoods");
+    }
+
+    private static object? FindStoredNormalFood(object storedFoods, int expectedFoodId, string preferredStoredFoodKey, out bool matchedByKey)
+    {
+        matchedByKey = false;
+        object? fallback = null;
+        foreach (var food in ReadObjectEnumerable(storedFoods))
+        {
+            if (food == null) continue;
+            if (!string.IsNullOrWhiteSpace(preferredStoredFoodKey)
+                && string.Equals(GetStoredFoodKey(food), preferredStoredFoodKey, StringComparison.Ordinal)
+                && IsSellable(food, sellableType: 0, id: expectedFoodId))
+            {
+                matchedByKey = true;
+                return food;
+            }
+
+            if (fallback == null && IsSellable(food, sellableType: 0, id: expectedFoodId))
+            {
+                fallback = food;
+            }
+        }
+
+        return fallback;
+    }
+
+    private static bool TryRemoveStoredNormalFood(object storedFoods, object food, out string message)
+    {
+        try
+        {
+            if (storedFoods is IList managedList)
+            {
+                var before = managedList.Count;
+                managedList.Remove(food);
+                if (managedList.Count < before)
+                {
+                    message = "已从托管列表移除。";
+                    return true;
+                }
+            }
+
+            var removeValue = TryInvokeInstanceValue(storedFoods, "Remove", new object?[] { food });
+            if (removeValue is bool removeBool)
+            {
+                if (removeBool)
+                {
+                    message = "已从 IL2CPP 列表移除。";
+                    return true;
+                }
+            }
+            else if (removeValue != null)
+            {
+                message = "已调用 Remove。";
+                return true;
+            }
+
+            var index = FindStoredFoodIndex(storedFoods, food);
+            if (index >= 0 && TryInvokeInstance(storedFoods, "RemoveAt", new object?[] { index }))
+            {
+                message = $"已按索引 {index} 移除。";
+                return true;
+            }
+
+            message = "未找到可用的 Remove/RemoveAt 入口";
+            return false;
+        }
+        catch (Exception ex)
+        {
+            message = ex.GetBaseException().Message;
+            return false;
+        }
+    }
+
+    private static int FindStoredFoodIndex(object storedFoods, object food)
+    {
+        var count = ToInt(TryInvokeInstanceValue(storedFoods, "get_Count")
+            ?? ReadMember(storedFoods, "Count")
+            ?? ReadMember(storedFoods, "_size"), -1);
+        if (count <= 0) return -1;
+
+        for (var index = 0; index < Math.Min(count, 256); index++)
+        {
+            var candidate = TryInvokeInstanceValue(storedFoods, "get_Item", new object?[] { index });
+            if (candidate == null) continue;
+            if (IsSameObject(candidate, food)) return index;
+        }
+
+        return -1;
+    }
+
+    private static string GetStoredFoodKey(object? food)
+    {
+        if (food == null) return "";
+        try
+        {
+            return $"ptr:{ReadObjectPointer(food):x}";
+        }
+        catch
+        {
+            return $"hash:{RuntimeHelpers.GetHashCode(food)}";
+        }
+    }
+
+    private static bool HasPendingTrayCooking(int foodId, out string message)
+    {
+        lock (PendingCookingLock)
+        {
+            foreach (var pending in PendingCookingCollections)
+            {
+                if (pending.Target.Kind != CookingCollectionTargetKind.Tray) continue;
+                if (pending.Target.FoodId != foodId) continue;
+                var pendingAge = DateTime.UtcNow - pending.CreatedAtUtc;
+                if (pendingAge >= PendingCookingIdleTimeout) continue;
+
+                message = $"目标料理 {pending.Target.FoodName} 已在制作中，等待完成后会自动收入送餐盘。";
+                return true;
+            }
+        }
+
+        message = "";
+        return false;
+    }
+
+    private static bool IsSameCookingCollectionTarget(CookingCollectionTarget left, CookingCollectionTarget right)
+    {
+        if (left.Kind != right.Kind) return false;
+        if (left.Kind == CookingCollectionTargetKind.Tray)
+        {
+            return left.FoodId >= 0 && left.FoodId == right.FoodId;
+        }
+
+        if (left.Kind != CookingCollectionTargetKind.NormalOrder) return false;
+        if (left.FoodId != right.FoodId) return false;
+        if (!string.IsNullOrWhiteSpace(left.OrderKey) && !string.IsNullOrWhiteSpace(right.OrderKey))
+        {
+            return string.Equals(left.OrderKey, right.OrderKey, StringComparison.Ordinal);
+        }
+
+        if (left.Order != null && right.Order != null && IsSameObject(left.Order, right.Order)) return true;
+        return left.DeskCode >= 0 && left.DeskCode == right.DeskCode;
+    }
+
+    private static (bool Remove, string Message) TryCollectCookedFood(PendingCookingCollection pending)
+    {
+        var phase = ToInt(TryInvokeInstanceValue(pending.CookController, "get_Phase"), -1);
+        var cookedFood = ReadCookControllerResult(pending.CookController);
+        var chosenRecipe = ReadCookControllerChosenRecipe(pending.CookController);
+        var pendingAge = DateTime.UtcNow - pending.CreatedAtUtc;
+        var isExpiredIdle = pendingAge >= PendingCookingIdleTimeout;
+
+        if (cookedFood == null)
+        {
+            if (phase == 0 && chosenRecipe == null && isExpiredIdle)
+            {
+                return (true, $"{pending.RecipeName} 自动收取任务已结束：厨具已空闲且未读取到成品。");
+            }
+
+            if (phase == 3 && isExpiredIdle)
+            {
+                return (true, $"{pending.RecipeName} 已完成，但长时间未读取到成品对象，已停止自动收取。");
+            }
+
+            return (false, "");
+        }
+
+        if (phase == 0 && pendingAge < PendingCookingCollectGrace)
         {
             return (false, "");
+        }
+
+        if (phase != 3 && phase != 0)
+        {
+            return (false, "");
+        }
+
+        if (pending.Target.Kind == CookingCollectionTargetKind.NormalOrder)
+        {
+            return TryCollectNormalOrderFood(pending, cookedFood);
         }
 
         var tray = GetSingletonInstance(IzakayaTrayTypeName);
@@ -511,17 +1537,160 @@ internal static class RuntimeOrderPreparationService
             return (true, $"{pending.RecipeName} 已自动收入送餐盘。");
         }
 
-        var cookedFood = InvokeInstance(pending.CookController, "get_Result", Array.Empty<object?>());
-        if (cookedFood == null)
-        {
-            return (true, $"{pending.RecipeName} 已完成，但未读取到成品对象，已停止自动收取。");
-        }
-
         InvokeInstance(tray, "Receive", new[] { cookedFood });
         TryInvokeInstance(pending.CookController, "AfterPlayerExtract", Array.Empty<object?>());
         TryInvokeInstance(pending.CookController, "CloseCookingVisual", Array.Empty<object?>());
         TryClearCookController(pending.CookController, cookedFood);
         return (true, $"{pending.RecipeName} 已自动收入送餐盘。");
+    }
+
+    private static object? ReadCookControllerResult(object cookController)
+    {
+        try
+        {
+            return TryInvokeInstanceValue(cookController, "get_Result")
+                ?? ReadMember(cookController, "Result");
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static object? ReadCookControllerChosenRecipe(object cookController)
+    {
+        try
+        {
+            return TryInvokeInstanceValue(cookController, "get_ChosenRecipe")
+                ?? ReadMember(cookController, "ChosenRecipe");
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static (bool Remove, string Message) TryCollectNormalOrderFood(PendingCookingCollection pending, object cookedFood)
+    {
+        if (pending.Target.FoodId >= 0 && !IsSellable(cookedFood, sellableType: 0, id: pending.Target.FoodId))
+        {
+            return (true, $"{pending.RecipeName} 已完成，但成品不是目标料理 {pending.Target.FoodName}（料理 #{pending.Target.FoodId}），本次不会放入普客保温箱。");
+        }
+
+        if (!TryStoreFoodInNormalStorage(cookedFood, pending.Target.FoodId, out var storeMessage))
+        {
+            return (false, $"{pending.RecipeName} 已完成，但{storeMessage}，等待下一轮重试。");
+        }
+
+        RememberCompletedNormalOrderCooking(pending.Target, cookedFood);
+        TryResetCookControllerAfterNormalWarmerCollect(pending.CookController, cookedFood);
+
+        return (true, $"{pending.RecipeName} 已自动收至普客保温箱，等待玩家手动送达。{storeMessage}");
+    }
+
+    private static bool TryStoreFoodInNormalStorage(object cookedFood, int expectedFoodId, out string message)
+    {
+        try
+        {
+            var configure = GetSingletonInstance(IzakayaConfigureTypeName);
+            if (configure == null)
+            {
+                message = "当前料理暂存容器不可用";
+                return false;
+            }
+
+            var beforeCount = CountStoredFoods(configure, expectedFoodId);
+            if (!TryInvokeStoreFood(configure, cookedFood))
+            {
+                message = "写入料理暂存容器失败：未找到可用的 StoreFood 入口";
+                return false;
+            }
+
+            var storageStatus = ReadNormalStorageStatus(expectedFoodId, GetStoredFoodKey(cookedFood));
+            var afterCount = CountStoredFoods(configure, expectedFoodId);
+            if (beforeCount >= 0 && afterCount >= 0 && afterCount <= beforeCount)
+            {
+                message = $"写入料理暂存容器后数量未增加（料理 #{expectedFoodId}: {beforeCount}->{afterCount}）";
+                return false;
+            }
+
+            if (!storageStatus.HasTarget && storageStatus.CanVerify)
+            {
+                message = $"写入料理暂存容器后未读取到目标料理（料理 #{expectedFoodId}）。{storageStatus.Message}";
+                return false;
+            }
+
+            message = beforeCount >= 0 && afterCount >= 0
+                ? $"料理暂存数量 {beforeCount}->{afterCount}。"
+                : storageStatus.Message;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            message = $"写入料理暂存容器失败：{ex.GetBaseException().Message}";
+            return false;
+        }
+    }
+
+    private static bool TryInvokeStoreFood(object configure, object cookedFood)
+    {
+        return TryInvokeInstance(configure, "StoreFood", new object?[] { cookedFood, -1 })
+            || TryInvokeInstance(configure, "StoreFood", new object?[] { cookedFood });
+    }
+
+    private static int CountStoredFoods(object configure, int expectedFoodId)
+    {
+        if (expectedFoodId < 0) return -1;
+
+        var storedFoods = ReadStoredFoodList(configure);
+        if (storedFoods == null) return -1;
+
+        var rawCount = ToInt(TryInvokeInstanceValue(storedFoods, "get_Count")
+            ?? ReadMember(storedFoods, "Count")
+            ?? ReadMember(storedFoods, "_size"), -1);
+        var count = 0;
+        var scanned = 0;
+        foreach (var food in ReadObjectEnumerable(storedFoods))
+        {
+            scanned++;
+            if (IsSellable(food, sellableType: 0, id: expectedFoodId))
+            {
+                count++;
+            }
+        }
+
+        if (scanned == 0 && rawCount > 0)
+        {
+            return -1;
+        }
+
+        return count;
+    }
+
+    private static bool TryRememberObject(object value, HashSet<nint> seen)
+    {
+        try
+        {
+            return seen.Add(ReadObjectPointer(value));
+        }
+        catch
+        {
+            return seen.Add(new IntPtr(RuntimeHelpers.GetHashCode(value)));
+        }
+    }
+
+    private static void TryResetCookControllerAfterNormalWarmerCollect(object cookController, object cookedFood)
+    {
+        try
+        {
+            TryInvokeInstance(cookController, "CloseCookingVisual", Array.Empty<object?>());
+            TryClearCookController(cookController, cookedFood);
+        }
+        catch
+        {
+            // Do not call AfterPlayerExtract here. That path represents a player extract
+            // and can trigger cooker/order side effects beyond placing food in the warmer.
+        }
     }
 
     private static bool TryExtractWithGameMethod(object cookController)
@@ -656,9 +1825,16 @@ internal static class RuntimeOrderPreparationService
                     try
                     {
                         var status = ToInt(method.Invoke(partnerManager, args));
-                        if (status == 3 && args[1] != null)
+                        var selectedController = args[1];
+                        if (status == 3 && selectedController != null)
                         {
-                            return (true, args[1], "已通过伙伴厨具入口找到空闲可用厨具。");
+                            if (!IsCookControllerReserved(selectedController))
+                            {
+                                return (true, selectedController, "已通过伙伴厨具入口找到空闲可用厨具。");
+                            }
+
+                            partnerMessage = "伙伴厨具入口返回的厨具已有待收取任务。";
+                            break;
                         }
 
                         partnerMessage = status switch
@@ -712,6 +1888,11 @@ internal static class RuntimeOrderPreparationService
         foreach (var cookController in ReadObjectEnumerable(controllers))
         {
             totalCount++;
+            if (IsCookControllerReserved(cookController))
+            {
+                continue;
+            }
+
             if (!ReadBool(InvokeInstance(cookController, "get_CouldCookerOpen", Array.Empty<object?>())))
             {
                 continue;
@@ -741,10 +1922,144 @@ internal static class RuntimeOrderPreparationService
         return (false, null, $"当前有 {openCount} 个空闲厨具，但没有符合配方厨具类型 {recipeCookerType} 的厨具。");
     }
 
+    private static bool IsCookControllerReserved(object cookController)
+    {
+        lock (PendingCookingLock)
+        {
+            return PendingCookingCollections.Any(pending =>
+                ReferenceEquals(pending.CookController, cookController)
+                || IsSameObject(pending.CookController, cookController));
+        }
+    }
+
     private static bool CookerSupportsRecipe(object cooker, int recipeCookerType)
     {
         var cookerTypes = InvokeInstance(cooker, "get_AllAvailableCookerType", Array.Empty<object?>());
         return ReadIntEnumerable(cookerTypes).Contains(recipeCookerType);
+    }
+
+    private static string DescribeCookController(object cookController)
+    {
+        try
+        {
+            var cooker = TryInvokeInstanceValue(cookController, "get_Cooker");
+            var cookerId = cooker == null ? -1 : ToInt(ReadMember(cooker, "id") ?? ReadMember(cooker, "Id"), -1);
+            var pointer = (long)ReadObjectPointer(cookController);
+            return cookerId >= 0 ? $"#{cookerId}@0x{pointer:X}" : $"0x{pointer:X}";
+        }
+        catch
+        {
+            return "unknown";
+        }
+    }
+
+    private static void AppendAutomationLog(string action, CookingCollectionTarget? target, string message)
+    {
+        try
+        {
+            var path = ResolveAutomationLogPath();
+            var directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
+            lock (AutomationLogLock)
+            {
+                var now = DateTime.Now;
+                var targetText = FormatAutomationTarget(target);
+                var key = string.Join("|", action, targetText, message);
+                if (string.Equals(key, _lastAutomationLogKey, StringComparison.Ordinal))
+                {
+                    _lastAutomationLogRepeatCount++;
+                    _lastAutomationLogLastAt = now;
+                    var unreportedCount = _lastAutomationLogRepeatCount - _lastAutomationLogReportedCount;
+                    if (unreportedCount < AutomationLogRepeatSummaryCount
+                        && now - _lastAutomationLogFirstAt < AutomationLogRepeatSummaryInterval)
+                    {
+                        return;
+                    }
+
+                    RotateAutomationLogIfNeeded(path);
+                    File.AppendAllText(
+                        path,
+                        FormatAutomationLogLine(
+                            now,
+                            "repeat",
+                            targetText,
+                            $"上一条重复 {unreportedCount} 次，累计 {_lastAutomationLogRepeatCount - 1} 次；{message}") + Environment.NewLine,
+                        new UTF8Encoding(false));
+                    _lastAutomationLogReportedCount = _lastAutomationLogRepeatCount;
+                    _lastAutomationLogFirstAt = now;
+                    return;
+                }
+
+                RotateAutomationLogIfNeeded(path);
+                FlushAutomationLogRepeatSummary(path, now);
+                File.AppendAllText(path, FormatAutomationLogLine(now, action, targetText, message) + Environment.NewLine, new UTF8Encoding(false));
+                _lastAutomationLogKey = key;
+                _lastAutomationLogTarget = targetText;
+                _lastAutomationLogMessage = message;
+                _lastAutomationLogRepeatCount = 1;
+                _lastAutomationLogReportedCount = 1;
+                _lastAutomationLogFirstAt = now;
+                _lastAutomationLogLastAt = now;
+            }
+        }
+        catch
+        {
+            // Diagnostics must never affect game automation.
+        }
+    }
+
+    private static void FlushAutomationLogRepeatSummary(string path, DateTime now)
+    {
+        if (_lastAutomationLogRepeatCount <= _lastAutomationLogReportedCount) return;
+
+        var unreportedCount = _lastAutomationLogRepeatCount - _lastAutomationLogReportedCount;
+        File.AppendAllText(
+            path,
+            FormatAutomationLogLine(
+                now,
+                "repeat",
+                _lastAutomationLogTarget,
+                $"上一条重复 {unreportedCount} 次，累计 {_lastAutomationLogRepeatCount - 1} 次；{_lastAutomationLogMessage}") + Environment.NewLine,
+            new UTF8Encoding(false));
+        _lastAutomationLogReportedCount = _lastAutomationLogRepeatCount;
+    }
+
+    private static string FormatAutomationLogLine(DateTime now, string action, string targetText, string message)
+    {
+        return string.Join(" ",
+            now.ToString("yyyy-MM-dd HH:mm:ss.fff"),
+            action,
+            targetText,
+            message);
+    }
+
+    public static string ResolveAutomationLogPath()
+    {
+        return Path.Combine(Paths.ConfigPath, "MystiaStewardCompanion", "automation-jobs.log");
+    }
+
+    private static void RotateAutomationLogIfNeeded(string path)
+    {
+        try
+        {
+            var file = new FileInfo(path);
+            if (!file.Exists || file.Length < AutomationLogMaxBytes) return;
+            var backupPath = path + ".1";
+            if (File.Exists(backupPath)) File.Delete(backupPath);
+            File.Move(path, backupPath);
+        }
+        catch
+        {
+            // Ignore rotation failures; append may still succeed.
+        }
+    }
+
+    private static string FormatAutomationTarget(CookingCollectionTarget? target)
+    {
+        if (target == null) return "target=none";
+        return target.Kind == CookingCollectionTargetKind.NormalOrder
+            ? $"target=normal desk={target.DeskCode + 1} orderKey={target.OrderKey} food={target.FoodId}/{target.FoodName} guest={target.GuestName}"
+            : "target=rare-tray";
     }
 
     private static void TryClearCookController(object cookController, object cookedFood)
@@ -814,7 +2129,8 @@ internal static class RuntimeOrderPreparationService
             yield break;
         }
 
-        if (typeof(IEnumerable).IsAssignableFrom(parameterType))
+        if (typeof(IEnumerable).IsAssignableFrom(parameterType)
+            || parameterType.FullName?.Contains("IEnumerable", StringComparison.Ordinal) == true)
         {
             yield return ids.ToArray();
             yield return BuildIl2CppIntArray(ids);
@@ -902,33 +2218,6 @@ internal static class RuntimeOrderPreparationService
         return ReadSellableType(item) == sellableType && ReadSellableId(item) == id;
     }
 
-    private static ServeItemSelection SelectTrayServeItems(object order, IReadOnlyList<object> trayItems, int expectedFoodId, int expectedBeverageId)
-    {
-        var originalFood = ReadMember(order, "ServFood") ?? TryInvokeInstanceValue(order, "get_ServFood");
-        var originalBeverage = ReadMember(order, "ServBeverage") ?? TryInvokeInstanceValue(order, "get_ServBeverage");
-        try
-        {
-            var food = trayItems.FirstOrDefault(item => IsSellable(item, sellableType: 0, id: expectedFoodId));
-            var beverage = trayItems.FirstOrDefault(item => IsSellable(item, sellableType: 1, id: expectedBeverageId));
-            if (food == null || beverage == null) return new ServeItemSelection();
-
-            WriteMember(order, "ServFood", food);
-            WriteMember(order, "ServBeverage", beverage);
-            if (!ReadBool(InvokeInstance(order, "get_IsFullfilled", Array.Empty<object?>()))) return new ServeItemSelection();
-
-            return new ServeItemSelection
-            {
-                Food = food,
-                Beverage = beverage,
-            };
-        }
-        finally
-        {
-            WriteMember(order, "ServFood", originalFood);
-            WriteMember(order, "ServBeverage", originalBeverage);
-        }
-    }
-
     private static string FormatTraySummary(IReadOnlyList<object> trayItems)
     {
         if (trayItems.Count == 0)
@@ -1003,6 +2292,202 @@ internal static class RuntimeOrderPreparationService
         };
     }
 
+    private static RuntimeOrderMatch FindRuntimeNormalOrder(OrderPreparationRequest request)
+    {
+        var manager = GetSingletonInstance(GuestsManagerTypeName);
+        if (manager == null) return new RuntimeOrderMatch();
+
+        var scannedControllers = 0;
+        var scannedControllerOrders = 0;
+        foreach (var controller in EnumerateGuestControllers(manager))
+        {
+            scannedControllers++;
+            if (controller == null) continue;
+            foreach (var order in EnumerateControllerOrders(controller))
+            {
+                scannedControllerOrders++;
+                try
+                {
+                    if (!IsMatchingNormalOrder(order, request)) continue;
+                }
+                catch
+                {
+                    continue;
+                }
+
+                return new RuntimeOrderMatch
+                {
+                    Manager = manager,
+                    Controller = controller,
+                    Order = order,
+                    Diagnostic = $"controllerOrders={scannedControllerOrders}",
+                };
+            }
+        }
+
+        var scannedUiOrders = 0;
+        foreach (var order in EnumerateOrderControllerOrders())
+        {
+            scannedUiOrders++;
+            if (!IsMatchingNormalOrder(order, request)) continue;
+
+            var controller = FindControllerForOrder(manager, order, request);
+            return new RuntimeOrderMatch
+            {
+                Manager = manager,
+                Controller = controller,
+                Order = order,
+                Diagnostic = $"controllers={scannedControllers}, controllerOrders={scannedControllerOrders}, uiOrders={scannedUiOrders}",
+            };
+        }
+
+        return new RuntimeOrderMatch
+        {
+            Diagnostic = $"controllers={scannedControllers}, controllerOrders={scannedControllerOrders}, uiOrders={scannedUiOrders}",
+        };
+    }
+
+    private static IEnumerable<object> EnumerateOrderControllerOrders()
+    {
+        var orderControllerType = FindType(OrderControllerTypeName);
+        if (orderControllerType == null) yield break;
+
+        object? showOrders = null;
+        try
+        {
+            showOrders = InvokeStatic(OrderControllerTypeName, "GetShowInUIOrders", Array.Empty<object?>());
+        }
+        catch
+        {
+            // Try active UI elements below.
+        }
+
+        foreach (var order in ReadObjectEnumerable(showOrders))
+        {
+            yield return order;
+        }
+
+        object? controller = null;
+        try
+        {
+            controller = GetSingletonInstance(OrderControllerTypeName);
+        }
+        catch
+        {
+            // Static instance may not exist before the HUD is built.
+        }
+
+        if (controller == null) yield break;
+
+        foreach (var element in ReadObjectEnumerable(ReadMember(controller, "m_Orders")))
+        {
+            var activeOrder = ReadMember(NormalizeDictionaryItem(element) ?? element, "ActiveOrder");
+            if (activeOrder != null) yield return activeOrder;
+        }
+    }
+
+    private static object? FindControllerForOrder(object manager, object order, OrderPreparationRequest request)
+    {
+        foreach (var controller in EnumerateGuestControllers(manager))
+        {
+            if (controller == null) continue;
+            foreach (var candidate in EnumerateControllerOrders(controller))
+            {
+                if (IsSameObject(candidate, order)) return controller;
+            }
+        }
+
+        foreach (var controller in EnumerateGuestControllers(manager))
+        {
+            if (controller == null) continue;
+            if (ToInt(ReadMember(controller, "DeskCode") ?? TryInvokeInstanceValue(controller, "get_DeskCode"), -999) != request.DeskCode) continue;
+            if (EnumerateControllerOrders(controller).Any(candidate => IsMatchingNormalOrder(candidate, request)))
+            {
+                return controller;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsMatchingNormalOrder(object order, OrderPreparationRequest request)
+    {
+        if (!IsNormalOrder(order)) return false;
+        if (!string.IsNullOrWhiteSpace(request.OrderKey)
+            && !string.Equals(BuildRuntimeOrderKey(order), request.OrderKey, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var deskCode = ToInt(ReadMember(order, "DeskCode") ?? TryInvokeInstanceValue(order, "get_DeskCode"), -999);
+        if (request.DeskCode >= 0 && deskCode != request.DeskCode) return false;
+
+        if (request.FoodId >= 0 && ReadNormalFoodId(order) != request.FoodId) return false;
+        if (request.BeverageId >= 0 && ReadNormalBeverageId(order) != request.BeverageId) return false;
+        return true;
+    }
+
+    private static string BuildRuntimeOrderKey(object order)
+    {
+        try
+        {
+            return $"ptr:{ReadObjectPointer(order):x}";
+        }
+        catch
+        {
+            return $"hash:{RuntimeHelpers.GetHashCode(order)}";
+        }
+    }
+
+    private static bool IsNormalOrder(object order)
+    {
+        if (IsSpecialOrder(order)) return false;
+        var typeName = order.GetType().Name;
+        if (typeName.IndexOf("NormalOrder", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        var type = ReadMember(order, "Type") ?? TryInvokeInstanceValue(order, "get_Type");
+        return type?.ToString()?.Contains("Normal", StringComparison.OrdinalIgnoreCase) == true || ToInt(type, -1) == 0;
+    }
+
+    private static int ReadNormalFoodId(object order)
+    {
+        return ReadNormalSellableId(
+            ReadMember(order, "RequestFood") ?? TryInvokeInstanceValue(order, "get_RequestFood"),
+            ReadMember(order, "foodRequest"));
+    }
+
+    private static int ReadNormalBeverageId(object order)
+    {
+        return ReadNormalSellableId(
+            ReadMember(order, "RequestBeverage") ?? TryInvokeInstanceValue(order, "get_RequestBeverage"),
+            ReadMember(order, "beverageRequest"));
+    }
+
+    private static int ReadNormalSellableId(object? sellable, object? fallback)
+    {
+        if (sellable != null)
+        {
+            foreach (var member in new[] { "id", "Id", "ID", "foodID", "FoodID" })
+            {
+                var parsed = ToInt(ReadMember(sellable, member) ?? TryInvokeInstanceValue(sellable, $"get_{member}"), int.MinValue);
+                if (parsed != int.MinValue) return parsed;
+            }
+        }
+
+        return ToInt(fallback, -1);
+    }
+
+    private static bool IsSameObject(object left, object right)
+    {
+        try
+        {
+            return ReadObjectPointer(left) == ReadObjectPointer(right);
+        }
+        catch
+        {
+            return ReferenceEquals(left, right);
+        }
+    }
+
     private static RuntimeOrderMatch FindCapturedRuntimeOrder(OrderPreparationRequest request, object manager)
     {
         var capturedOrders = SpecialOrderRuntimeCapture.Snapshot(TimeSpan.FromHours(6));
@@ -1043,39 +2528,51 @@ internal static class RuntimeOrderPreparationService
         if (captured.OrderObject == null || captured.ControllerObject == null) return 0;
 
         var score = 0;
+        var deskMatched = false;
         if (captured.DeskCode >= 0 && request.DeskCode >= 0)
         {
             if (captured.DeskCode == request.DeskCode)
             {
-                score += 10;
+                score += 12;
+                deskMatched = true;
             }
             else
             {
-                score -= 3;
+                score -= 8;
             }
         }
 
         if (request.GuestId.HasValue && captured.GuestId.HasValue)
         {
-            score += request.GuestId.Value == captured.GuestId.Value ? 8 : -6;
+            score += request.GuestId.Value == captured.GuestId.Value ? 8 : -2;
         }
 
         if (!string.IsNullOrWhiteSpace(request.GuestName) && !string.IsNullOrWhiteSpace(captured.GuestName))
         {
-            score += string.Equals(captured.GuestName, request.GuestName, StringComparison.Ordinal) ? 6 : 0;
+            score += TextMatches(captured.GuestName, request.GuestName) ? 6 : 0;
         }
 
         if (!string.IsNullOrWhiteSpace(request.FoodTag) && !string.IsNullOrWhiteSpace(captured.FoodTag))
         {
-            score += string.Equals(captured.FoodTag, request.FoodTag, StringComparison.Ordinal) ? 3 : -1;
+            score += TextMatches(captured.FoodTag, request.FoodTag) ? 3 : -2;
         }
 
         if (!string.IsNullOrWhiteSpace(request.BeverageTag) && !string.IsNullOrWhiteSpace(captured.BeverageTag))
         {
-            score += string.Equals(captured.BeverageTag, request.BeverageTag, StringComparison.Ordinal) ? 3 : -1;
+            score += TextMatches(captured.BeverageTag, request.BeverageTag) ? 3 : -2;
         }
 
-        return score >= 7 ? score : 0;
+        return score >= (deskMatched ? 8 : 12) ? score : 0;
+    }
+
+    private static bool TextMatches(string left, string right)
+    {
+        left = left.Trim();
+        right = right.Trim();
+        if (left.Length == 0 || right.Length == 0) return false;
+        return string.Equals(left, right, StringComparison.Ordinal)
+            || left.Contains(right, StringComparison.Ordinal)
+            || right.Contains(left, StringComparison.Ordinal);
     }
 
     private static string FormatCapturedOrderSummary(IReadOnlyList<CapturedRuntimeSpecialOrder> capturedOrders)
@@ -1244,6 +2741,16 @@ internal static class RuntimeOrderPreparationService
 
     private static object? ReadMember(object target, string name)
     {
+        try
+        {
+            var utilityValue = RuntimeReflectionUtility.GetMemberValue(target, name);
+            if (utilityValue != null) return utilityValue;
+        }
+        catch
+        {
+            // Fall back to the local exact-field reader below.
+        }
+
         for (var type = target.GetType(); type != null; type = type.BaseType)
         {
             foreach (var fieldName in BuildFieldNameCandidates(name))
@@ -1313,43 +2820,136 @@ internal static class RuntimeOrderPreparationService
     {
         if (value == null) yield break;
         if (value is string) yield break;
-        if (value is IEnumerable enumerable)
+        foreach (var item in EnumerateManaged(value).Concat(EnumerateByIndexer(value)))
         {
-            foreach (var item in enumerable)
-            {
-                yield return ToInt(item);
-            }
+            yield return ToInt(item);
         }
     }
 
     private static IEnumerable<object> ReadObjectEnumerable(object? value)
     {
-        if (value == null) yield break;
-        if (value is string) yield break;
-        if (value is IEnumerable enumerable)
+        if (value == null || value is string) yield break;
+
+        var seen = new HashSet<nint>();
+        foreach (var item in EnumerateManaged(value).Concat(EnumerateByIndexer(value)).Concat(ReadDictionaryValues(value)))
         {
-            foreach (var item in enumerable)
-            {
-                if (item != null) yield return item;
-            }
+            if (item == null) continue;
+            if (!TryRememberObject(item, seen)) continue;
+            yield return item;
         }
+    }
+
+    private static IEnumerable<object?> ReadDictionaryValues(object? dictionary)
+    {
+        if (dictionary == null || dictionary is string) yield break;
+
+        if (dictionary is IDictionary managedDictionary)
+        {
+            foreach (DictionaryEntry entry in managedDictionary)
+            {
+                yield return entry.Value;
+            }
+
+            yield break;
+        }
+
+        var entries = ReadMember(dictionary, "entries")
+            ?? ReadMember(dictionary, "_entries")
+            ?? ReadMember(dictionary, "m_Entries");
+        var count = ToInt(ReadMember(dictionary, "count")
+            ?? ReadMember(dictionary, "_count")
+            ?? ReadMember(dictionary, "Count"));
+        if (entries == null || count <= 0) yield break;
+
+        var entryIndex = 0;
+        foreach (var entry in EnumerateByIndexer(entries))
+        {
+            if (entryIndex++ >= Math.Min(count, 256)) yield break;
+            if (entry == null) continue;
+
+            var hashCode = ToInt(ReadMember(entry, "hashCode") ?? ReadMember(entry, "_hashCode"));
+            if (hashCode < 0) continue;
+
+            var value = ReadMember(entry, "value")
+                ?? ReadMember(entry, "Value")
+                ?? ReadMember(entry, "_value");
+            if (value != null) yield return value;
+        }
+    }
+
+    private static IEnumerable<object?> EnumerateManaged(object value)
+    {
+        if (LooksLikeIl2CppObject(value)) yield break;
+        if (value is not IEnumerable enumerable) yield break;
+
+        foreach (var item in enumerable)
+        {
+            yield return item;
+        }
+    }
+
+    private static IEnumerable<object?> EnumerateByIndexer(object value)
+    {
+        var count = ToInt(TryInvokeInstanceValue(value, "get_Count")
+            ?? ReadMember(value, "Count")
+            ?? ReadMember(value, "Length")
+            ?? ReadMember(value, "_size"));
+        if (count <= 0) yield break;
+
+        for (var index = 0; index < Math.Min(count, 256); index++)
+        {
+            yield return TryInvokeInstanceValue(value, "get_Item", new object?[] { index });
+        }
+    }
+
+    private static IEnumerable<object?> FindUnityObjects(Type type)
+    {
+        var method = typeof(UnityEngine.Object).GetMethod("FindObjectsOfType", new[] { typeof(Type) });
+        if (method == null) yield break;
+
+        object? objects;
+        try
+        {
+            objects = method.Invoke(null, new object[] { type });
+        }
+        catch
+        {
+            yield break;
+        }
+
+        foreach (var item in ReadObjectEnumerable(objects))
+        {
+            yield return item;
+        }
+    }
+
+    private static bool LooksLikeIl2CppObject(object value)
+    {
+        var type = value.GetType();
+        var fullName = type.FullName ?? "";
+        if (fullName.StartsWith("Il2Cpp", StringComparison.Ordinal)) return true;
+        if (fullName.StartsWith("NightScene.", StringComparison.Ordinal)) return true;
+        if (fullName.StartsWith("DayScene.", StringComparison.Ordinal)) return true;
+        if (fullName.StartsWith("GameData.", StringComparison.Ordinal)) return true;
+        if (fullName.StartsWith("DEYU.", StringComparison.Ordinal)) return true;
+        return type.Assembly.GetName().Name?.Contains("Il2Cpp", StringComparison.OrdinalIgnoreCase) == true;
     }
 
     private static object? GetSingletonInstance(string typeName)
     {
         var type = FindType(typeName)
             ?? throw new InvalidOperationException($"{typeName} type is not loaded.");
-        var property = type.GetProperty("Instance", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.FlattenHierarchy);
-        if (property != null) return property.GetValue(null);
-
-        var method = type.GetMethod("get_Instance", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.FlattenHierarchy);
-        return method?.Invoke(null, Array.Empty<object?>());
+        return RuntimeReflectionUtility.GetSingletonInstance(type)
+            ?? RuntimeReflectionUtility.FindUnityObject(type);
     }
 
     private static object? InvokeStatic(string typeName, string methodName, object?[] args)
     {
         var type = FindType(typeName)
             ?? throw new InvalidOperationException($"{typeName} type is not loaded.");
+        var utilityValue = RuntimeReflectionUtility.InvokeStaticMethod(type, methodName, args);
+        if (utilityValue != null) return utilityValue;
+
         var method = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
             .FirstOrDefault(candidate => string.Equals(candidate.Name, methodName, StringComparison.Ordinal)
                 && CanUseParameters(candidate.GetParameters(), args))
@@ -1450,6 +3050,22 @@ internal static class RuntimeOrderPreparationService
         return int.TryParse(value.ToString(), out var parsed) ? parsed : 0;
     }
 
+    private static int ToInt(object? value, int fallback)
+    {
+        if (value == null) return fallback;
+        try
+        {
+            if (value is int number) return number;
+            if (value is Enum enumValue) return Convert.ToInt32(enumValue);
+            if (value is IConvertible convertible) return Convert.ToInt32(convertible);
+            return int.TryParse(value.ToString(), out var parsed) ? parsed : fallback;
+        }
+        catch
+        {
+            return fallback;
+        }
+    }
+
     private static bool ReadBool(object? value)
     {
         if (value is bool boolValue) return boolValue;
@@ -1473,7 +3089,12 @@ internal static class RuntimeOrderPreparationService
 
     private static OrderPreparationResult Finish(OrderPreparationResult result)
     {
-        result.Prepared = result.Steps.Any(step => step.Ok && !step.Skipped && step.Name != "选择订单");
+        result.Prepared = result.Steps.Any(step => step.Ok
+            && !step.Skipped
+            && step.Name != "选择订单"
+            && step.Name != "选择普客订单"
+            && step.Name != "匹配普客订单"
+            && step.Name != "匹配运行时订单");
         result.Ok = result.Error == null && result.Steps.All(step => step.Ok || step.Skipped);
         if (!result.Ok && result.Error == null)
         {
@@ -1509,6 +3130,100 @@ internal static class RuntimeOrderPreparationService
         public object CookController { get; init; } = new();
         public string RecipeName { get; init; } = "";
         public DateTime CreatedAtUtc { get; init; }
+        public CookingCollectionTarget Target { get; init; } = CookingCollectionTarget.Tray();
+    }
+
+    private sealed class CompletedNormalCookingCollection
+    {
+        public string OrderKey { get; init; } = "";
+        public int DeskCode { get; init; } = -1;
+        public int FoodId { get; init; } = -1;
+        public string FoodName { get; init; } = "";
+        public string StoredFoodKey { get; init; } = "";
+        public DateTime StoredAtUtc { get; init; }
+        public DateTime LastConfirmedAtUtc { get; set; }
+    }
+
+    private sealed class NormalStorageStatus
+    {
+        public bool CanVerify { get; private init; }
+        public bool HasTarget { get; private init; }
+        public string Message { get; private init; } = "";
+
+        public static NormalStorageStatus Verified(bool hasTarget, string message)
+        {
+            return new NormalStorageStatus
+            {
+                CanVerify = true,
+                HasTarget = hasTarget,
+                Message = message,
+            };
+        }
+
+        public static NormalStorageStatus Unknown(string message)
+        {
+            return new NormalStorageStatus
+            {
+                CanVerify = false,
+                HasTarget = false,
+                Message = message,
+            };
+        }
+    }
+
+    private sealed class CookingCollectionTarget
+    {
+        public CookingCollectionTargetKind Kind { get; private init; }
+        public object? Manager { get; private init; }
+        public object? Controller { get; private init; }
+        public object? Order { get; private init; }
+        public string OrderKey { get; private init; } = "";
+        public int FoodId { get; private init; } = -1;
+        public string FoodName { get; private init; } = "";
+        public int DeskCode { get; private init; } = -1;
+        public string GuestName { get; private init; } = "";
+
+        public static CookingCollectionTarget Tray()
+        {
+            return new CookingCollectionTarget
+            {
+                Kind = CookingCollectionTargetKind.Tray,
+            };
+        }
+
+        public static CookingCollectionTarget ForTrayFood(int foodId, string foodName)
+        {
+            return new CookingCollectionTarget
+            {
+                Kind = CookingCollectionTargetKind.Tray,
+                FoodId = foodId,
+                FoodName = foodName,
+            };
+        }
+
+        public static CookingCollectionTarget ForNormalOrder(
+            object? manager,
+            object? controller,
+            object? order,
+            string orderKey,
+            int foodId,
+            string foodName,
+            int deskCode,
+            string guestName)
+        {
+            return new CookingCollectionTarget
+            {
+                Kind = CookingCollectionTargetKind.NormalOrder,
+                Manager = manager,
+                Controller = controller,
+                Order = order,
+                OrderKey = orderKey,
+                FoodId = foodId,
+                FoodName = foodName,
+                DeskCode = deskCode,
+                GuestName = guestName,
+            };
+        }
     }
 
     private sealed class CookingStartResult
@@ -1547,9 +3262,4 @@ internal static class RuntimeOrderPreparationService
         public string Diagnostic { get; init; } = "";
     }
 
-    private sealed class ServeItemSelection
-    {
-        public object? Food { get; init; }
-        public object? Beverage { get; init; }
-    }
 }

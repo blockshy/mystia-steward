@@ -33,6 +33,7 @@ public sealed class RareRecommendationService
         var customerPreferredTagSet = customer.PositiveTags.ToHashSet();
         var customerBannedIngredientIds = GetEasterIngredientIdsByEffect(customer.Id, RareEasterEffect.Ban);
         var customerPriorityIngredientIds = GetEasterIngredientIdsByEffect(customer.Id, RareEasterEffect.PriorityExGood);
+        var specialRuleTargets = GetSpecialRuleTargets(state);
 
         foreach (var recipe in _repository.Recipes)
         {
@@ -66,7 +67,9 @@ public sealed class RareRecommendationService
             foreach (var candidate in allCandidates)
             {
                 var matchesPreferredOrRequired = candidate.Tags.Any(tag =>
-                    customerPreferredTagSet.Contains(tag) || tag == requiredFoodTag);
+                    customerPreferredTagSet.Contains(tag)
+                    || tag == requiredFoodTag
+                    || specialRuleTargets.TargetTags.Contains(tag));
                 var canCancelNegative = TagRules.CanCancelNegativeByConflict(
                     baseEval.ActiveTags,
                     candidate.Tags,
@@ -82,6 +85,7 @@ public sealed class RareRecommendationService
             var baseIngredientNames = recipe.Ingredients.ToHashSet();
             var candidates = relevant
                 .OrderByDescending(i => i.Tags.Contains(requiredFoodTag) ? 1 : 0)
+                .ThenByDescending(i => i.Tags.Count(specialRuleTargets.TargetTags.Contains))
                 .ThenByDescending(i => i.Tags.Count(customerPreferredTagSet.Contains))
                 .ThenByDescending(i => TagRules.CountConflictCancellations(baseEval.ActiveTags, i.Tags, customer.NegativeTags))
                 .ThenByDescending(i => baseIngredientNames.Contains(i.Name) ? 1 : 0)
@@ -98,7 +102,9 @@ public sealed class RareRecommendationService
                 ? baseEasterEffect
                 : ResolvedRareEasterEffect.Empty;
 
-            if (baseEval.FoodScore >= TargetFoodScore && baseEval.MeetsRequiredFood)
+            if (baseEval.FoodScore >= TargetFoodScore
+                && baseEval.MeetsRequiredFood
+                && (!specialRuleTargets.HasTargets || baseEval.SatisfiesSpecialRule))
             {
                 bestCombo = new List<Ingredient>();
             }
@@ -138,6 +144,7 @@ public sealed class RareRecommendationService
                             eval.ActiveTags,
                             customer.PositiveTags,
                             requiredFoodTag,
+                            specialRuleTargets.TargetTags,
                             baseIngredientNames,
                             state.OwnedIngredientQty);
 
@@ -151,6 +158,7 @@ public sealed class RareRecommendationService
                                 || requiredFallbackEval == null
                                 || requiredFallbackReason == null
                                 || ShouldReplaceRequiredFallback(
+                                    specialRuleTargets.HasTargets,
                                     requiredFallbackEval,
                                     requiredFallbackCombo,
                                     requiredFallbackReason,
@@ -174,7 +182,7 @@ public sealed class RareRecommendationService
                         if (comboEasterEffect.Effect == RareEasterEffect.PriorityExGood
                             && eval.MeetsRequiredFood
                             && (bestPriorityComboForK == null
-                                || IsReasonDataPreferred(reason, bestPriorityReasonForK, cost, bestPriorityCostForK)))
+                                || IsComboPreferred(specialRuleTargets.HasTargets, eval, bestPriorityEvalForK, reason, bestPriorityReasonForK, cost, bestPriorityCostForK)))
                         {
                             bestPriorityComboForK = combo;
                             bestPriorityEvalForK = eval;
@@ -184,7 +192,7 @@ public sealed class RareRecommendationService
                         }
 
                         if (eval.FoodScore >= TargetFoodScore && eval.MeetsRequiredFood
-                            && (bestComboForK == null || IsReasonDataPreferred(reason, bestReasonForK, cost, bestCostForK)))
+                            && (bestComboForK == null || IsComboPreferred(specialRuleTargets.HasTargets, eval, bestEvalForK, reason, bestReasonForK, cost, bestCostForK)))
                         {
                             bestComboForK = combo;
                             bestEvalForK = eval;
@@ -265,6 +273,8 @@ public sealed class RareRecommendationService
                 EasterScoreFloor = bestEasterEffect.ScoreFloor,
                 AllTags = finalEval.ActiveTags,
                 CancelledTags = finalEval.CancelledTags,
+                SpecialRuleTags = finalEval.MatchedSpecialRuleTags,
+                SatisfiesSpecialRule = finalEval.SatisfiesSpecialRule,
                 FoodScore = finalFoodScore,
                 MeetsRequiredFood = finalEval.MeetsRequiredFood,
                 Rating = rating,
@@ -275,6 +285,7 @@ public sealed class RareRecommendationService
 
         return results
             .OrderByDescending(r => r.MeetsRequiredFood)
+            .ThenByDescending(r => specialRuleTargets.HasTargets && r.SatisfiesSpecialRule)
             .ThenByDescending(r => r.FoodScore)
             .ThenBy(r => r.ExtraIngredients.Count)
             .ThenBy(r => GetRecipeResourcePressure(r, state))
@@ -318,7 +329,16 @@ public sealed class RareRecommendationService
         var (activeTags, cancelledTags) = ResolveFinalFoodTags(recipe, extraIngredients, state);
         var foodScore = TagRules.ScoreFoodForRare(activeTags, customer.PositiveTags, customer.NegativeTags);
         var meetsRequiredFood = activeTags.Contains(requiredFoodTag);
-        return new ComboEvaluation(foodScore, meetsRequiredFood, activeTags, cancelledTags);
+        var specialRuleTargets = GetSpecialRuleTargets(state);
+        var matchedSpecialRuleTags = activeTags
+            .Where(specialRuleTargets.TargetTags.Contains)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var satisfiesSpecialRule = specialRuleTargets.HasTargets
+            && (specialRuleTargets.MatchAll
+                ? specialRuleTargets.TargetTags.All(matchedSpecialRuleTags.Contains)
+                : matchedSpecialRuleTags.Count > 0);
+        return new ComboEvaluation(foodScore, meetsRequiredFood, satisfiesSpecialRule, matchedSpecialRuleTags, activeTags, cancelledTags);
     }
 
     private (List<string> ActiveTags, List<string> CancelledTags) ResolveFinalFoodTags(
@@ -434,7 +454,26 @@ public sealed class RareRecommendationService
         return nextCost < previousCost;
     }
 
+    private static bool IsComboPreferred(
+        bool hasSpecialRuleTargets,
+        ComboEvaluation nextEval,
+        ComboEvaluation? previousEval,
+        IngredientTagReasonResult next,
+        IngredientTagReasonResult? previous,
+        int nextCost,
+        int previousCost)
+    {
+        if (previousEval == null) return true;
+        if (hasSpecialRuleTargets && nextEval.SatisfiesSpecialRule != previousEval.SatisfiesSpecialRule)
+        {
+            return nextEval.SatisfiesSpecialRule;
+        }
+
+        return IsReasonDataPreferred(next, previous, nextCost, previousCost);
+    }
+
     private static bool ShouldReplaceRequiredFallback(
+        bool hasSpecialRuleTargets,
         ComboEvaluation previousEval,
         List<Ingredient> previousCombo,
         IngredientTagReasonResult previousReason,
@@ -445,6 +484,11 @@ public sealed class RareRecommendationService
         int nextCost)
     {
         if (nextEval.FoodScore != previousEval.FoodScore) return nextEval.FoodScore > previousEval.FoodScore;
+        if (hasSpecialRuleTargets && nextEval.SatisfiesSpecialRule != previousEval.SatisfiesSpecialRule)
+        {
+            return nextEval.SatisfiesSpecialRule;
+        }
+
         if (nextCombo.Count != previousCombo.Count) return nextCombo.Count < previousCombo.Count;
         if (nextReason.AssignedBaseReuseScore != previousReason.AssignedBaseReuseScore)
         {
@@ -470,6 +514,7 @@ public sealed class RareRecommendationService
         List<string> finalActiveTags,
         List<string> customerPreferredTags,
         string requiredFoodTag,
+        IReadOnlyCollection<string> specialRuleTargetTags,
         HashSet<string> baseIngredientNames,
         IReadOnlyDictionary<int, int> ownedIngredientQty)
     {
@@ -482,6 +527,15 @@ public sealed class RareRecommendationService
         }
 
         foreach (var tag in customerPreferredTags)
+        {
+            if (tag == requiredFoodTag) continue;
+            if (!baseActiveTags.Contains(tag) && finalActiveTags.Contains(tag))
+            {
+                neededTags.Add(tag);
+            }
+        }
+
+        foreach (var tag in specialRuleTargetTags)
         {
             if (tag == requiredFoodTag) continue;
             if (!baseActiveTags.Contains(tag) && finalActiveTags.Contains(tag))
@@ -514,6 +568,20 @@ public sealed class RareRecommendationService
         }
 
         return result;
+    }
+
+    private static SpecialRuleTargets GetSpecialRuleTargets(RecommendationState state)
+    {
+        var targetTags = state.SpecialRules
+            .Where(rule => rule.FoodTagTargets.Count > 0)
+            .SelectMany(rule => rule.FoodTagTargets.Select(target => target.Name))
+            .Where(tag => !string.IsNullOrWhiteSpace(tag))
+            .Distinct(StringComparer.Ordinal)
+            .ToHashSet(StringComparer.Ordinal);
+        var matchAll = state.SpecialRules
+            .Where(rule => rule.FoodTagTargets.Count > 0)
+            .Any(rule => string.Equals(rule.MatchMode, "all", StringComparison.OrdinalIgnoreCase));
+        return new SpecialRuleTargets(targetTags, matchAll);
     }
 
     private static HashSet<int> GetEasterIngredientIdsByEffect(int customerId, RareEasterEffect effect)
@@ -592,8 +660,15 @@ public sealed class RareRecommendationService
 internal sealed record ComboEvaluation(
     int FoodScore,
     bool MeetsRequiredFood,
+    bool SatisfiesSpecialRule,
+    List<string> MatchedSpecialRuleTags,
     List<string> ActiveTags,
     List<string> CancelledTags);
+
+internal sealed record SpecialRuleTargets(HashSet<string> TargetTags, bool MatchAll)
+{
+    public bool HasTargets => TargetTags.Count > 0;
+}
 
 internal sealed class IngredientTagReasonResult
 {
