@@ -397,7 +397,6 @@ internal static class RuntimeRareGuestInvitationService
         var daySceneMapType = RuntimeReflectionUtility.FindType(DaySceneMapTypeName);
         var characterComponentType = RuntimeReflectionUtility.FindType(CharacterConditionComponentTypeName);
         var currentMapLabel = currentMap.Label;
-        TryRefreshCurrentMapNpcs(runtimeDaySceneType);
         var counts = new Dictionary<string, int>(StringComparer.Ordinal)
         {
             ["mapNpc"] = 0,
@@ -408,6 +407,14 @@ internal static class RuntimeRareGuestInvitationService
             ["staticUnavailable"] = 0,
         };
         var errors = new List<string>();
+
+        if (string.IsNullOrWhiteSpace(currentMapLabel))
+        {
+            diagnostics = "currentMap=; mapNpc=0; mapObject=0; sceneObject=0; trackedAnyMap=0; staticMap=0; staticAccepted=0; staticUnavailable=0; reason=current map not ready";
+            return records;
+        }
+
+        TryRefreshCurrentMapNpcs(runtimeDaySceneType);
 
         foreach (var label in ReadMapNpcLabels(runtimeDaySceneType, currentMapLabel))
         {

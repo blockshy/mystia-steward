@@ -1176,6 +1176,7 @@ export function ModWorkbench() {
     const currentSnapshot = snapshot;
     if (tab !== 'tasks' || !currentSnapshot || !currentSnapshot.runtimeLoaded || !apiToken) return;
     if (rareGuestInvitationBusyKey) return;
+    if (!currentSnapshot.activeDayMapLabel && !currentSnapshot.activeDayMapName) return;
     const signature = `${rareGuestInvitationScope}|${currentSnapshot.activeDayMapLabel ?? ''}|${currentSnapshot.activeSceneName ?? ''}`;
     if (lastRareGuestInvitationRefreshSignatureRef.current === signature && rareGuestInvitationResult) return;
     lastRareGuestInvitationRefreshSignatureRef.current = signature;

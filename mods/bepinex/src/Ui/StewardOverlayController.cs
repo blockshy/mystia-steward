@@ -524,7 +524,7 @@ internal sealed class StewardOverlayController
             _nextLocalApiSnapshotPublishAt = Time.realtimeSinceStartup + LocalApiSnapshotPublishMinIntervalSeconds;
             TryRefreshRuntimeDataCatalog();
             var publishedState = _state ?? (_businessContext?.Orders.Count > 0 ? GetBusinessRecommendationState() : null);
-            var dayMap = RuntimeRareGuestInvitationService.ReadCurrentDaySceneMapInfo();
+            var dayMap = ReadActiveDayMapForSnapshot();
             var snapshot = new LocalApiSnapshot
             {
                 PluginVersion = MystiaStewardCompanionPlugin.PluginVersion,
@@ -558,6 +558,24 @@ internal sealed class StewardOverlayController
         finally
         {
             RecordPerformance("snapshot.publish", stopwatch.Elapsed);
+        }
+    }
+
+    private (string Label, string Name) ReadActiveDayMapForSnapshot()
+    {
+        if (!_runtimeLoaded) return ("", "");
+        if (IsNonGameplayScene(_activeSceneName)) return ("", "");
+        if (IsNightBusinessScene(_activeSceneName)) return ("", "");
+        if (IsSceneSnapshotStartupGuardActive()) return ("", "");
+
+        try
+        {
+            var map = RuntimeRareGuestInvitationService.ReadCurrentDaySceneMapInfo();
+            return (map.Label, map.Name);
+        }
+        catch
+        {
+            return ("", "");
         }
     }
 
