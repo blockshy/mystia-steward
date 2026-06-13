@@ -8,7 +8,7 @@
 - 伴随窗口入口为 `apps/companion/src/companion/ModWorkbench.tsx`，顶层挂载在 `apps/companion/src/App.tsx`。
 - 推荐算法集中在 `apps/companion/src/lib/normal-recommend.ts`、`apps/companion/src/lib/rare-recommend.ts` 和 `apps/companion/src/lib/tags.ts`。
 - 推荐、库存名称、任务目标和自动化目标只使用 Mod 从游戏运行时读取并通过本地 API 发布的结构化数据；运行时数据未就绪时，伴随窗口显示等待状态，不再回退到外部 JSON。
-- C# Mod 不引用 TypeScript 模块；前端和 Mod 的共享数据通过本地 API 的运行时快照传递，发布包不包含 `Data/*.json`，不要为新增稀客事件变体优先补静态表。
+- C# Mod 不引用 TypeScript 模块；前端和 Mod 的共享数据通过本地 API 的运行时快照传递，仓库和发布包都不保留旧版推荐 JSON，不要为新增稀客事件变体优先补静态表。
 
 ## 命名约束
 

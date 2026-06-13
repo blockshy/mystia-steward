@@ -4,7 +4,6 @@ param(
     [string]$Configuration = "Release",
     [switch]$SkipInstall,
     [switch]$SkipPreflight,
-    [switch]$SkipDataSync,
     [Alias("SkipWebBuild")]
     [switch]$SkipFrontendBuild,
     [switch]$SkipTauriBuild,
@@ -137,11 +136,6 @@ try {
     if (-not $SkipPreflight) {
         Write-Step "Run Mod preflight"
         & $PreflightScript -ReferenceDir $EffectiveReferenceDir
-    }
-
-    if (-not $SkipDataSync) {
-        Write-Step "Skip Mod data sync"
-        Write-Host "    Release packages use live game runtime data and no longer include Data/*.json."
     }
 
     if (-not $SkipFrontendBuild) {

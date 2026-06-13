@@ -254,7 +254,7 @@ git push --force origin v1.0.1
 
 推荐、库存名称、任务目标和自动化目标解析只使用游戏运行时读取到的 `RuntimeDataCatalog`。伴随窗口未连接游戏、游戏数据库未初始化或 `/snapshot.runtimeData.isComplete=false` 时，页面会显示等待运行时数据，不再回退到内置 JSON。
 
-`apps/companion/src/data/` 中的历史 JSON 暂时保留为后续清理参考，不参与 Mod 启动、前端推荐或发布包。`mods/bepinex/tools/sync-data.sh` 已废弃为 no-op，`build-release.ps1` 和发布包不再同步或包含 `Data/*.json`。
+仓库不再保留旧版推荐 JSON，也不再执行数据同步步骤。发布包只包含 Mod DLL 和伴随窗口程序，推荐、库存、任务和自动化目标都来自游戏当前运行时。
 
 ## 运行时刷新行为
 

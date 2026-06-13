@@ -357,7 +357,6 @@ interface LocalApiSnapshot {
   runtimeLoaded: boolean;
   status: string;
   runtimeSource: string;
-  dataDirectory: string;
   runtimeUiPinningStatus?: string;
   recommendationState: RecommendationStateSnapshot | null;
   nightBusiness: NightBusinessContext | null;
@@ -2115,7 +2114,6 @@ function ModOverviewPanel({
             value={data.source === 'runtime' ? `游戏运行时 (${data.status})` : `等待游戏运行时数据 (${data.status})`}
           />
           <InfoLine label="性能耗时" value={formatPerformanceMs(snapshot?.performanceMs)} mono />
-          <InfoLine label="数据目录" value={snapshot?.dataDirectory || '未知'} mono />
         </CardContent>
       </Card>
 

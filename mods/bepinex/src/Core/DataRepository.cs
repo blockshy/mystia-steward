@@ -3,7 +3,6 @@ namespace MystiaStewardCompanion.Core;
 public sealed class DataRepository
 {
     private DataRepository(
-        string dataDirectory,
         List<Recipe> recipes,
         List<Ingredient> ingredients,
         List<Beverage> beverages,
@@ -11,7 +10,6 @@ public sealed class DataRepository
         List<RareCustomer> rareCustomers,
         Dictionary<string, string> foodTagIdMap)
     {
-        DataDirectory = dataDirectory;
         Recipes = recipes;
         Ingredients = ingredients;
         Beverages = beverages;
@@ -34,7 +32,6 @@ public sealed class DataRepository
         RareCustomerIdentities = new RareCustomerIdentityResolver(RareCustomersById, rareCustomers);
     }
 
-    public string DataDirectory { get; }
     public IReadOnlyList<Recipe> Recipes { get; }
     public IReadOnlyList<Ingredient> Ingredients { get; }
     public IReadOnlyList<Beverage> Beverages { get; }
@@ -47,10 +44,9 @@ public sealed class DataRepository
     public IReadOnlyDictionary<int, RareCustomer> RareCustomersById { get; }
     public RareCustomerIdentityResolver RareCustomerIdentities { get; }
 
-    public static DataRepository FromRuntime(RuntimeDataCatalog catalog, string dataDirectory)
+    public static DataRepository FromRuntime(RuntimeDataCatalog catalog)
     {
         return new DataRepository(
-            string.IsNullOrWhiteSpace(dataDirectory) ? "runtime" : dataDirectory,
             catalog.Recipes.ToList(),
             catalog.Ingredients.ToList(),
             catalog.Beverages.ToList(),
@@ -59,10 +55,9 @@ public sealed class DataRepository
             new Dictionary<string, string>(catalog.FoodTagIdMap, StringComparer.Ordinal));
     }
 
-    public static DataRepository Empty(string dataDirectory)
+    public static DataRepository Empty()
     {
         return new DataRepository(
-            dataDirectory,
             new List<Recipe>(),
             new List<Ingredient>(),
             new List<Beverage>(),

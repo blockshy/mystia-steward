@@ -287,7 +287,7 @@ internal sealed class StewardOverlayController
     {
         try
         {
-            _repository = DataRepository.Empty("game-runtime-only");
+            _repository = DataRepository.Empty();
             _runtimeDataCatalog = RuntimeDataCatalog.Empty("waiting for live game runtime data");
             _state = null;
             _businessFallbackState = null;
@@ -520,7 +520,6 @@ internal sealed class StewardOverlayController
                 RuntimeLoaded = _runtimeLoaded,
                 Status = _status,
                 RuntimeSource = _runtimeSource,
-                DataDirectory = _repository?.DataDirectory ?? "",
                 RuntimeUiPinningStatus = RuntimeUiPinningService.Status,
                 RecommendationState = Measure(
                     "snapshot.recommendationState",
@@ -638,7 +637,7 @@ internal sealed class StewardOverlayController
             _runtimeDataCatalog = staticDataSnapshot.DataCatalog;
             if (!_runtimeDataCatalog.IsComplete) return;
 
-            _repository = DataRepository.FromRuntime(_runtimeDataCatalog, _repository.DataDirectory);
+            _repository = DataRepository.FromRuntime(_runtimeDataCatalog);
             _businessFallbackState = null;
             _runtimeSource = string.IsNullOrWhiteSpace(_runtimeSource)
                 ? "game-runtime-static-data"

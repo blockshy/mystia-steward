@@ -15,7 +15,7 @@
 - Mod 不编译引用 `Assembly-CSharp.dll`，运行时通过反射读取游戏已加载的 IL2CPP interop 类型。
 - 用户可见项目名、安装目录和发布产物使用 `mystia-steward-companion`；旧名称只保留在兼容迁移和上游来源说明中。
 - `References/` 只放本机编译 DLL，不提交仓库。
-- 推荐数据来自游戏运行时 `RuntimeDataCatalog`；`tools/sync-data.sh` 已废弃为 no-op，`build-release.ps1` 和发布包不再同步或包含 Mod `Data/`。
+- 推荐数据来自游戏运行时 `RuntimeDataCatalog`；仓库不再保留旧版推荐 JSON，`build-release.ps1` 和发布包不再同步或包含 Mod `Data/`。
 - 独立伴随窗口通过 `127.0.0.1:32145` 读取运行态；除 `/health` 外，本地 API 使用 `X-Mystia-Steward-Companion-Token` 授权。
 - 伴随窗口控制端口固定为 `127.0.0.1:32146`，支持 `show`、`toggle`、`exit` 消息；Mod 热键应先通知已有窗口，控制端口不可达时才启动新进程。
 - 伴随窗口会在 Tauri app data 目录保存 `window-state.txt`，记录外框位置和内框尺寸；启动时恢复大小和仍在显示器范围内的位置，防止换显示器后窗口离屏。
