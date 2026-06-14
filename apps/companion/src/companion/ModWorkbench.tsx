@@ -1918,7 +1918,7 @@ export function ModWorkbench() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-end justify-between gap-4">
+      <div className="grid items-end gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
         <div>
           <h1 className="text-[1.7rem] font-bold leading-tight text-foreground">Mod 工作台</h1>
           <p className="mt-1 text-sm text-muted-foreground">
@@ -1930,7 +1930,7 @@ export function ModWorkbench() {
             </Badge>
           )}
         </div>
-        <div className="flex w-full max-w-2xl items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center justify-start gap-2 md:justify-end">
           <Input
             value={endpointDraft}
             onChange={(event) => setEndpointDraft(event.target.value)}
@@ -1938,16 +1938,21 @@ export function ModWorkbench() {
               if (event.key === 'Enter') applyEndpointConnection();
             }}
             spellCheck={false}
-            className="font-mono text-xs"
+            className="w-[18rem] max-w-[48vw] font-mono text-xs"
           />
-          <Button size="sm" variant="outline" onClick={applyEndpointConnection}>
-            连接
-          </Button>
-          <Button size="sm" variant="outline" onClick={pauseConnection} disabled={connectionPaused}>
-            <Power className="size-4" />
-            停止
-          </Button>
-          <Button size="sm" onClick={() => void refresh(true)} disabled={loading || !apiToken}>
+          <SwitchField
+            label="连接"
+            checked={!connectionPaused}
+            onCheckedChange={(checked) => {
+              if (checked) {
+                applyEndpointConnection();
+              } else {
+                pauseConnection();
+              }
+            }}
+            className="h-8 rounded-sm bg-muted/35 px-2.5"
+          />
+          <Button size="sm" variant="outline" onClick={() => void refresh(true)} disabled={loading || !apiToken}>
             <RefreshCw className={loading ? 'size-4 animate-spin' : 'size-4'} />
             刷新
           </Button>
@@ -2350,30 +2355,14 @@ function RareGuestInvitationPanel({
       title={`稀客邀请 (${filteredAvailableEntries.length}/${candidateEntries.length})`}
       action={(
         <div className="flex min-w-0 flex-wrap justify-end gap-1.5">
-          <div className="grid h-8 grid-cols-2 rounded-sm bg-muted/45 p-0.5">
-            <Button
-              type="button"
-              size="xs"
-              variant={inviteScope === 'current' ? 'default' : 'ghost'}
-              className="h-7 px-2"
-              onClick={() => onInviteScopeChange('current')}
-              disabled={isBusy}
-              data-gamepad-clickable="true"
-            >
-              当前
-            </Button>
-            <Button
-              type="button"
-              size="xs"
-              variant={inviteScope === 'all' ? 'default' : 'ghost'}
-              className="h-7 px-2"
-              onClick={() => onInviteScopeChange('all')}
-              disabled={isBusy}
-              data-gamepad-clickable="true"
-            >
-              全部
-            </Button>
-          </div>
+          <SwitchField
+            label={inviteScope === 'all' ? '全部场景' : '当前场景'}
+            checked={inviteScope === 'all'}
+            onCheckedChange={(checked) => onInviteScopeChange(checked ? 'all' : 'current')}
+            disabled={isBusy}
+            className="h-8 rounded-sm bg-muted/35 px-2.5"
+            data-gamepad-clickable="true"
+          />
           <Button
             type="button"
             size="sm"

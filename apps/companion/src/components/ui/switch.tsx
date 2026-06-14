@@ -1,5 +1,6 @@
 import { Switch as MantineSwitch } from '@mantine/core';
 import type { SwitchProps as MantineSwitchProps } from '@mantine/core';
+import type { LabelHTMLAttributes } from 'react';
 
 import { cn } from '@/lib/utils';
 
@@ -22,6 +23,13 @@ function Switch({ className, checked, onCheckedChange, ...props }: SwitchProps) 
   );
 }
 
+type SwitchFieldProps = Omit<LabelHTMLAttributes<HTMLLabelElement>, 'onChange'> & {
+  label: string;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+  disabled?: boolean;
+};
+
 function SwitchField({
   label,
   checked,
@@ -29,16 +37,14 @@ function SwitchField({
   className,
   disabled,
   title,
-}: {
-  label: string;
-  checked: boolean;
-  onCheckedChange: (checked: boolean) => void;
-  className?: string;
-  disabled?: boolean;
-  title?: string;
-}) {
+  ...props
+}: SwitchFieldProps) {
   return (
-    <label className={cn('flex items-center gap-2 text-sm', disabled && 'text-muted-foreground', className)} title={title}>
+    <label
+      className={cn('steward-switch-field flex items-center gap-2.5 text-sm', disabled && 'text-muted-foreground', className)}
+      title={title}
+      {...props}
+    >
       <Switch checked={checked} onCheckedChange={onCheckedChange} disabled={disabled} />
       <span className="whitespace-nowrap">{label}</span>
     </label>
@@ -46,4 +52,4 @@ function SwitchField({
 }
 
 export { Switch, SwitchField };
-export type { SwitchProps };
+export type { SwitchFieldProps, SwitchProps };

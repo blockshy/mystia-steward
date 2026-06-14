@@ -29,7 +29,7 @@ function ChoiceGroup<TValue extends string>({
             value={option.value}
             withBorder
             className={cn(
-              'steward-choice-card rounded-md p-2 text-left text-sm transition-colors outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/35',
+              'steward-choice-card rounded-sm p-3 text-left text-sm transition-colors outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/35',
               value === option.value
                 ? 'steward-choice-card-active'
                 : '',

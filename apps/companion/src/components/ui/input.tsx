@@ -14,7 +14,7 @@ function Input({ className, type, size = 'sm', ...props }: InputProps) {
       type={type}
       data-slot="input"
       size={size}
-      className={cn('steward-input', className)}
+      classNames={{ input: cn('steward-input', className) }}
       {...props}
     />
   )
